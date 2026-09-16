@@ -135,7 +135,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith('image/')) {
+    const isImage = !file.type || file.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp)$/i.test(file.name);
+    if (!isImage) {
       setPhotoError('Please select a valid image file (JPG, PNG, WEBP, GIF).');
       return;
     }

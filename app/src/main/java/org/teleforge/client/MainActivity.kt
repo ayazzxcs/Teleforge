@@ -132,9 +132,12 @@ class MainActivity : ComponentActivity() {
         setupWebViewSettings()
         setupWebViewClients()
         setupBackNavigation()
-
-        // Load the TeleForge client
-        loadTeleForgeClient()
+        // Load or restore the TeleForge client
+        if (savedInstanceState == null) {
+            loadTeleForgeClient()
+        } else {
+            webView.restoreState(savedInstanceState)
+        }
         handleIncomingIntent(intent)
     }
 
@@ -250,25 +253,15 @@ class MainActivity : ComponentActivity() {
                 fileChooserCallback?.onReceiveValue(null)
                 fileChooserCallback = filePathCallback
 
-                val intent = try {
-                    val base = fileChooserParams?.createIntent()
-                    if (base != null) {
-                        base
-                    } else {
-                        Intent(Intent.ACTION_GET_CONTENT).apply {
-                            type = "*/*"
-                            addCategory(Intent.CATEGORY_OPENABLE)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Intent(Intent.ACTION_GET_CONTENT).apply {
-                        type = "*/*"
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                    }
+                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    type = "image/*"
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "image/jpeg", "image/png", "image/webp", "image/gif"))
                 }
+                val chooser = Intent.createChooser(intent, "Select Photo")
 
                 return try {
-                    fileChooserLauncher.launch(intent)
+                    fileChooserLauncher.launch(chooser)
                     true
                 } catch (e: Exception) {
                     fileChooserCallback = null
@@ -362,6 +355,11 @@ class MainActivity : ComponentActivity() {
     private fun dpToPx(dp: Int): Int {
         val density = resources.displayMetrics.density
         return (dp * density).toInt()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        webView.saveState(outState)
     }
 
     override fun onDestroy() {

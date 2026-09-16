@@ -35,10 +35,13 @@ import {
   Loader2,
   ChevronDown,
   ChevronUp,
+  Play,
+  Video,
 } from 'lucide-react';
 import { Chat, Message, Reaction, Attachment } from '../types';
 import { AudioPlayer } from './AudioPlayer';
 import { Avatar } from './Avatar';
+import { mediaService } from '../services/mediaService';
 import { getAvatarColor } from '../utils/telegramAdapter';
 import {
   ChatCustomizationConfig,
@@ -53,6 +56,193 @@ import { ChatCustomizationModal } from './ChatCustomizationModal';
 import { ReactionDetailsModal } from './ReactionDetailsModal';
 import { showToast } from './Toast';
 import { telegramApi, resolveApiUrl } from '../services/telegramApi';
+
+interface ChatMediaImageProps {
+  attachment: Attachment;
+  chatId: string;
+  messageId: string;
+  onOpenMediaModal: (attachment: Attachment) => void;
+}
+
+const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
+  attachment,
+  chatId,
+  messageId,
+  onOpenMediaModal,
+}) => {
+  const [mediaUrl, setMediaUrl] = useState<string>(() => {
+    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
+      return attachment.url;
+    }
+    return mediaService.get(chatId, messageId) || '';
+  });
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (mediaUrl) return;
+    const unsub = mediaService.subscribe(chatId, messageId, (url) => {
+      if (url) setMediaUrl(url);
+    });
+    mediaService.loadMedia(chatId, messageId).then((url) => {
+      if (url) setMediaUrl(url);
+    });
+    return unsub;
+  }, [chatId, messageId, mediaUrl]);
+
+  const displayUrl = mediaUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '');
+  const thumbUrl = attachment.thumbUrl;
+
+  const handleClick = () => {
+    onOpenMediaModal({
+      ...attachment,
+      url: displayUrl || thumbUrl || '',
+    });
+  };
+
+  return (
+    <div
+      onClick={handleClick}
+      className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/10 min-h-[140px] max-h-80 flex items-center justify-center select-none"
+    >
+      {/* 0ms blurred instant preview if thumbUrl available */}
+      {thumbUrl && !loaded && (
+        <img
+          src={thumbUrl}
+          alt={attachment.name || 'Photo preview'}
+          className="absolute inset-0 w-full h-full object-cover filter blur-[3px] scale-105"
+        />
+      )}
+
+      {/* High-res loaded image */}
+      {displayUrl ? (
+        <img
+          src={displayUrl}
+          alt={attachment.name || 'Photo'}
+          onLoad={() => setLoaded(true)}
+          className={`relative z-10 max-h-80 w-full object-cover transition-opacity duration-300 ${
+            loaded || !thumbUrl ? 'opacity-100' : 'opacity-0'
+          }`}
+        />
+      ) : (
+        <div className="relative z-10 flex flex-col items-center justify-center p-6 text-white/80">
+          <Loader2 className="w-6 h-6 animate-spin mb-1 text-white/90" />
+          <span className="text-[11px] font-medium">Loading photo...</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface ChatMediaVideoProps {
+  attachment: Attachment;
+  chatId: string;
+  messageId: string;
+  onOpenMediaModal: (attachment: Attachment) => void;
+}
+
+const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
+  attachment,
+  chatId,
+  messageId,
+  onOpenMediaModal,
+}) => {
+  const [videoUrl, setVideoUrl] = useState<string>(() => {
+    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
+      return attachment.url;
+    }
+    return mediaService.get(chatId, messageId) || '';
+  });
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (videoUrl) return;
+    const unsub = mediaService.subscribe(chatId, messageId, (url) => {
+      if (url) setVideoUrl(url);
+    });
+    return unsub;
+  }, [chatId, messageId, videoUrl]);
+
+  const handlePlayClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (videoUrl) {
+      setIsPlaying(true);
+    } else {
+      setIsLoading(true);
+      mediaService.loadMedia(chatId, messageId).then((url) => {
+        setIsLoading(false);
+        if (url) {
+          setVideoUrl(url);
+          setIsPlaying(true);
+        }
+      }).catch(() => setIsLoading(false));
+    }
+  };
+
+  const handleOpenFull = () => {
+    onOpenMediaModal({
+      ...attachment,
+      url: videoUrl || attachment.thumbUrl || '',
+    });
+  };
+
+  if (isPlaying && videoUrl) {
+    return (
+      <div className="mb-2 rounded-xl overflow-hidden shadow-xs relative bg-black max-h-80">
+        <video
+          src={videoUrl}
+          poster={attachment.thumbUrl}
+          controls
+          autoPlay
+          playsInline
+          className="max-h-80 w-full object-contain"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={handleOpenFull}
+      className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/20 min-h-[160px] max-h-80 flex items-center justify-center select-none"
+    >
+      {/* Video Thumbnail */}
+      {attachment.thumbUrl ? (
+        <img
+          src={attachment.thumbUrl}
+          alt={attachment.name || 'Video thumbnail'}
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      ) : (
+        <div className="absolute inset-0 bg-slate-900/80" />
+      )}
+
+      {/* Dim overlay */}
+      <div className="absolute inset-0 bg-black/30 group-hover:bg-black/40 transition-colors" />
+
+      {/* Center Play Button */}
+      <button
+        onClick={handlePlayClick}
+        disabled={isLoading}
+        className="relative z-10 w-12 h-12 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-xs transition-transform transform group-hover:scale-110 shadow-lg border border-white/20"
+        title="Play video"
+      >
+        {isLoading ? (
+          <Loader2 className="w-6 h-6 animate-spin text-white" />
+        ) : (
+          <Play className="w-6 h-6 fill-white ml-0.5" />
+        )}
+      </button>
+
+      {/* Bottom info badge */}
+      <div className="absolute bottom-2 left-2 z-10 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-xs text-[10px] font-medium text-white flex items-center gap-1.5">
+        <Video size={12} />
+        <span>{attachment.duration || 'Video'}</span>
+        {attachment.size && <span>• {attachment.size}</span>}
+      </div>
+    </div>
+  );
+};
 
 interface ChatViewProps {
   chat: Chat | null;
@@ -791,16 +981,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                 {/* Attachment: Image */}
                 {message.attachment?.type === 'image' && (
-                  <div
-                    onClick={() => onOpenMediaModal(message.attachment!)}
-                    className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity"
-                  >
-                    <img
-                      src={message.attachment.url}
-                      alt={message.attachment.name || 'Photo'}
-                      className="max-h-72 w-full object-cover"
-                    />
-                  </div>
+                  <ChatMediaImage
+                    attachment={message.attachment}
+                    chatId={chat.id}
+                    messageId={message.id}
+                    onOpenMediaModal={onOpenMediaModal}
+                  />
+                )}
+
+                {/* Attachment: Video */}
+                {message.attachment?.type === 'video' && (
+                  <ChatMediaVideo
+                    attachment={message.attachment}
+                    chatId={chat.id}
+                    messageId={message.id}
+                    onOpenMediaModal={onOpenMediaModal}
+                  />
                 )}
 
                 {/* Attachment: Voice Audio */}

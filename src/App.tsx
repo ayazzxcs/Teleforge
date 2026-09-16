@@ -15,6 +15,7 @@ import { TelegramAuthView } from './components/TelegramAuthView';
 import { TeleForgeLogo } from './components/TeleForgeLogo';
 import { telegramApi, TelegramUser, AuthStatusResponse, TelegramDialog, isAndroidApp } from './services/telegramApi';
 import { avatarService } from './services/avatarService';
+import { mediaService } from './services/mediaService';
 import { mapDialogToChat, mapTelegramMessage, mapTelegramUserToProfile } from './utils/telegramAdapter';
 import { TeleForgeTheme, getInitialTheme, applyTheme, BUILTIN_PRESETS } from './theme/teleforgeTheme';
 import {
@@ -269,6 +270,11 @@ export const App: React.FC = () => {
         avatarService.preloadAvatars(incomingSenders);
       }
 
+      const mediaItems = realMsgs.filter((m) => m.hasMedia && m.id).map((m) => ({ chatId, messageId: m.id }));
+      if (mediaItems.length > 0) {
+        mediaService.preloadMedia(mediaItems.slice(0, 10));
+      }
+
       setChats((prev) => {
         const targetChat = prev.find((c) => c.id === chatId);
         const mapped = realMsgs.map((m) => mapTelegramMessage(m, chatId, targetChat?.name || 'Telegram'));
@@ -332,6 +338,11 @@ export const App: React.FC = () => {
       const mapped = olderMsgs.map((m) =>
         mapTelegramMessage(m, chatId, chat.name || 'Telegram')
       );
+
+      const mediaItems = olderMsgs.filter((m) => m.hasMedia && m.id).map((m) => ({ chatId, messageId: m.id }));
+      if (mediaItems.length > 0) {
+        mediaService.preloadMedia(mediaItems.slice(0, 5));
+      }
 
       setChats((prev) =>
         prev.map((c) => {

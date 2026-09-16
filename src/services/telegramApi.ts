@@ -59,7 +59,8 @@ export interface TelegramMessage {
   senderAvatar?: string;
   senderThumbUrl?: string;
   hasMedia?: boolean;
-  mediaType?: 'photo' | 'voice' | 'audio' | 'document' | null;
+  mediaType?: 'photo' | 'video' | 'voice' | 'audio' | 'document' | null;
+  mediaThumb?: string;
   fileName?: string;
   fileSize?: string;
   replyToMsgId?: number;
@@ -578,5 +579,9 @@ export const telegramApi = {
       if (res.ok) return data;
     } catch (e) {}
     return telegramDirectClient.deleteProfilePhoto();
+  },
+
+  async downloadMessageMedia(chatId: string, messageId: string | number): Promise<{ dataUrl: string; mimeType: string } | null> {
+    return telegramDirectClient.downloadMessageMedia(chatId, messageId);
   },
 };

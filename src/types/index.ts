@@ -41,6 +41,7 @@ export interface Attachment {
   name?: string;
   size?: string;
   duration?: string; // e.g. "0:24" for audio
+  thumbUrl?: string;
 }
 
 export interface Message {

@@ -581,7 +581,8 @@ export const telegramDirectClient = {
       const senderThumbUrl = !m.out && senderIdStr ? thumbCache.get(senderIdStr) : undefined;
 
       let hasMedia = Boolean(m.media);
-      let mediaType: 'photo' | 'voice' | 'audio' | 'document' | null = null;
+      let mediaType: 'photo' | 'video' | 'voice' | 'audio' | 'document' | null = null;
+      let mediaThumb: string | undefined = undefined;
       let fileName: string | undefined = undefined;
       let fileSize: string | undefined = undefined;
 
@@ -589,14 +590,57 @@ export const telegramDirectClient = {
         const cls = m.media.className || m.media._ || '';
         if (cls.includes('Photo')) {
           mediaType = 'photo';
+          if (m.media.photo?.strippedThumb) {
+            try {
+              const thumbBuf = strippedPhotoToJpg(m.media.photo.strippedThumb);
+              if (thumbBuf && thumbBuf.length > 0) {
+                mediaThumb = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+              }
+            } catch (e) {}
+          }
         } else if (cls.includes('Document')) {
-          const isVoice = m.media.document?.attributes?.some((a: any) => a._ === 'documentAttributeAudio' && a.voice);
-          const isAudio = m.media.document?.attributes?.some((a: any) => a._ === 'documentAttributeAudio');
-          const filenameAttr = m.media.document?.attributes?.find((a: any) => a._ === 'documentAttributeFilename');
+          const attrs = m.media.document?.attributes || [];
+          const isVideoAttr = attrs.some((a: any) =>
+            a._ === 'documentAttributeVideo' ||
+            a.className === 'DocumentAttributeVideo' ||
+            a._ === 'documentAttributeAnimated' ||
+            a.className === 'DocumentAttributeAnimated'
+          );
+          const isVoice = attrs.some((a: any) =>
+            (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio') && a.voice
+          );
+          const isAudio = attrs.some((a: any) =>
+            (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio') && !a.voice
+          );
+          const filenameAttr = attrs.find((a: any) =>
+            a._ === 'documentAttributeFilename' || a.className === 'DocumentAttributeFilename'
+          );
 
-          if (isVoice) mediaType = 'voice';
-          else if (isAudio) mediaType = 'audio';
-          else mediaType = 'document';
+          const mime = (m.media.document?.mimeType || '').toLowerCase();
+
+          if (isVideoAttr || mime.startsWith('video/')) {
+            mediaType = 'video';
+          } else if (isVoice) {
+            mediaType = 'voice';
+          } else if (isAudio || mime.startsWith('audio/')) {
+            mediaType = 'audio';
+          } else if (mime.startsWith('image/')) {
+            mediaType = 'photo';
+          } else {
+            mediaType = 'document';
+          }
+
+          if (m.media.document?.thumbs) {
+            const stripped = m.media.document.thumbs.find((t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize');
+            if (stripped?.bytes) {
+              try {
+                const thumbBuf = strippedPhotoToJpg(stripped.bytes);
+                if (thumbBuf && thumbBuf.length > 0) {
+                  mediaThumb = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+                }
+              } catch (e) {}
+            }
+          }
 
           if (filenameAttr) fileName = filenameAttr.fileName;
           fileSize = m.media.document?.size ? formatBytes(Number(m.media.document.size)) : undefined;
@@ -627,6 +671,7 @@ export const telegramDirectClient = {
         senderThumbUrl,
         hasMedia,
         mediaType,
+        mediaThumb,
         fileName,
         fileSize,
         replyToMsgId: m.replyTo?.replyToMsgId,
@@ -1286,6 +1331,46 @@ export const telegramDirectClient = {
       success: true,
       user: sUser!,
     };
+  },
+
+  /**
+   * Download message media (photo or video/document) directly via GramJS MTProto
+   */
+  async downloadMessageMedia(chatId: string, messageId: string | number): Promise<{ dataUrl: string; mimeType: string } | null> {
+    if (!chatId || messageId == null) return null;
+    const client = await getDirectClient();
+    let targetPeer = peerEntityCache.get(chatId) || chatId;
+    if (!peerEntityCache.has(chatId)) {
+      try {
+        targetPeer = await client.getInputEntity(chatId);
+      } catch (e) {
+        targetPeer = chatId;
+      }
+    }
+
+    const idNum = typeof messageId === 'number' ? messageId : parseInt(String(messageId), 10);
+    try {
+      const messages: any = await client.getMessages(targetPeer, { ids: [idNum] });
+      if (!messages || !messages[0] || !messages[0].media) return null;
+      const msg = messages[0];
+
+      const buffer: any = await client.downloadMedia(msg.media, {});
+      if (!buffer || buffer.length === 0) return null;
+
+      let mimeType = 'application/octet-stream';
+      const cls = msg.media.className || msg.media._ || '';
+      if (cls.includes('Photo')) {
+        mimeType = 'image/jpeg';
+      } else if (cls.includes('Document')) {
+        mimeType = msg.media.document?.mimeType || 'application/octet-stream';
+      }
+
+      const dataUrl = `data:${mimeType};base64,${Buffer.from(buffer).toString('base64')}`;
+      return { dataUrl, mimeType };
+    } catch (err: any) {
+      console.warn('[MTProto-Direct] downloadMessageMedia error:', err?.message || err);
+      return null;
+    }
   },
 };
 

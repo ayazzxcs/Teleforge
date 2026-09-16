@@ -1,5 +1,6 @@
 import { TelegramDialog, TelegramMessage, TelegramUser, resolveApiUrl } from '../services/telegramApi';
 import { avatarService } from '../services/avatarService';
+import { mediaService } from '../services/mediaService';
 import { Chat, Message, UserProfile } from '../types';
 
 const AVATAR_COLORS = [
@@ -99,14 +100,26 @@ export function mapTelegramMessage(
     let attType: 'image' | 'video' | 'audio' | 'file' = 'file';
     if (m.mediaType === 'photo') {
       attType = 'image';
+    } else if (m.mediaType === 'video') {
+      attType = 'video';
     } else if (m.mediaType === 'voice' || m.mediaType === 'audio') {
       attType = 'audio';
     }
 
+    const cachedUrl = mediaService.get(chatId, m.id);
+    const mediaUrl = cachedUrl || resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${m.id}`);
+
+    let defaultName = 'File';
+    if (m.mediaType === 'photo') defaultName = 'Photo';
+    else if (m.mediaType === 'video') defaultName = 'Video';
+    else if (m.mediaType === 'voice') defaultName = 'Voice Message';
+    else if (m.mediaType === 'audio') defaultName = 'Audio Message';
+
     attachment = {
       type: attType,
-      url: resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${m.id}`),
-      name: m.fileName || (m.mediaType === 'photo' ? 'Photo' : 'Voice Message'),
+      url: mediaUrl,
+      thumbUrl: m.mediaThumb,
+      name: m.fileName || defaultName,
       size: m.fileSize || undefined,
       duration: m.mediaType === 'voice' ? '0:18' : undefined,
     };

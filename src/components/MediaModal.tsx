@@ -153,8 +153,20 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
         >
           {attachment.type === 'image' && (
             <img
-              src={attachment.url}
+              src={attachment.url || attachment.thumbUrl}
               alt={attachment.name || 'Preview'}
+              style={{ transform: `scale(${zoom})`, transition: 'transform 0.15s ease-out' }}
+              className="max-h-[82vh] max-w-[95%] w-auto object-contain rounded-xl shadow-2xl transition-transform"
+            />
+          )}
+
+          {attachment.type === 'video' && (
+            <video
+              src={attachment.url}
+              poster={attachment.thumbUrl}
+              controls
+              autoPlay
+              playsInline
               style={{ transform: `scale(${zoom})`, transition: 'transform 0.15s ease-out' }}
               className="max-h-[82vh] max-w-[95%] w-auto object-contain rounded-xl shadow-2xl transition-transform"
             />
