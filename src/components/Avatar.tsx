@@ -1,33 +1,107 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { avatarService } from '../services/avatarService';
 
 interface AvatarProps {
   src?: string;
   previewSrc?: string;
+  peerId?: string;
   name: string;
   color?: string;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
 }
 
+function extractPeerIdFromSrc(src?: string): string | null {
+  if (!src) return null;
+  try {
+    const match = src.match(/[?&]id=([^&#]+)/);
+    if (match && match[1]) {
+      return decodeURIComponent(match[1]);
+    }
+  } catch (e) {}
+  return null;
+}
+
 export const Avatar: React.FC<AvatarProps> = ({
   src,
   previewSrc,
+  peerId,
   name,
   color = '#2AABEE',
   size = 'md',
   className = '',
 }) => {
-  const [hasError, setHasError] = useState(!src && !previewSrc);
+  const effectivePeerId = peerId || extractPeerIdFromSrc(src) || undefined;
+  
+  // Check if src is already a direct high-res data URL or blob URL (> 500 bytes)
+  const isDirectHighRes = Boolean(
+    src &&
+    (src.startsWith('blob:') || (src.startsWith('data:image/') && src.length > 500))
+  );
+
+  const [highResSrc, setHighResSrc] = useState<string | null>(() => {
+    if (isDirectHighRes) return src!;
+    if (effectivePeerId) {
+      return avatarService.get(effectivePeerId);
+    }
+    return null;
+  });
+
   const [isLoaded, setIsLoaded] = useState(false);
+  const [hasError, setHasError] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
+  // Subscribe to live high-res avatar updates
   useEffect(() => {
-    setHasError(!src && !previewSrc);
+    if (isDirectHighRes && src) {
+      setHighResSrc(src);
+      return;
+    }
+
+    if (!effectivePeerId) {
+      setHighResSrc(null);
+      return;
+    }
+
+    // 1. Check if avatar is already in memory cache
+    const existing = avatarService.get(effectivePeerId);
+    if (existing) {
+      setHighResSrc(existing);
+    }
+
+    // 2. Subscribe to background download updates
+    const unsubscribe = avatarService.subscribe(effectivePeerId, (newUrl) => {
+      if (newUrl) {
+        setHighResSrc(newUrl);
+        setHasError(false);
+      }
+    });
+
+    // 3. Trigger load if not already loaded
+    if (!existing) {
+      avatarService.loadAvatar(effectivePeerId, size === 'xl' || size === 'lg').then((url) => {
+        if (url) {
+          setHighResSrc(url);
+          setHasError(false);
+        }
+      });
+    }
+
+    return () => {
+      unsubscribe();
+    };
+  }, [effectivePeerId, src, isDirectHighRes, size]);
+
+  // Reset load state when image source changes
+  const activeSrc = highResSrc || (isDirectHighRes ? src : undefined);
+
+  useEffect(() => {
     setIsLoaded(false);
-    if (src && imgRef.current?.complete && imgRef.current.naturalWidth > 0) {
+    setHasError(!activeSrc && !previewSrc);
+    if (activeSrc && imgRef.current?.complete && imgRef.current.naturalWidth > 0) {
       setIsLoaded(true);
     }
-  }, [src, previewSrc]);
+  }, [activeSrc, previewSrc]);
 
   const getInitials = (text: string) => {
     if (!text) return '?';
@@ -50,7 +124,9 @@ export const Avatar: React.FC<AvatarProps> = ({
   const bgStyle = isClassColor ? undefined : { backgroundColor: color };
   const bgClass = isGradient ? `bg-gradient-to-br ${color}` : isClassColor ? color : '';
 
-  if ((!src && !previewSrc) || (hasError && !previewSrc)) {
+  const hasAnyPhoto = Boolean(activeSrc || previewSrc);
+
+  if (!hasAnyPhoto || (hasError && !previewSrc)) {
     return (
       <div
         style={bgStyle}
@@ -69,24 +145,23 @@ export const Avatar: React.FC<AvatarProps> = ({
       {/* Fallback colored initials behind image */}
       <span>{getInitials(name)}</span>
 
-      {/* Instant low-res preview thumbnail (shown while high-res loads) */}
+      {/* Low-res preview thumbnail (shown while high-res loads) */}
       {previewSrc && !isLoaded && (
         <img
           src={previewSrc}
           alt=""
           aria-hidden="true"
-          className="absolute inset-0 w-full h-full object-cover rounded-full filter blur-[1px] transform scale-105"
+          className="absolute inset-0 w-full h-full object-cover rounded-full"
         />
       )}
 
       {/* Real High-Resolution Avatar Image */}
-      {src && !hasError && (
+      {activeSrc && !hasError && (
         <img
           ref={imgRef}
-          src={src}
+          src={activeSrc}
           alt={name}
           decoding="async"
-          loading={src.startsWith('data:') ? undefined : 'lazy'}
           onLoad={() => {
             setIsLoaded(true);
             setHasError(false);

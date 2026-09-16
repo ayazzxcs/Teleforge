@@ -268,7 +268,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="absolute left-0 top-11 w-64 bg-white dark:bg-[#17212b] rounded-2xl shadow-xl border border-gray-100 dark:border-gray-800 py-2 z-40 animate-in fade-in zoom-in-95 duration-100">
                   {/* User quick card */}
                   <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center gap-3">
-                    <Avatar src={user.avatar} name={user.name} size="sm" />
+                    <Avatar src={user.avatar} name={user.name} size="sm" peerId="me" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-semibold text-gray-900 dark:text-white truncate">{user.name}</div>
                       <div className="text-xs text-gray-400 truncate">{user.phone || user.username}</div>
@@ -554,6 +554,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     name={chat.name}
                     color={chat.avatarColor}
                     size="md"
+                    peerId={chat.id}
                   />
                   {chat.online && chat.type === 'direct' && (
                     <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-emerald-500 border-2 border-white dark:border-[#17212b] rounded-full" />
@@ -743,6 +744,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         name={item.title}
                         color={item.isChannel ? '#E17076' : item.isGroup ? '#65AADD' : '#6C5CE7'}
                         size="md"
+                        peerId={item.id}
                       />
                       {item.isChannel && (
                         <div className="absolute bottom-0 right-0 bg-purple-600 text-white rounded-full p-0.5 ring-1 ring-white dark:ring-gray-800">

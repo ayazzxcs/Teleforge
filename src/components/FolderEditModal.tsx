@@ -480,6 +480,7 @@ export const FolderEditModal: React.FC<FolderEditModalProps> = ({
                         color={chat.avatarColor}
                         size="sm"
                         className="shrink-0"
+                        peerId={chat.id}
                       />
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-medium text-gray-800 dark:text-teleforge-cream truncate">

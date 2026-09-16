@@ -56,6 +56,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({ chat, isOpen, on
               color={chat.avatarColor}
               size="xl"
               className="w-24 h-24 border-2 border-white dark:border-[#17212b]"
+              peerId={chat.id}
             />
             {chat.verified && (
               <div className="absolute bottom-0 right-0 bg-teleforge-primary text-teleforge-cream p-1 rounded-full ring-2 ring-white dark:ring-[#17212b]">

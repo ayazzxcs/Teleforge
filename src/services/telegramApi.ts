@@ -31,6 +31,7 @@ export interface TelegramDialog {
   isChannel: boolean;
   isVerified: boolean;
   hasAvatar?: boolean;
+  avatar?: string;
   thumbUrl?: string;
   unreadCount: number;
   unreadMentionsCount: number;

@@ -36,6 +36,8 @@ import {
 import { showToast } from './Toast';
 import { TeleForgeLogo } from './TeleForgeLogo';
 import { telegramApi } from '../services/telegramApi';
+import { Avatar } from './Avatar';
+import { avatarService } from '../services/avatarService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -186,6 +188,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
 
       if (result.avatarUrl) {
+        avatarService.setAvatar('me', result.avatarUrl);
         const updatedUser = {
           ...formData,
           avatar: result.avatarUrl,
@@ -207,6 +210,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsDeletingPhoto(true);
     try {
       await telegramApi.deleteProfilePhoto();
+      avatarService.setAvatar('me', '');
       const updatedUser = {
         ...formData,
         avatar: '',
@@ -369,20 +373,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <form onSubmit={handleSave} className="space-y-4">
               <div className="flex items-center gap-4 mb-4">
                 <div className="relative group shrink-0 w-16 h-16 rounded-full overflow-hidden border-2 border-teleforge-primary shadow-sm bg-teleforge-primary/10 flex items-center justify-center">
-                  {formData.avatar ? (
-                    <img
-                      src={formData.avatar}
-                      alt={formData.name || 'Profile'}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.currentTarget as HTMLElement).style.display = 'none';
-                      }}
-                    />
-                  ) : (
-                    <div className="w-full h-full bg-teleforge-primary text-teleforge-cream font-bold text-xl flex items-center justify-center">
-                      {formData.name ? formData.name.slice(0, 2).toUpperCase() : 'TF'}
-                    </div>
-                  )}
+                  <Avatar
+                    peerId="me"
+                    src={formData.avatar}
+                    name={formData.name || 'User'}
+                    size="xl"
+                    className="w-full h-full text-xl"
+                  />
                   <button
                     type="button"
                     onClick={handleOpenPhotoModal}

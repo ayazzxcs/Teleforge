@@ -197,6 +197,7 @@ export const ChatPickerModal: React.FC<ChatPickerModalProps> = ({
                     color={chat.avatarColor}
                     size="md"
                     className="shrink-0"
+                    peerId={chat.id}
                   />
 
                   {/* Title & Type */}

@@ -1,4 +1,5 @@
 import { TelegramDialog, TelegramMessage, TelegramUser, resolveApiUrl } from '../services/telegramApi';
+import { avatarService } from '../services/avatarService';
 import { Chat, Message, UserProfile } from '../types';
 
 const AVATAR_COLORS = [
@@ -63,7 +64,9 @@ export function mapDialogToChat(dialog: TelegramDialog): Chat {
   return {
     id: dialog.id,
     name: chatName || 'Telegram User',
-    avatar: resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(dialog.id)}&v=2`),
+    avatar: (dialog.avatar && dialog.avatar.length > 500)
+      ? dialog.avatar
+      : (avatarService.get(dialog.id) || resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(dialog.id)}&v=2`)),
     thumbUrl: dialog.thumbUrl,
     avatarColor: getAvatarColor(chatName || dialog.id),
     type: chatType,
@@ -125,9 +128,10 @@ export function mapTelegramMessage(
   const isOut = Boolean(m.out);
   const senderId = isOut ? 'user-me' : (m.senderId || 'peer');
   const senderName = isOut ? 'You' : (m.senderName || chatName);
+  const cachedSenderAvatar = m.senderId ? avatarService.get(m.senderId) : undefined;
   const senderAvatar = isOut
     ? undefined
-    : (m.senderId && m.senderId !== 'peer' ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(m.senderId)}&v=2`) : undefined);
+    : (cachedSenderAvatar || (m.senderAvatar && m.senderAvatar.length > 500 ? m.senderAvatar : undefined) || (m.senderId && m.senderId !== 'peer' ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(m.senderId)}&v=2`) : undefined));
   const senderThumbUrl = isOut ? undefined : m.senderThumbUrl;
 
   return {
@@ -157,11 +161,12 @@ export function mapTelegramMessage(
 
 export function mapTelegramUserToProfile(user: TelegramUser): UserProfile {
   const photoId = user.photoId || '';
-  const avatarUrl = user.avatar
-    ? user.avatar
-    : (user.hasAvatar === false
-        ? ''
-        : resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(user.id)}${photoId ? `&v=${photoId}` : ''}`));
+  const cachedHighRes = avatarService.get('me') || avatarService.get(user.id);
+  const avatarUrl = cachedHighRes ||
+    (user.avatar && user.avatar.length > 500 ? user.avatar : '') ||
+    (user.hasAvatar === false
+      ? ''
+      : resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(user.id)}${photoId ? `&v=${photoId}` : ''}`));
 
   return {
     name: user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Telegram User',

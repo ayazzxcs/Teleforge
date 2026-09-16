@@ -106,7 +106,7 @@ export const ChatCustomizationModal: React.FC<ChatCustomizationModalProps> = ({
         {/* Header */}
         <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800/80 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Avatar src={chat.avatar} name={chat.name} color={chat.avatarColor} size="sm" />
+            <Avatar src={chat.avatar} previewSrc={chat.thumbUrl} name={chat.name} color={chat.avatarColor} size="sm" peerId={chat.id} />
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-bold text-gray-900 dark:text-white">Custom Styling: {chat.name}</h3>

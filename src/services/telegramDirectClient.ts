@@ -228,6 +228,17 @@ export const telegramDirectClient = {
       const sUser = serializeUser(me);
       if (sUser) {
         sUser.bio = bio;
+        if (hasEntityPhoto(me)) {
+          try {
+            const highResBuf = await withTimeout(client.downloadProfilePhoto('me', { isBig: true }), 4000);
+            if (highResBuf && highResBuf.length > 0) {
+              const b64 = `data:image/jpeg;base64,${Buffer.from(highResBuf).toString('base64')}`;
+              avatarBlobUrlCache.set('me', b64);
+              if (sUser.id) avatarBlobUrlCache.set(sUser.id, b64);
+              sUser.avatar = b64;
+            }
+          } catch (e) {}
+        }
         try {
           localStorage.setItem(USER_CACHE_KEY, JSON.stringify(sUser));
         } catch (e) {}
@@ -491,6 +502,7 @@ export const telegramDirectClient = {
         isChannel,
         isVerified,
         hasAvatar: hasPhoto,
+        avatar: hasPhoto ? avatarBlobUrlCache.get(peerIdStr) : undefined,
         thumbUrl,
         unreadCount: d.unreadCount || 0,
         unreadMentionsCount: d.unreadMentionsCount || 0,
@@ -609,6 +621,7 @@ export const telegramDirectClient = {
         out: Boolean(m.out),
         senderId: senderIdStr || undefined,
         senderName: senderName || undefined,
+        senderAvatar: (!m.out && senderIdStr) ? avatarBlobUrlCache.get(senderIdStr) : undefined,
         senderThumbUrl,
         hasMedia,
         mediaType,
@@ -1010,7 +1023,20 @@ export const telegramDirectClient = {
     } catch (e) {}
 
     const sUser = serializeUser(me);
-    if (sUser) sUser.bio = bio;
+    if (sUser) {
+      sUser.bio = bio;
+      if (hasEntityPhoto(me)) {
+        try {
+          const highResBuf = await withTimeout(client.downloadProfilePhoto('me', { isBig: true }), 4000);
+          if (highResBuf && highResBuf.length > 0) {
+            const b64 = `data:image/jpeg;base64,${Buffer.from(highResBuf).toString('base64')}`;
+            avatarBlobUrlCache.set('me', b64);
+            if (sUser.id) avatarBlobUrlCache.set(sUser.id, b64);
+            sUser.avatar = b64;
+          }
+        } catch (e) {}
+      }
+    }
     return { success: true, user: sUser! };
   },
 
@@ -1061,29 +1087,41 @@ export const telegramDirectClient = {
   },
 
   /**
-   * Download profile photo and return object URL
+   * Download profile photo and return high-resolution base64 data-URL
    */
-  async downloadAvatarUrl(peerId: string): Promise<string> {
+  async downloadAvatarUrl(peerId: string, isBig = false): Promise<string> {
     if (!peerId) return '';
-    if (avatarBlobUrlCache.has(peerId)) {
-      return avatarBlobUrlCache.get(peerId)!;
-    }
-    if (thumbCache.has(peerId)) {
-      return thumbCache.get(peerId)!;
+    const cleanId = peerId.toString().trim();
+    if (avatarBlobUrlCache.has(cleanId)) {
+      return avatarBlobUrlCache.get(cleanId)!;
     }
 
     try {
       const client = await getDirectClient();
-      let targetPeer = peerEntityCache.get(peerId) || peerId;
-      const buffer = await client.downloadProfilePhoto(targetPeer, { isBig: true });
+      let targetPeer: any = cleanId === 'me' ? 'me' : peerEntityCache.get(cleanId);
+      if (!targetPeer && cleanId !== 'me') {
+        if (cleanId.startsWith('-100')) {
+          targetPeer = peerEntityCache.get(cleanId.slice(4));
+        } else if (cleanId.startsWith('-')) {
+          targetPeer = peerEntityCache.get(cleanId.slice(1));
+        }
+      }
+      if (!targetPeer && cleanId !== 'me') {
+        try {
+          targetPeer = await client.getInputEntity(cleanId);
+        } catch (e) {
+          targetPeer = cleanId;
+        }
+      }
+
+      const buffer = await client.downloadProfilePhoto(targetPeer || cleanId, { isBig });
       if (buffer && buffer.length > 0) {
-        const blob = new Blob([new Uint8Array(buffer as any)], { type: 'image/jpeg' });
-        const objectUrl = URL.createObjectURL(blob);
-        avatarBlobUrlCache.set(peerId, objectUrl);
-        return objectUrl;
+        const dataUrl = `data:image/jpeg;base64,${Buffer.from(buffer).toString('base64')}`;
+        avatarBlobUrlCache.set(cleanId, dataUrl);
+        return dataUrl;
       }
     } catch (e) {}
 
-    return thumbCache.get(peerId) || '';
+    return '';
   },
 };

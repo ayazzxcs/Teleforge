@@ -14,6 +14,7 @@ import { CommandCenterModal } from './components/CommandCenterModal';
 import { TelegramAuthView } from './components/TelegramAuthView';
 import { TeleForgeLogo } from './components/TeleForgeLogo';
 import { telegramApi, TelegramUser, AuthStatusResponse, TelegramDialog, isAndroidApp } from './services/telegramApi';
+import { avatarService } from './services/avatarService';
 import { mapDialogToChat, mapTelegramMessage, mapTelegramUserToProfile } from './utils/telegramAdapter';
 import { TeleForgeTheme, getInitialTheme, applyTheme, BUILTIN_PRESETS } from './theme/teleforgeTheme';
 import {
@@ -121,6 +122,7 @@ export const App: React.FC = () => {
     setIsSyncingDialogs(true);
     try {
       const realDialogs = await telegramApi.getDialogs(50);
+      avatarService.preloadAvatars(realDialogs.filter((d) => d.hasAvatar).map((d) => d.id));
       const mapped = realDialogs.map(mapDialogToChat);
 
       const finalChats = mapped;
@@ -199,6 +201,11 @@ export const App: React.FC = () => {
           setAuthStatus(status);
           if (status.authorized && status.user) {
             setUser(mapTelegramUserToProfile(status.user));
+            avatarService.loadAvatar('me', true).then((url) => {
+              if (url && isMounted) {
+                setUser((prev) => ({ ...prev, avatar: url }));
+              }
+            });
             loadTelegramDialogs();
             loadTelegramFolders();
             loadTelegramContacts();
@@ -256,6 +263,11 @@ export const App: React.FC = () => {
 
     try {
       const realMsgs = await telegramApi.getMessages(chatId, 50);
+
+      const incomingSenders = realMsgs.filter((m) => !m.out && m.senderId).map((m) => m.senderId!);
+      if (incomingSenders.length > 0) {
+        avatarService.preloadAvatars(incomingSenders);
+      }
 
       setChats((prev) => {
         const targetChat = prev.find((c) => c.id === chatId);
@@ -667,6 +679,11 @@ export const App: React.FC = () => {
   const handleAuthSuccess = async (telegramUser: TelegramUser) => {
     setAuthStatus({ authorized: true, configured: true, user: telegramUser });
     setUser(mapTelegramUserToProfile(telegramUser));
+    avatarService.loadAvatar('me', true).then((url) => {
+      if (url) {
+        setUser((prev) => ({ ...prev, avatar: url }));
+      }
+    });
     await Promise.allSettled([
       loadTelegramDialogs(),
       loadTelegramFolders(),

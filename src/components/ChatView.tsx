@@ -466,6 +466,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               color={chat.avatarColor}
               size="sm"
               className="w-10 h-10"
+              peerId={chat.id}
             />
             {chat.online && chat.type === 'direct' && (
               <div className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-white dark:border-[#17212b] rounded-full" />
@@ -743,6 +744,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       color={senderColor}
                       size="sm"
                       className="w-8 h-8 text-[11px] shadow-xs cursor-pointer hover:opacity-90 transition-opacity"
+                      peerId={message.senderId}
                     />
                   ) : (
                     <div className="w-8" />
