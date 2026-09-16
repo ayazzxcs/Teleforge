@@ -24,6 +24,10 @@ import {
   Image as ImageIcon,
   Trash2,
   Link as LinkIcon,
+  Smartphone,
+  LogOut,
+  Loader2,
+  ChevronRight,
 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { TeleForgeTheme, BUILTIN_PRESETS, applyTheme } from '../theme/teleforgeTheme';
@@ -35,7 +39,7 @@ import {
 } from '../services/teleforgeSettingsMigration';
 import { showToast } from './Toast';
 import { TeleForgeLogo } from './TeleForgeLogo';
-import { telegramApi } from '../services/telegramApi';
+import { telegramApi, TelegramSessionInfo } from '../services/telegramApi';
 import { Avatar } from './Avatar';
 import { avatarService } from '../services/avatarService';
 
@@ -138,6 +142,84 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     window.addEventListener('teleforge:photoSelected', handleNativePhoto);
     return () => window.removeEventListener('teleforge:photoSelected', handleNativePhoto);
   }, []);
+
+  // Privacy & Active Sessions state
+  const [phoneNumberRule, setPhoneNumberRule] = useState<'everybody' | 'contacts' | 'nobody'>('contacts');
+  const [lastSeenRule, setLastSeenRule] = useState<'everybody' | 'contacts' | 'nobody'>('everybody');
+  const [isUpdatingPrivacy, setIsUpdatingPrivacy] = useState<string | null>(null);
+
+  const [isActiveSessionsOpen, setIsActiveSessionsOpen] = useState(false);
+  const [sessionsList, setSessionsList] = useState<TelegramSessionInfo[]>([]);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const [terminatingHash, setTerminatingHash] = useState<string | null>(null);
+  const [isTerminatingAll, setIsTerminatingAll] = useState(false);
+
+  // Sync privacy & active sessions when privacy tab is active
+  React.useEffect(() => {
+    if (activeTab === 'privacy' && isOpen) {
+      telegramApi.getPrivacy('phoneNumber').then(setPhoneNumberRule).catch(() => {});
+      telegramApi.getPrivacy('lastSeen').then(setLastSeenRule).catch(() => {});
+      telegramApi.getAuthorizations().then(setSessionsList).catch(() => {});
+    }
+  }, [activeTab, isOpen]);
+
+  const handleUpdatePrivacy = async (keyType: 'phoneNumber' | 'lastSeen', rule: 'everybody' | 'contacts' | 'nobody') => {
+    setIsUpdatingPrivacy(keyType);
+    try {
+      await telegramApi.setPrivacy(keyType, rule);
+      if (keyType === 'phoneNumber') setPhoneNumberRule(rule);
+      if (keyType === 'lastSeen') setLastSeenRule(rule);
+      showToast(
+        `${keyType === 'phoneNumber' ? 'Phone number' : 'Last seen'} visibility set to ${
+          rule === 'everybody' ? 'Everybody' : rule === 'contacts' ? 'My Contacts' : 'Nobody'
+        }`,
+        'success'
+      );
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to update privacy settings', 'error');
+    } finally {
+      setIsUpdatingPrivacy(null);
+    }
+  };
+
+  const handleOpenSessions = async () => {
+    setIsActiveSessionsOpen(true);
+    setIsLoadingSessions(true);
+    try {
+      const list = await telegramApi.getAuthorizations();
+      setSessionsList(list);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to load active sessions', 'error');
+    } finally {
+      setIsLoadingSessions(false);
+    }
+  };
+
+  const handleTerminateSession = async (hash: string) => {
+    setTerminatingHash(hash);
+    try {
+      await telegramApi.terminateSession(hash);
+      setSessionsList((prev) => prev.filter((s) => s.hash !== hash));
+      showToast('Session terminated successfully', 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to terminate session', 'error');
+    } finally {
+      setTerminatingHash(null);
+    }
+  };
+
+  const handleTerminateAllOtherSessions = async () => {
+    setIsTerminatingAll(true);
+    try {
+      await telegramApi.terminateAllOtherSessions();
+      setSessionsList((prev) => prev.filter((s) => s.current));
+      showToast('All other sessions terminated on Telegram cloud', 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to terminate other sessions', 'error');
+    } finally {
+      setIsTerminatingAll(false);
+    }
+  };
 
   React.useEffect(() => {
     if (isOpen) {
@@ -938,28 +1020,94 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60 flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-gray-800 dark:text-gray-200">Phone Number Visibility</div>
-                  <div className="text-xs text-gray-500">My Contacts</div>
+              {/* Phone Number Visibility */}
+              <div className="p-3.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200/60 dark:border-gray-700/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Key size={16} className="text-[#8B1E22] dark:text-rose-400" />
+                    <div>
+                      <div className="font-semibold text-gray-800 dark:text-gray-200 text-xs sm:text-sm">Phone Number Visibility</div>
+                      <div className="text-[11px] text-gray-500">Who can see your phone number</div>
+                    </div>
+                  </div>
+                  {isUpdatingPrivacy === 'phoneNumber' && (
+                    <Loader2 size={15} className="animate-spin text-teleforge-primary" />
+                  )}
                 </div>
-                <Key size={16} className="text-gray-400" />
+
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  {(['everybody', 'contacts', 'nobody'] as const).map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      disabled={isUpdatingPrivacy === 'phoneNumber'}
+                      onClick={() => handleUpdatePrivacy('phoneNumber', opt)}
+                      className={`py-1.5 px-2 rounded-lg text-xs font-medium transition-all text-center border cursor-pointer ${
+                        phoneNumberRule === opt
+                          ? 'bg-teleforge-primary text-white border-teleforge-primary shadow-xs font-semibold'
+                          : 'bg-white dark:bg-gray-700/60 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                      }`}
+                    >
+                      {opt === 'everybody' ? 'Everybody' : opt === 'contacts' ? 'My Contacts' : 'Nobody'}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60 flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-gray-800 dark:text-gray-200">Last Seen & Online</div>
-                  <div className="text-xs text-gray-500">Everybody</div>
+              {/* Last Seen & Online */}
+              <div className="p-3.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200/60 dark:border-gray-700/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Shield size={16} className="text-[#8B1E22] dark:text-rose-400" />
+                    <div>
+                      <div className="font-semibold text-gray-800 dark:text-gray-200 text-xs sm:text-sm">Last Seen & Online</div>
+                      <div className="text-[11px] text-gray-500">Who can see your last seen and online timestamp</div>
+                    </div>
+                  </div>
+                  {isUpdatingPrivacy === 'lastSeen' && (
+                    <Loader2 size={15} className="animate-spin text-teleforge-primary" />
+                  )}
                 </div>
-                <Shield size={16} className="text-gray-400" />
+
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  {(['everybody', 'contacts', 'nobody'] as const).map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      disabled={isUpdatingPrivacy === 'lastSeen'}
+                      onClick={() => handleUpdatePrivacy('lastSeen', opt)}
+                      className={`py-1.5 px-2 rounded-lg text-xs font-medium transition-all text-center border cursor-pointer ${
+                        lastSeenRule === opt
+                          ? 'bg-teleforge-primary text-white border-teleforge-primary shadow-xs font-semibold'
+                          : 'bg-white dark:bg-gray-700/60 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                      }`}
+                    >
+                      {opt === 'everybody' ? 'Everybody' : opt === 'contacts' ? 'My Contacts' : 'Nobody'}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60 flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-gray-800 dark:text-gray-200">Active Sessions</div>
-                  <div className="text-xs text-gray-500">1 session (This browser)</div>
+              {/* Active Sessions Navigation Card */}
+              <div
+                onClick={handleOpenSessions}
+                className="p-3.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200/60 dark:border-gray-700/60 flex items-center justify-between cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-gray-700 dark:text-gray-200 group-hover:bg-teleforge-primary group-hover:text-white transition-colors">
+                    <Laptop size={16} />
+                  </div>
+                  <div>
+                    <div className="font-semibold text-gray-800 dark:text-gray-200 text-xs sm:text-sm">Active Sessions & Devices</div>
+                    <div className="text-[11px] text-gray-500">
+                      {sessionsList.length > 0 ? `${sessionsList.length} devices connected` : 'View and terminate devices'}
+                    </div>
+                  </div>
                 </div>
-                <Laptop size={16} className="text-gray-400" />
+                <div className="flex items-center gap-1.5 text-xs text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-200">
+                  <span className="font-medium">Manage</span>
+                  <ChevronRight size={16} />
+                </div>
               </div>
             </div>
           )}
@@ -1242,6 +1390,159 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 ) : (
                   'Set as Profile Photo'
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          ACTIVE SESSIONS MODAL
+          ========================================================================= */}
+      {isActiveSessionsOpen && (
+        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div
+            className="w-full max-w-lg bg-white dark:bg-[#17212b] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="px-5 py-3.5 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between bg-gray-50/70 dark:bg-gray-800/40">
+              <div className="flex items-center gap-2.5">
+                <Laptop size={18} className="text-teleforge-primary" />
+                <h3 className="font-bold text-gray-900 dark:text-white text-sm sm:text-base">
+                  Active Sessions & Devices
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsActiveSessionsOpen(false)}
+                className="p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Content List */}
+            <div className="p-4 overflow-y-auto space-y-3 flex-1 custom-scrollbar">
+              {isLoadingSessions ? (
+                <div className="py-12 flex flex-col items-center justify-center gap-2 text-gray-400">
+                  <Loader2 size={24} className="animate-spin text-teleforge-primary" />
+                  <span className="text-xs">Loading active sessions from Telegram...</span>
+                </div>
+              ) : sessionsList.length === 0 ? (
+                <div className="py-12 text-center text-xs text-gray-400">
+                  No active sessions found.
+                </div>
+              ) : (
+                <>
+                  {/* Terminate All Other Sessions button */}
+                  {sessionsList.some((s) => !s.current) && (
+                    <div className="pb-1">
+                      <button
+                        type="button"
+                        disabled={isTerminatingAll}
+                        onClick={handleTerminateAllOtherSessions}
+                        className="w-full py-2 px-3 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/20 text-xs font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-50 cursor-pointer"
+                      >
+                        {isTerminatingAll ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <LogOut size={14} />
+                        )}
+                        <span>Terminate All Other Sessions</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Sessions List */}
+                  {sessionsList.map((session, idx) => {
+                    const isMobile =
+                      session.platform.toLowerCase().includes('android') ||
+                      session.platform.toLowerCase().includes('ios') ||
+                      session.deviceModel.toLowerCase().includes('phone');
+
+                    return (
+                      <div
+                        key={session.hash || idx}
+                        className={`p-3.5 rounded-xl border transition-all ${
+                          session.current
+                            ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-500/30'
+                            : 'bg-gray-50/70 dark:bg-gray-800/40 border-gray-200/80 dark:border-gray-700/60'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-3">
+                            <div
+                              className={`p-2 rounded-xl shrink-0 mt-0.5 ${
+                                session.current
+                                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                  : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                              }`}
+                            >
+                              {isMobile ? <Smartphone size={18} /> : <Laptop size={18} />}
+                            </div>
+
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-xs sm:text-sm text-gray-900 dark:text-white">
+                                  {session.deviceModel}
+                                </span>
+                                {session.current && (
+                                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                                    Current Session
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                {session.appName} {session.appVersion} &bull; {session.platform} {session.systemVersion}
+                              </div>
+
+                              <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
+                                <span>{session.ip}</span>
+                                {session.country && <span>&bull; {session.country}</span>}
+                                {session.dateActive > 0 && (
+                                  <span>
+                                    &bull; Active {new Date(session.dateActive * 1000).toLocaleDateString()}{' '}
+                                    {new Date(session.dateActive * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Terminate Action for non-current sessions */}
+                          {!session.current && (
+                            <button
+                              type="button"
+                              disabled={terminatingHash === session.hash}
+                              onClick={() => handleTerminateSession(session.hash)}
+                              className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-500/10 transition-colors shrink-0 cursor-pointer"
+                              title="Terminate Session"
+                            >
+                              {terminatingHash === session.hash ? (
+                                <Loader2 size={16} className="animate-spin text-red-500" />
+                              ) : (
+                                <Trash2 size={16} />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsActiveSessionsOpen(false)}
+                className="px-4 py-1.5 rounded-xl bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-xs font-semibold text-gray-800 dark:text-gray-200 transition-colors cursor-pointer"
+              >
+                Close
               </button>
             </div>
           </div>

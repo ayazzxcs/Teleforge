@@ -12,6 +12,7 @@ import {
   TelegramUser,
   TelegramDialog,
   TelegramMessage,
+  TelegramSessionInfo,
   AuthStatusResponse,
   SendCodeResponse,
   SignInResponse,
@@ -1443,6 +1444,101 @@ export const telegramDirectClient = {
     } catch (err: any) {
       console.warn('[MTProto-Direct] downloadMessageMedia error:', err?.message || err);
       return null;
+    }
+  },
+
+  async getPrivacy(keyType: 'lastSeen' | 'phoneNumber'): Promise<'everybody' | 'contacts' | 'nobody'> {
+    try {
+      const client = await getDirectClient();
+      const key = keyType === 'lastSeen'
+        ? new Api.InputPrivacyKeyStatusTimestamp()
+        : new Api.InputPrivacyKeyPhoneNumber();
+
+      const res: any = await client.invoke(new Api.account.GetPrivacy({ key }));
+      const rules = res?.rules || [];
+      for (const rule of rules) {
+        const name = rule?.className || rule?._ || '';
+        if (name.includes('AllowAll')) return 'everybody';
+        if (name.includes('AllowContacts')) return 'contacts';
+        if (name.includes('DisallowAll')) return 'nobody';
+      }
+      return keyType === 'lastSeen' ? 'everybody' : 'contacts';
+    } catch (err: any) {
+      console.warn('[MTProto-Direct] getPrivacy error:', err?.message || err);
+      return keyType === 'lastSeen' ? 'everybody' : 'contacts';
+    }
+  },
+
+  async setPrivacy(keyType: 'lastSeen' | 'phoneNumber', rule: 'everybody' | 'contacts' | 'nobody'): Promise<{ success: boolean }> {
+    try {
+      const client = await getDirectClient();
+      const key = keyType === 'lastSeen'
+        ? new Api.InputPrivacyKeyStatusTimestamp()
+        : new Api.InputPrivacyKeyPhoneNumber();
+
+      let inputRule: any;
+      if (rule === 'everybody') {
+        inputRule = new Api.InputPrivacyValueAllowAll();
+      } else if (rule === 'contacts') {
+        inputRule = new Api.InputPrivacyValueAllowContacts();
+      } else {
+        inputRule = new Api.InputPrivacyValueDisallowAll();
+      }
+
+      await client.invoke(new Api.account.SetPrivacy({ key, rules: [inputRule] }));
+      return { success: true };
+    } catch (err: any) {
+      console.error('[MTProto-Direct] setPrivacy error:', err?.message || err);
+      throw new Error(err?.message || 'Failed to update privacy settings');
+    }
+  },
+
+  async getAuthorizations(): Promise<TelegramSessionInfo[]> {
+    try {
+      const client = await getDirectClient();
+      const res: any = await client.invoke(new Api.account.GetAuthorizations());
+      const rawList = res?.authorizations || [];
+      const mapped: TelegramSessionInfo[] = rawList.map((auth: any) => ({
+        hash: auth.hash ? auth.hash.toString() : '',
+        deviceModel: auth.deviceModel || 'Unknown Device',
+        platform: auth.platform || '',
+        systemVersion: auth.systemVersion || '',
+        appName: auth.appName || 'TeleForge Client',
+        appVersion: auth.appVersion || '1.0.0',
+        dateActive: Number(auth.dateActive || 0),
+        dateCreated: Number(auth.dateCreated || 0),
+        ip: auth.ip || '',
+        country: auth.country || '',
+        region: auth.region || '',
+        current: Boolean(auth.current),
+        officialApp: Boolean(auth.officialApp),
+      }));
+      return mapped;
+    } catch (err: any) {
+      console.error('[MTProto-Direct] getAuthorizations error:', err?.message || err);
+      return [];
+    }
+  },
+
+  async terminateSession(hash: string): Promise<{ success: boolean }> {
+    try {
+      const client = await getDirectClient();
+      await client.invoke(new Api.account.ResetAuthorization({ hash: bigInt(hash) as any }));
+      return { success: true };
+    } catch (err: any) {
+      console.error('[MTProto-Direct] terminateSession error:', err?.message || err);
+      throw new Error(err?.message || 'Failed to terminate session');
+    }
+  },
+
+  async terminateAllOtherSessions(): Promise<{ success: boolean }> {
+    try {
+      const client = await getDirectClient();
+      await client.invoke(new Api.auth.ResetAuthorizations());
+      return { success: true };
+    } catch (err: any) {
+      console.error('[MTProto-Direct] terminateAllOtherSessions error:', err?.message || err);
+      throw new Error(err?.message || 'Failed to terminate other sessions');
     }
   },
 };

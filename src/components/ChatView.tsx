@@ -41,6 +41,7 @@ import {
 import { Chat, Message, Reaction, Attachment } from '../types';
 import { AudioPlayer } from './AudioPlayer';
 import { Avatar } from './Avatar';
+import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
 import { mediaService } from '../services/mediaService';
 import { getAvatarColor } from '../utils/telegramAdapter';
 import {
@@ -190,14 +191,13 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
 
   if (isPlaying && videoUrl) {
     return (
-      <div className="mb-2 rounded-xl overflow-hidden shadow-xs relative bg-black max-h-80">
-        <video
+      <div className="mb-2 rounded-xl overflow-hidden shadow-xs relative bg-black max-h-80" onClick={(e) => e.stopPropagation()}>
+        <TeleForgeVideoPlayer
           src={videoUrl}
           poster={attachment.thumbUrl}
-          controls
-          autoPlay
-          playsInline
-          className="max-h-80 w-full object-contain"
+          title={attachment.name}
+          autoPlay={true}
+          maxHeightClass="max-h-80"
         />
       </div>
     );
@@ -650,7 +650,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <ArrowLeft size={20} />
           </button>
 
-          <div className="relative">
+          <div
+            className="relative cursor-pointer transition-transform hover:scale-105 active:scale-95"
+            onClick={(e) => {
+              if (chat.type === 'direct' || chat.type === 'bot') {
+                e.stopPropagation();
+                const picUrl = chat.avatar || chat.thumbUrl;
+                if (picUrl) {
+                  onOpenMediaModal({
+                    type: 'image',
+                    url: picUrl,
+                    thumbUrl: chat.thumbUrl,
+                    name: `${chat.name}'s Profile Photo`,
+                  });
+                } else {
+                  onToggleInfoDrawer();
+                }
+              } else {
+                e.stopPropagation();
+                onToggleInfoDrawer();
+              }
+            }}
+            title={chat.type === 'direct' || chat.type === 'bot' ? 'View Profile Photo' : 'View Channel / Group Info'}
+          >
             <Avatar
               src={chat.avatar}
               previewSrc={chat.thumbUrl}
@@ -927,7 +949,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
             >
               {/* Incoming Avatar (Left side of incoming message) - Only in Group Chats */}
               {isGroupChat && !isOut && (
-                <div className="shrink-0 mb-0.5 w-8 h-8">
+                <div
+                  className="shrink-0 mb-0.5 w-8 h-8 cursor-pointer transition-transform hover:scale-105 active:scale-95"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const pic = avatarSrc || message.senderThumbUrl;
+                    if (pic) {
+                      onOpenMediaModal({
+                        type: 'image',
+                        url: pic,
+                        thumbUrl: message.senderThumbUrl,
+                        name: `${senderDisplayName}'s Profile Photo`,
+                      });
+                    }
+                  }}
+                  title={`View ${senderDisplayName}'s Profile Photo`}
+                >
                   {isLastInGroup ? (
                     <Avatar
                       src={avatarSrc}
@@ -935,7 +972,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       name={senderDisplayName}
                       color={senderColor}
                       size="sm"
-                      className="w-8 h-8 text-[11px] shadow-xs cursor-pointer hover:opacity-90 transition-opacity"
+                      className="w-8 h-8 text-[11px] shadow-xs"
                       peerId={message.senderId}
                     />
                   ) : (
@@ -960,6 +997,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   <div
                     style={{ color: chatConfig.chatAccent || senderColor }}
                     className="text-xs font-semibold mb-1 cursor-pointer hover:underline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const pic = avatarSrc || message.senderThumbUrl;
+                      if (pic) {
+                        onOpenMediaModal({
+                          type: 'image',
+                          url: pic,
+                          thumbUrl: message.senderThumbUrl,
+                          name: `${senderDisplayName}'s Profile Photo`,
+                        });
+                      }
+                    }}
+                    title={`View ${senderDisplayName}'s Profile Photo`}
                   >
                     {senderDisplayName}
                   </div>

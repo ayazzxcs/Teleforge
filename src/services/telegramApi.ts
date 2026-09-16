@@ -88,6 +88,22 @@ export interface SignInResponse {
   message?: string;
 }
 
+export interface TelegramSessionInfo {
+  hash: string;
+  deviceModel: string;
+  platform: string;
+  systemVersion: string;
+  appName: string;
+  appVersion: string;
+  dateActive: number;
+  dateCreated: number;
+  ip: string;
+  country: string;
+  region: string;
+  current: boolean;
+  officialApp?: boolean;
+}
+
 declare global {
   interface Window {
     __IS_TELEFORGE_ANDROID__?: boolean;
@@ -587,5 +603,25 @@ export const telegramApi = {
     options?: { fullRes?: boolean; fullVideo?: boolean }
   ): Promise<{ dataUrl: string; mimeType: string } | null> {
     return telegramDirectClient.downloadMessageMedia(chatId, messageId, options);
+  },
+
+  async getPrivacy(keyType: 'lastSeen' | 'phoneNumber'): Promise<'everybody' | 'contacts' | 'nobody'> {
+    return telegramDirectClient.getPrivacy(keyType);
+  },
+
+  async setPrivacy(keyType: 'lastSeen' | 'phoneNumber', rule: 'everybody' | 'contacts' | 'nobody'): Promise<{ success: boolean }> {
+    return telegramDirectClient.setPrivacy(keyType, rule);
+  },
+
+  async getAuthorizations(): Promise<TelegramSessionInfo[]> {
+    return telegramDirectClient.getAuthorizations();
+  },
+
+  async terminateSession(hash: string): Promise<{ success: boolean }> {
+    return telegramDirectClient.terminateSession(hash);
+  },
+
+  async terminateAllOtherSessions(): Promise<{ success: boolean }> {
+    return telegramDirectClient.terminateAllOtherSessions();
   },
 };

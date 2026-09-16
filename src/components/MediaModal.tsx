@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Attachment } from '../types';
 import { showToast } from './Toast';
+import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
 
 interface MediaModalProps {
   attachment: Attachment | null;
@@ -161,15 +162,18 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
           )}
 
           {attachment.type === 'video' && (
-            <video
-              src={attachment.url}
-              poster={attachment.thumbUrl}
-              controls
-              autoPlay
-              playsInline
+            <div
               style={{ transform: `scale(${zoom})`, transition: 'transform 0.15s ease-out' }}
-              className="max-h-[82vh] max-w-[95%] w-auto object-contain rounded-xl shadow-2xl transition-transform"
-            />
+              className="max-h-[82vh] max-w-[95%] w-full flex items-center justify-center transition-transform"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <TeleForgeVideoPlayer
+                src={attachment.url}
+                poster={attachment.thumbUrl}
+                title={attachment.name}
+                autoPlay={true}
+              />
+            </div>
           )}
 
           {/* Info Card Overlay */}
