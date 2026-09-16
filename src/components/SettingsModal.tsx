@@ -171,12 +171,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       let result;
       if (photoSourceTab === 'upload') {
-        if (!selectedFile || !previewPhoto) {
+        if (!selectedFile && !previewPhoto) {
           throw new Error('Please select an image file first.');
         }
         result = await telegramApi.uploadProfilePhoto({
-          fileBase64: previewPhoto,
-          filename: selectedFile.name,
+          file: selectedFile || undefined,
+          fileBase64: previewPhoto || undefined,
+          filename: selectedFile?.name || 'profile.jpg',
         });
       } else {
         if (!photoUrlInput.trim()) {
@@ -1094,7 +1095,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <input
                     type="file"
                     ref={photoFileInputRef}
-                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    accept="image/*"
                     onChange={handleFileChange}
                     className="hidden"
                   />

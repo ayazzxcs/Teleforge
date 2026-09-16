@@ -164,7 +164,42 @@ class MainActivity : ComponentActivity() {
                 view: WebView?,
                 request: WebResourceRequest?
             ): WebResourceResponse? {
-                request?.url?.let { uri ->
+                val uri = request?.url
+                if (uri != null) {
+                    // Native Image Proxy: downloads remote images for profile photos / media without CORS restrictions
+                    if (uri.host == "appassets.androidplatform.net" && uri.path == "/api/proxy-image") {
+                        val targetUrl = uri.getQueryParameter("url")
+                        if (!targetUrl.isNullOrBlank()) {
+                            try {
+                                val urlObj = java.net.URL(targetUrl)
+                                val connection = urlObj.openConnection() as java.net.HttpURLConnection
+                                connection.instanceFollowRedirects = true
+                                connection.connectTimeout = 10000
+                                connection.readTimeout = 15000
+                                connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android; TeleForge/1.0)")
+                                connection.connect()
+
+                                val rawType = connection.contentType ?: "image/jpeg"
+                                val mimeType = rawType.substringBefore(';').trim()
+                                val headers = mapOf(
+                                    "Access-Control-Allow-Origin" to "*",
+                                    "Access-Control-Allow-Methods" to "GET, OPTIONS",
+                                    "Access-Control-Allow-Headers" to "*"
+                                )
+                                return WebResourceResponse(
+                                    mimeType,
+                                    "UTF-8",
+                                    connection.responseCode,
+                                    connection.responseMessage ?: "OK",
+                                    headers,
+                                    connection.inputStream
+                                )
+                            } catch (e: Exception) {
+                                // Fall through to assetLoader
+                            }
+                        }
+                    }
+
                     val response = assetLoader.shouldInterceptRequest(uri)
                     if (response != null) return response
                 }
@@ -215,9 +250,21 @@ class MainActivity : ComponentActivity() {
                 fileChooserCallback?.onReceiveValue(null)
                 fileChooserCallback = filePathCallback
 
-                val intent = fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
-                    type = "*/*"
-                    addCategory(Intent.CATEGORY_OPENABLE)
+                val intent = try {
+                    val base = fileChooserParams?.createIntent()
+                    if (base != null) {
+                        base
+                    } else {
+                        Intent(Intent.ACTION_GET_CONTENT).apply {
+                            type = "*/*"
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "*/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }
                 }
 
                 return try {

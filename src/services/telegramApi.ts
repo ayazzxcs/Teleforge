@@ -546,30 +546,37 @@ export const telegramApi = {
   },
 
   async uploadProfilePhoto(params: {
+    file?: File;
     fileBase64?: string;
     filename?: string;
     url?: string;
   }): Promise<{ success: boolean; user: TelegramUser; avatarUrl: string }> {
-    const res = await fetch(`${getApiBase()}/profile/photo`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to upload profile photo to Telegram');
+    if (isAndroidApp()) {
+      return telegramDirectClient.uploadProfilePhoto(params);
     }
-    return data;
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/profile/photo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      }, 15000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.uploadProfilePhoto(params);
   },
 
   async deleteProfilePhoto(): Promise<{ success: boolean; user: TelegramUser }> {
-    const res = await fetch(`${getApiBase()}/profile/photo`, {
-      method: 'DELETE',
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to remove profile photo from Telegram');
+    if (isAndroidApp()) {
+      return telegramDirectClient.deleteProfilePhoto();
     }
-    return data;
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/profile/photo`, {
+        method: 'DELETE',
+      }, 10000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.deleteProfilePhoto();
   },
 };

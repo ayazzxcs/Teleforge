@@ -5,6 +5,8 @@
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { strippedPhotoToJpg } from 'telegram/Utils.js';
+import { CustomFile } from 'telegram/client/uploads.js';
+import bigInt from 'big-integer';
 import { TeleForgeDialogFilter } from '../types';
 import {
   TelegramUser,
@@ -1124,4 +1126,226 @@ export const telegramDirectClient = {
 
     return '';
   },
+
+  /**
+   * Upload user profile photo directly via MTProto
+   */
+  async uploadProfilePhoto(params: {
+    file?: File;
+    fileBase64?: string;
+    filename?: string;
+    url?: string;
+  }): Promise<{ success: boolean; user: TelegramUser; avatarUrl: string }> {
+    const client = await getDirectClient();
+    const isAuth = await client.isUserAuthorized();
+    if (!isAuth) {
+      throw new Error('Not authorized with Telegram MTProto');
+    }
+
+    let buffer: Buffer;
+    let name = params.filename || 'profile.jpg';
+
+    if (params.file) {
+      const arrayBuf = await params.file.arrayBuffer();
+      buffer = Buffer.from(arrayBuf);
+      if (params.file.name) name = params.file.name;
+    } else if (params.fileBase64) {
+      const cleanBase64 = params.fileBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+      buffer = Buffer.from(cleanBase64, 'base64');
+    } else if (params.url) {
+      buffer = await downloadImageFromUrl(params.url);
+      try {
+        const urlObj = new URL(params.url);
+        const base = urlObj.pathname.split('/').pop();
+        if (base && /\.(jpe?g|png|webp|gif)$/i.test(base)) {
+          name = base;
+        }
+      } catch (e) {}
+    } else {
+      throw new Error('Either an image file, base64 data, or a valid URL must be provided');
+    }
+
+    if (!buffer || buffer.length < 50) {
+      throw new Error('Image data is empty or invalid');
+    }
+
+    // Wrap buffer in CustomFile for GramJS
+    const customFile = new CustomFile(name, buffer.length, '', buffer);
+    const uploadedFile = await client.uploadFile({
+      file: customFile,
+      workers: 1,
+    });
+
+    await client.invoke(
+      new Api.photos.UploadProfilePhoto({
+        file: uploadedFile,
+      })
+    );
+
+    console.log('[MTProto-Direct] Successfully uploaded profile photo to Telegram cloud');
+
+    // Refresh profile
+    const me: any = await client.getMe();
+    const myId = String(me.id);
+
+    // Download the new high-res photo directly
+    let newAvatarUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+    try {
+      const highResBuf = await withTimeout(client.downloadProfilePhoto('me', { isBig: true }), 6000);
+      if (highResBuf && highResBuf.length > 0) {
+        newAvatarUrl = `data:image/jpeg;base64,${Buffer.from(highResBuf).toString('base64')}`;
+      }
+    } catch (e) {}
+
+    // Update avatar caches
+    avatarBlobUrlCache.set('me', newAvatarUrl);
+    avatarBlobUrlCache.set(myId, newAvatarUrl);
+
+    let bio = '';
+    try {
+      const full: any = await client.invoke(new Api.users.GetFullUser({ id: 'me' }));
+      bio = full?.fullUser?.about || full?.about || '';
+    } catch (e) {}
+
+    const sUser = serializeUser(me);
+    if (sUser) {
+      sUser.bio = bio;
+      sUser.avatar = newAvatarUrl;
+      sUser.hasAvatar = true;
+      try {
+        localStorage.setItem(USER_CACHE_KEY, JSON.stringify(sUser));
+      } catch (e) {}
+    }
+
+    return {
+      success: true,
+      user: sUser!,
+      avatarUrl: newAvatarUrl,
+    };
+  },
+
+  /**
+   * Delete user profile photo directly via MTProto
+   */
+  async deleteProfilePhoto(): Promise<{ success: boolean; user: TelegramUser }> {
+    const client = await getDirectClient();
+    const isAuth = await client.isUserAuthorized();
+    if (!isAuth) {
+      throw new Error('Not authorized with Telegram MTProto');
+    }
+
+    const me = await client.getMe();
+    const myId = String(me.id);
+
+    try {
+      const userPhotos: any = await client.invoke(
+        new Api.photos.GetUserPhotos({
+          userId: 'me' as any,
+          offset: 0,
+          maxId: bigInt(0) as any,
+          limit: 1,
+        })
+      );
+
+      if (userPhotos && userPhotos.photos && userPhotos.photos.length > 0) {
+        const photo: any = userPhotos.photos[0];
+        if (photo.id) {
+          await client.invoke(
+            new Api.photos.DeletePhotos({
+              id: [
+                new Api.InputPhoto({
+                  id: photo.id,
+                  accessHash: photo.accessHash,
+                  fileReference: photo.fileReference,
+                }),
+              ],
+            })
+          );
+          console.log('[MTProto-Direct] Successfully deleted profile photo on Telegram cloud');
+        }
+      }
+    } catch (err: any) {
+      console.warn('[MTProto-Direct] Error deleting profile photo:', err.message);
+      throw new Error(err.message || 'Failed to remove profile photo from Telegram');
+    }
+
+    avatarBlobUrlCache.delete('me');
+    avatarBlobUrlCache.delete(myId);
+
+    const meAfter = await client.getMe();
+    const sUser = serializeUser(meAfter);
+    if (sUser) {
+      sUser.avatar = '';
+      sUser.hasAvatar = false;
+      try {
+        localStorage.setItem(USER_CACHE_KEY, JSON.stringify(sUser));
+      } catch (e) {}
+    }
+
+    return {
+      success: true,
+      user: sUser!,
+    };
+  },
 };
+
+/**
+ * Download an image from an HTTP/HTTPS URL into a Buffer.
+ * Supports Android WebView native proxy, direct fetch, and CORS fallback proxies.
+ */
+async function downloadImageFromUrl(url: string): Promise<Buffer> {
+  const cleanUrl = url.trim();
+  if (!cleanUrl) {
+    throw new Error('Image URL is empty');
+  }
+
+  // 1. If running inside Android WebView, use the native proxy route (bypasses browser CORS completely)
+  if (
+    typeof window !== 'undefined' &&
+    ((window as any).__IS_TELEFORGE_ANDROID__ ||
+      window.location.origin.includes('androidplatform.net') ||
+      (typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.includes('TeleForgeAndroid')))
+  ) {
+    try {
+      const nativeProxy = `https://appassets.androidplatform.net/api/proxy-image?url=${encodeURIComponent(cleanUrl)}`;
+      const resp = await withTimeout(fetch(nativeProxy), 12000);
+      if (resp.ok) {
+        const arr = await resp.arrayBuffer();
+        if (arr.byteLength > 50) {
+          return Buffer.from(arr);
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 2. Direct fetch (works if remote server has CORS enabled or is same-origin)
+  try {
+    const resp = await withTimeout(fetch(cleanUrl), 8000);
+    if (resp.ok) {
+      const arr = await resp.arrayBuffer();
+      if (arr.byteLength > 50) {
+        return Buffer.from(arr);
+      }
+    }
+  } catch (e) {}
+
+  // 3. Fallback: Public CORS proxies for web/desktop browser
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(cleanUrl)}`,
+    `https://corsproxy.io/?${encodeURIComponent(cleanUrl)}`,
+  ];
+
+  for (const proxyUrl of proxies) {
+    try {
+      const resp = await withTimeout(fetch(proxyUrl), 10000);
+      if (resp.ok) {
+        const arr = await resp.arrayBuffer();
+        if (arr.byteLength > 50) {
+          return Buffer.from(arr);
+        }
+      }
+    } catch (e) {}
+  }
+
+  throw new Error('Could not download image from the provided URL. Please verify the URL or try uploading the photo from local storage.');
+}
