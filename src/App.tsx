@@ -186,7 +186,9 @@ export const App: React.FC = () => {
   // Initial Auth Status Check
   useEffect(() => {
     let isMounted = true;
-    const checkAuth = async () => {
+    let retryTimer: any = null;
+
+    const checkAuth = async (isRetry = false) => {
       setIsLoadingAuth(true);
       try {
         const status = await telegramApi.getAuthStatus();
@@ -206,9 +208,18 @@ export const App: React.FC = () => {
           }
         }
       } catch (e: any) {
-        console.error('[MTProto] Auth check error:', e.message);
+        console.warn('[MTProto] Auth check error:', e.message);
+        // If initial check failed, retry once after a short delay in case backend is warming up
+        if (!isRetry && isMounted) {
+          retryTimer = setTimeout(() => {
+            if (isMounted) {
+              checkAuth(true);
+            }
+          }, 1500);
+          return;
+        }
       } finally {
-        if (isMounted) {
+        if (isMounted && (!retryTimer || isRetry)) {
           setIsLoadingAuth(false);
         }
       }
@@ -217,6 +228,7 @@ export const App: React.FC = () => {
     checkAuth();
     return () => {
       isMounted = false;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [loadTelegramDialogs, loadTelegramFolders, loadTelegramContacts]);
 

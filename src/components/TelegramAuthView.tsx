@@ -16,8 +16,14 @@ function formatAuthError(err: any): string {
   if (msg.includes('PHONE_NUMBER_INVALID')) {
     return 'Invalid phone number format. Please include your country code (e.g. +1 234 567 8900).';
   }
-  if (msg.includes('FLOOD_WAIT')) {
+  if (msg.includes('PHONE_NUMBER_UNREGISTERED')) {
+    return 'This phone number is not registered on Telegram. Please sign up using the official Telegram app first.';
+  }
+  if (msg.includes('PHONE_NUMBER_FLOOD') || msg.includes('FLOOD_WAIT')) {
     return 'Too many login attempts. Please wait a few moments and try again.';
+  }
+  if (msg.includes('PHONE_NUMBER_BANNED')) {
+    return 'This phone number has been banned from Telegram.';
   }
   if (msg.includes('PHONE_CODE_INVALID')) {
     return 'The verification code is incorrect. Check the code sent to your Telegram app.';
@@ -40,7 +46,7 @@ export const TelegramAuthView: React.FC<TelegramAuthViewProps> = ({
   configuredApiId,
   onExploreDemo,
 }) => {
-  const [step, setStep] = useState<'welcome' | 'phone' | 'code' | '2fa' | 'config'>(() => {
+  const [step, setStep] = useState<'welcome' | 'phone' | 'code' | '2fa'>(() => {
     try {
       if (localStorage.getItem('teleforge_welcome_seen') !== 'true') {
         return 'welcome';
@@ -53,17 +59,6 @@ export const TelegramAuthView: React.FC<TelegramAuthViewProps> = ({
   const [password2FA, setPassword2FA] = useState('');
   const [phoneCodeHash, setPhoneCodeHash] = useState('');
   const [isCodeViaApp, setIsCodeViaApp] = useState(true);
-
-  // Manual credentials form (if ever needed to override)
-  const [customApiId, setCustomApiId] = useState(() => {
-    return configuredApiId ? String(configuredApiId) : (localStorage.getItem('teleforge_api_id') || '');
-  });
-  const [customApiHash, setCustomApiHash] = useState(() => {
-    try {
-      localStorage.removeItem('teleforge_api_hash');
-    } catch (e) {}
-    return '';
-  });
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -149,30 +144,6 @@ export const TelegramAuthView: React.FC<TelegramAuthViewProps> = ({
       if (res.user) {
         onSuccess(res.user);
       }
-    } catch (err: any) {
-      setErrorMessage(formatAuthError(err));
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleSaveCustomCredentials = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!customApiId.trim() || !customApiHash.trim()) {
-      setErrorMessage('Both API ID and API Hash are required');
-      return;
-    }
-
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      await telegramApi.setConfig(parseInt(customApiId.trim(), 10), customApiHash.trim());
-      try {
-        localStorage.setItem('teleforge_api_id', customApiId.trim());
-        localStorage.removeItem('teleforge_api_hash');
-      } catch (e) {}
-      setStep('phone');
-      setStatusNote('Telegram API credentials configured successfully.');
     } catch (err: any) {
       setErrorMessage(formatAuthError(err));
     } finally {
@@ -297,19 +268,12 @@ export const TelegramAuthView: React.FC<TelegramAuthViewProps> = ({
               </button>
             </div>
 
-            {/* Credentials Info Footer */}
-            <div className="pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between text-xs text-gray-400">
+            {/* MTProto Status Footer */}
+            <div className="pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-center text-xs text-gray-400">
               <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
                 <CheckCircle size={14} />
-                <span>API Credentials Active</span>
+                <span>Direct MTProto 2.0 Connection</span>
               </div>
-              <button
-                type="button"
-                onClick={() => setStep('config')}
-                className="text-teleforge-primary hover:underline font-medium"
-              >
-                Change API
-              </button>
             </div>
           </form>
         )}
@@ -434,55 +398,6 @@ export const TelegramAuthView: React.FC<TelegramAuthViewProps> = ({
               className="w-full py-2 text-xs text-gray-500 dark:text-gray-400 hover:text-teleforge-primary transition-colors"
             >
               Back to code verification
-            </button>
-          </form>
-        )}
-
-        {/* CONFIG STEP (Edit API Credentials) */}
-        {step === 'config' && (
-          <form onSubmit={handleSaveCustomCredentials} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                Telegram API ID (api_id)
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. 1234567"
-                value={customApiId}
-                onChange={(e) => setCustomApiId(e.target.value)}
-                disabled={isLoading}
-                className="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-[#1c2633] border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-hidden focus:border-teleforge-primary transition-colors"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                Telegram API Hash (api_hash)
-              </label>
-              <input
-                type="password"
-                placeholder="32-character hexadecimal string"
-                value={customApiHash}
-                onChange={(e) => setCustomApiHash(e.target.value)}
-                disabled={isLoading}
-                className="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-[#1c2633] border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-hidden focus:border-teleforge-primary transition-colors font-mono"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-2.5 px-4 rounded-xl bg-teleforge-primary hover:bg-teleforge-hover disabled:opacity-50 text-teleforge-cream text-sm font-semibold shadow-md shadow-red-950/25 flex items-center justify-center gap-2 transition-all cursor-pointer"
-            >
-              Save Credentials
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setStep('phone')}
-              className="w-full py-2 text-xs text-gray-500 dark:text-gray-400 hover:text-teleforge-primary transition-colors"
-            >
-              Cancel
             </button>
           </form>
         )}

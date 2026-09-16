@@ -20,5 +20,17 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 3000,
     allowedHosts: true,
+    watch: {
+      ignored: [
+        '**/app/**',
+        '**/.gradle/**',
+        '**/dist/**',
+        '**/.git/**',
+        '**/.cache/**',
+        '**/*.apk',
+        '**/*.jks',
+        '**/*.keystore',
+      ],
+    },
   },
 });

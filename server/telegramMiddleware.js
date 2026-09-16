@@ -58,6 +58,9 @@ function sendJson(res, statusCode, data) {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.end(jsonStr);
 }
 
@@ -72,6 +75,15 @@ export function telegramMiddleware() {
 
     if (!pathname.startsWith('/api/telegram')) {
       return next();
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      return res.end();
     }
 
     try {

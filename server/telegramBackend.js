@@ -250,8 +250,8 @@ export async function getClient() {
   if (!clientInstance) {
     const session = new StringSession(currentSessionString);
     clientInstance = new TelegramClient(session, cachedApiId, cachedApiHash, {
-      connectionRetries: 3,
-      timeout: 15,
+      connectionRetries: 5,
+      timeout: 30,
       useWSS: false, // direct native TCP transport in Node
     });
 
@@ -259,7 +259,16 @@ export async function getClient() {
     await clientInstance.connect();
     console.log('[MTProto] Connected to Telegram production servers.');
   } else if (!clientInstance.connected) {
-    await clientInstance.connect();
+    try {
+      await clientInstance.connect();
+    } catch (err) {
+      console.warn('[MTProto] Reconnect failed, recreating client instance:', err.message);
+      try {
+        await clientInstance.disconnect();
+      } catch (e) {}
+      clientInstance = null;
+      return getClient();
+    }
   }
 
   return clientInstance;
@@ -300,29 +309,60 @@ export async function clearSession() {
 const pendingLogins = new Map();
 
 export async function handleSendCode(phoneNumber) {
-  const client = await getClient();
+  let client = await getClient();
   const cleanPhone = phoneNumber.replace(/[\s\-\(\)]/g, '');
   
-  const result = await client.sendCode(
-    {
-      apiId: cachedApiId,
-      apiHash: cachedApiHash,
-    },
-    cleanPhone
-  );
+  try {
+    const result = await client.sendCode(
+      {
+        apiId: cachedApiId,
+        apiHash: cachedApiHash,
+      },
+      cleanPhone
+    );
 
-  pendingLogins.set(cleanPhone, {
-    phoneCodeHash: result.phoneCodeHash,
-    isCodeViaApp: result.type?._ === 'auth.sentCodeTypeApp',
-    timeout: Date.now() + 10 * 60 * 1000,
-  });
+    pendingLogins.set(cleanPhone, {
+      phoneCodeHash: result.phoneCodeHash,
+      isCodeViaApp: result.type?._ === 'auth.sentCodeTypeApp',
+      timeout: Date.now() + 10 * 60 * 1000,
+    });
 
-  return {
-    success: true,
-    phoneCodeHash: result.phoneCodeHash,
-    isCodeViaApp: result.type?._ === 'auth.sentCodeTypeApp',
-    type: result.type?._,
-  };
+    return {
+      success: true,
+      phoneCodeHash: result.phoneCodeHash,
+      isCodeViaApp: result.type?._ === 'auth.sentCodeTypeApp',
+      type: result.type?._,
+    };
+  } catch (err) {
+    const msg = (err?.message || '').toLowerCase();
+    if (msg.includes('timeout') || msg.includes('disconnected') || msg.includes('econnrefused') || msg.includes('socket')) {
+      console.warn('[MTProto] Network hiccup on sendCode, retrying with fresh connection...');
+      try {
+        await client.disconnect();
+      } catch (e) {}
+      clientInstance = null;
+      client = await getClient();
+      const retryResult = await client.sendCode(
+        {
+          apiId: cachedApiId,
+          apiHash: cachedApiHash,
+        },
+        cleanPhone
+      );
+      pendingLogins.set(cleanPhone, {
+        phoneCodeHash: retryResult.phoneCodeHash,
+        isCodeViaApp: retryResult.type?._ === 'auth.sentCodeTypeApp',
+        timeout: Date.now() + 10 * 60 * 1000,
+      });
+      return {
+        success: true,
+        phoneCodeHash: retryResult.phoneCodeHash,
+        isCodeViaApp: retryResult.type?._ === 'auth.sentCodeTypeApp',
+        type: retryResult.type?._,
+      };
+    }
+    throw err;
+  }
 }
 
 export async function handleSignIn(phoneNumber, phoneCode, phoneCodeHash) {
