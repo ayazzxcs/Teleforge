@@ -13,7 +13,7 @@ import { PowerToolsModal } from './components/PowerToolsModal';
 import { CommandCenterModal } from './components/CommandCenterModal';
 import { TelegramAuthView } from './components/TelegramAuthView';
 import { TeleForgeLogo } from './components/TeleForgeLogo';
-import { telegramApi, TelegramUser, AuthStatusResponse, TelegramDialog } from './services/telegramApi';
+import { telegramApi, TelegramUser, AuthStatusResponse, TelegramDialog, isAndroidApp, probeBackendServer } from './services/telegramApi';
 import { mapDialogToChat, mapTelegramMessage, mapTelegramUserToProfile } from './utils/telegramAdapter';
 import { TeleForgeTheme, getInitialTheme, applyTheme, BUILTIN_PRESETS } from './theme/teleforgeTheme';
 import {
@@ -191,6 +191,9 @@ export const App: React.FC = () => {
     const checkAuth = async (isRetry = false) => {
       setIsLoadingAuth(true);
       try {
+        if (isAndroidApp() && !isRetry) {
+          await probeBackendServer();
+        }
         const status = await telegramApi.getAuthStatus();
         if (isMounted) {
           setAuthStatus(status);

@@ -1,4 +1,4 @@
-import { TelegramDialog, TelegramMessage, TelegramUser } from '../services/telegramApi';
+import { TelegramDialog, TelegramMessage, TelegramUser, resolveApiUrl } from '../services/telegramApi';
 import { Chat, Message, UserProfile } from '../types';
 
 const AVATAR_COLORS = [
@@ -63,7 +63,7 @@ export function mapDialogToChat(dialog: TelegramDialog): Chat {
   return {
     id: dialog.id,
     name: chatName || 'Telegram User',
-    avatar: `/api/telegram/avatar?id=${encodeURIComponent(dialog.id)}&v=2`,
+    avatar: resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(dialog.id)}&v=2`),
     thumbUrl: dialog.thumbUrl,
     avatarColor: getAvatarColor(chatName || dialog.id),
     type: chatType,
@@ -102,7 +102,7 @@ export function mapTelegramMessage(
 
     attachment = {
       type: attType,
-      url: `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${m.id}`,
+      url: resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${m.id}`),
       name: m.fileName || (m.mediaType === 'photo' ? 'Photo' : 'Voice Message'),
       size: m.fileSize || undefined,
       duration: m.mediaType === 'voice' ? '0:18' : undefined,
@@ -127,7 +127,7 @@ export function mapTelegramMessage(
   const senderName = isOut ? 'You' : (m.senderName || chatName);
   const senderAvatar = isOut
     ? undefined
-    : (m.senderId && m.senderId !== 'peer' ? `/api/telegram/avatar?id=${encodeURIComponent(m.senderId)}&v=2` : undefined);
+    : (m.senderId && m.senderId !== 'peer' ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(m.senderId)}&v=2`) : undefined);
   const senderThumbUrl = isOut ? undefined : m.senderThumbUrl;
 
   return {
@@ -161,7 +161,7 @@ export function mapTelegramUserToProfile(user: TelegramUser): UserProfile {
     ? user.avatar
     : (user.hasAvatar === false
         ? ''
-        : `/api/telegram/avatar?id=${encodeURIComponent(user.id)}${photoId ? `&v=${photoId}` : ''}`);
+        : resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(user.id)}${photoId ? `&v=${photoId}` : ''}`));
 
   return {
     name: user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Telegram User',

@@ -52,7 +52,7 @@ import {
 import { ChatCustomizationModal } from './ChatCustomizationModal';
 import { ReactionDetailsModal } from './ReactionDetailsModal';
 import { showToast } from './Toast';
-import { telegramApi } from '../services/telegramApi';
+import { telegramApi, resolveApiUrl } from '../services/telegramApi';
 
 interface ChatViewProps {
   chat: Chat | null;
@@ -708,7 +708,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           const avatarSrc =
             message.senderAvatar ||
             (message.senderId && message.senderId !== 'peer'
-              ? `/api/telegram/avatar?id=${encodeURIComponent(message.senderId)}`
+              ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(message.senderId)}`)
               : undefined);
           const senderColor = getAvatarColor(senderDisplayName || message.senderId || 'Telegram');
 

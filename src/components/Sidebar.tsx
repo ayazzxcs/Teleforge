@@ -32,7 +32,7 @@ import { Avatar } from './Avatar';
 import { TeleForgeLogo } from './TeleForgeLogo';
 import { filterChatsForFolder, countUnreadForFolder } from '../utils/folderFilter';
 import { TeleForgeGestureSettings, getGlobalTimestampFormat } from '../services/teleforgePowerTools';
-import { telegramApi, TelegramDialog } from '../services/telegramApi';
+import { telegramApi, TelegramDialog, resolveApiUrl } from '../services/telegramApi';
 
 interface SidebarProps {
   chats: Chat[];
@@ -738,7 +738,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   >
                     <div className="relative shrink-0">
                       <Avatar
-                        src={`/api/telegram/avatar?id=${encodeURIComponent(item.id)}&v=2`}
+                        src={resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(item.id)}&v=2`)}
                         previewSrc={item.thumbUrl}
                         name={item.title}
                         color={item.isChannel ? '#E17076' : item.isGroup ? '#65AADD' : '#6C5CE7'}

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Shield, Key, Phone, Lock, ArrowRight, RefreshCw, AlertCircle, CheckCircle, Info, ChevronLeft, Sparkles } from 'lucide-react';
-import { telegramApi, TelegramUser } from '../services/telegramApi';
+import { Shield, Key, Phone, Lock, ArrowRight, RefreshCw, AlertCircle, CheckCircle, Info, ChevronLeft, Sparkles, Server, Settings, X } from 'lucide-react';
+import { telegramApi, TelegramUser, isAndroidApp, getBackendServerHost, setBackendServerHost, testBackendServer } from '../services/telegramApi';
 import { TeleForgeLogo } from './TeleForgeLogo';
 import { TeleForgeWelcomeView } from './TeleForgeWelcomeView';
 
@@ -63,6 +63,32 @@ export const TelegramAuthView: React.FC<TelegramAuthViewProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusNote, setStatusNote] = useState<string | null>(null);
+
+  const [isServerModalOpen, setIsServerModalOpen] = useState(false);
+  const [serverInput, setServerInput] = useState(() => getBackendServerHost() || (isAndroidApp() ? 'http://10.0.2.2:3000' : ''));
+  const [isTestingServer, setIsTestingServer] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const handleOpenServerModal = () => {
+    setServerInput(getBackendServerHost() || (isAndroidApp() ? 'http://10.0.2.2:3000' : ''));
+    setTestResult(null);
+    setIsServerModalOpen(true);
+  };
+
+  const handleTestConnection = async () => {
+    setIsTestingServer(true);
+    setTestResult(null);
+    const res = await testBackendServer(serverInput);
+    setTestResult(res);
+    setIsTestingServer(false);
+  };
+
+  const handleSaveServer = () => {
+    setBackendServerHost(serverInput.trim());
+    setIsServerModalOpen(false);
+    setErrorMessage(null);
+    setStatusNote(`Backend server updated to ${serverInput.trim() || 'default origin'}`);
+  };
 
   const handleDismissWelcome = () => {
     try {
@@ -176,22 +202,48 @@ export const TelegramAuthView: React.FC<TelegramAuthViewProps> = ({
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             <span>MTProto Layer 198 • Production DC</span>
           </div>
+
+          {/* Server Connection Badge */}
+          <button
+            type="button"
+            onClick={handleOpenServerModal}
+            className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-gray-100/90 dark:bg-gray-800/80 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700/80 transition cursor-pointer"
+            title="Configure backend server host"
+          >
+            <Server size={11} className="text-teleforge-primary" />
+            <span>Server: {getBackendServerHost() ? getBackendServerHost().replace(/^https?:\/\//, '') : 'Local Server'}</span>
+            <Settings size={10} className="text-gray-400" />
+          </button>
         </div>
 
         {/* Error Notification */}
         {errorMessage && (
-          <div className="mb-4 p-3.5 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 flex items-start justify-between gap-2.5 text-xs text-red-700 dark:text-red-300">
-            <div className="flex items-start gap-2.5">
-              <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-500" />
-              <div className="flex-1 leading-relaxed">{errorMessage}</div>
+          <div className="mb-4 p-3.5 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-xs text-red-700 dark:text-red-300 space-y-2.5">
+            <div className="flex items-start justify-between gap-2.5">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-500" />
+                <div className="flex-1 leading-relaxed">{errorMessage}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setErrorMessage(null)}
+                className="text-[11px] font-bold text-red-600 dark:text-red-400 hover:underline shrink-0 cursor-pointer"
+              >
+                Dismiss
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setErrorMessage(null)}
-              className="text-[11px] font-bold text-red-600 dark:text-red-400 hover:underline shrink-0"
-            >
-              Dismiss
-            </button>
+            {errorMessage.includes('Could not connect') && (
+              <div className="pt-1 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleOpenServerModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-100 hover:bg-red-200 dark:bg-red-900/50 dark:hover:bg-red-900/70 text-red-800 dark:text-red-200 text-[11px] font-semibold transition cursor-pointer shadow-xs"
+                >
+                  <Server size={12} />
+                  <span>Configure Server Host</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -402,6 +454,121 @@ export const TelegramAuthView: React.FC<TelegramAuthViewProps> = ({
           </form>
         )}
       </div>
+
+      {/* Backend Server Host Configuration Modal */}
+      {isServerModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-[#151d27] border border-gray-200 dark:border-gray-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-teleforge-primary/10 text-teleforge-primary flex items-center justify-center">
+                  <Server size={18} />
+                </div>
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white">Backend Server Host</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsServerModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+              TeleForge connects to Telegram MTProto via a running backend server. When running inside the Android APK on a real device or emulator, set your server address below:
+            </p>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
+                Server Host URL
+              </label>
+              <input
+                type="text"
+                value={serverInput}
+                onChange={(e) => {
+                  setServerInput(e.target.value);
+                  setTestResult(null);
+                }}
+                placeholder="http://10.0.2.2:3000"
+                className="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-[#1c2633] border border-gray-300 dark:border-gray-700 rounded-xl text-xs font-mono text-gray-900 dark:text-white placeholder-gray-400 focus:outline-hidden focus:border-teleforge-primary focus:ring-1 focus:ring-teleforge-primary/30"
+              />
+            </div>
+
+            {/* Quick Presets */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-medium text-gray-400">Quick Presets:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { label: 'Emulator (10.0.2.2)', value: 'http://10.0.2.2:3000' },
+                  { label: 'USB ADB (localhost)', value: 'http://localhost:3000' },
+                  { label: 'Cloud / LAN (172.31.5.192)', value: 'http://172.31.5.192:3000' },
+                ].map((preset) => (
+                  <button
+                    key={preset.value}
+                    type="button"
+                    onClick={() => {
+                      setServerInput(preset.value);
+                      setTestResult(null);
+                    }}
+                    className="text-[10px] font-medium px-2.5 py-1 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition cursor-pointer"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Test Result Feedback */}
+            {testResult && (
+              <div
+                className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                  testResult.ok
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                    : 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+                }`}
+              >
+                {testResult.ok ? (
+                  <CheckCircle size={15} className="shrink-0 text-emerald-500" />
+                ) : (
+                  <AlertCircle size={15} className="shrink-0 text-red-500" />
+                )}
+                <span className="leading-snug">{testResult.message}</span>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-between pt-2 border-t border-gray-100 dark:border-gray-800">
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={isTestingServer}
+                className="px-3.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-semibold text-gray-700 dark:text-gray-200 flex items-center gap-1.5 transition disabled:opacity-50 cursor-pointer"
+              >
+                {isTestingServer ? <RefreshCw size={12} className="animate-spin text-teleforge-primary" /> : null}
+                <span>Test Connection</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsServerModalOpen(false)}
+                  className="px-3 py-2 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveServer}
+                  className="px-4 py-2 rounded-xl bg-teleforge-primary hover:bg-teleforge-hover text-teleforge-cream text-xs font-bold shadow-md shadow-red-950/20 transition cursor-pointer"
+                >
+                  Save & Connect
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

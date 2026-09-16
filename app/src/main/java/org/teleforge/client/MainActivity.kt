@@ -188,6 +188,7 @@ class MainActivity : ComponentActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 progressBar.visibility = View.VISIBLE
+                view?.evaluateJavascript("window.__IS_TELEFORGE_ANDROID__ = true;", null)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {

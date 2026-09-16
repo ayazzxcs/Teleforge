@@ -81,18 +81,132 @@ export interface SignInResponse {
   user?: TelegramUser;
   message?: string;
 }
+declare global {
+  interface Window {
+    __IS_TELEFORGE_ANDROID__?: boolean;
+    __TELEFORGE_EMULATOR_HOST__?: string;
+  }
+}
 
-const API_BASE = '/api/telegram';
+export function isAndroidApp(): boolean {
+  if (typeof window === 'undefined') return false;
+  return Boolean(
+    window.__IS_TELEFORGE_ANDROID__ ||
+    (typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.includes('TeleForgeAndroid')) ||
+    window.location.origin.includes('androidplatform.net') ||
+    window.location.origin.startsWith('file:') ||
+    window.location.origin === 'null'
+  );
+}
+
+export function getBackendServerHost(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    const saved = localStorage.getItem('teleforge_server_host');
+    if (saved && saved.trim()) {
+      return saved.trim().replace(/\/+$/, '');
+    }
+  } catch (e) {}
+
+  if (isAndroidApp()) {
+    return 'http://10.0.2.2:3000';
+  }
+
+  return '';
+}
+
+export function setBackendServerHost(host: string): void {
+  try {
+    if (!host || !host.trim()) {
+      localStorage.removeItem('teleforge_server_host');
+    } else {
+      let clean = host.trim().replace(/\/+$/, '');
+      if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+        clean = `http://${clean}`;
+      }
+      localStorage.setItem('teleforge_server_host', clean);
+    }
+  } catch (e) {}
+}
+
+export function getApiBase(): string {
+  const host = getBackendServerHost();
+  return host ? `${host}/api/telegram` : '/api/telegram';
+}
+
+export function resolveApiUrl(path: string): string {
+  if (!path) return '';
+  if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('data:') || path.startsWith('blob:')) {
+    return path;
+  }
+  const host = getBackendServerHost();
+  if (!host) return path;
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  return `${host}${cleanPath}`;
+}
+
+export function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 3000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
+export async function testBackendServer(host: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    let clean = host.trim().replace(/\/+$/, '');
+    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+      clean = `http://${clean}`;
+    }
+    const res = await fetchWithTimeout(`${clean}/api/telegram/auth/status`, {}, 2500);
+    if (res.ok) {
+      return { ok: true, message: 'Connected to TeleForge MTProto server!' };
+    }
+    return { ok: false, message: `Server returned HTTP ${res.status}.` };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || 'Connection failed' };
+  }
+}
+
+export async function probeBackendServer(): Promise<string> {
+  const current = getBackendServerHost();
+  if (current) {
+    try {
+      const res = await fetchWithTimeout(`${current}/api/telegram/auth/status`, {}, 1500);
+      if (res.ok) return current;
+    } catch (e) {}
+  }
+
+  if (isAndroidApp()) {
+    const candidates = [
+      'http://10.0.2.2:3000',
+      'http://127.0.0.1:3000',
+      'http://localhost:3000',
+      'http://172.31.5.192:3000',
+    ];
+    for (const candidate of candidates) {
+      if (candidate === current) continue;
+      try {
+        const res = await fetchWithTimeout(`${candidate}/api/telegram/auth/status`, {}, 1500);
+        if (res.ok) {
+          setBackendServerHost(candidate);
+          return candidate;
+        }
+      } catch (e) {}
+    }
+  }
+
+  return current;
+}
 
 export const telegramApi = {
   async getConfig(): Promise<{ hasCredentials: boolean; apiId: number }> {
-    const res = await fetch(`${API_BASE}/config`);
+    const res = await fetch(`${getApiBase()}/config`);
     if (!res.ok) throw new Error('Failed to fetch Telegram configuration');
     return res.json();
   },
 
   async setConfig(apiId: number, apiHash: string): Promise<{ success: boolean }> {
-    const res = await fetch(`${API_BASE}/config`, {
+    const res = await fetch(`${getApiBase()}/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiId, apiHash }),
@@ -105,13 +219,13 @@ export const telegramApi = {
   },
 
   async getAuthStatus(): Promise<AuthStatusResponse> {
-    const res = await fetch(`${API_BASE}/auth/status`);
+    const res = await fetch(`${getApiBase()}/auth/status`);
     if (!res.ok) throw new Error('Failed to check Telegram auth status');
     return res.json();
   },
 
   async sendCode(phoneNumber: string): Promise<SendCodeResponse> {
-    const res = await fetch(`${API_BASE}/auth/sendCode`, {
+    const res = await fetch(`${getApiBase()}/auth/sendCode`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phoneNumber }),
@@ -122,7 +236,7 @@ export const telegramApi = {
   },
 
   async signIn(phoneNumber: string, phoneCode: string, phoneCodeHash?: string): Promise<SignInResponse> {
-    const res = await fetch(`${API_BASE}/auth/signIn`, {
+    const res = await fetch(`${getApiBase()}/auth/signIn`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phoneNumber, phoneCode, phoneCodeHash }),
@@ -133,7 +247,7 @@ export const telegramApi = {
   },
 
   async submit2FA(password: string): Promise<{ success: boolean; user?: TelegramUser }> {
-    const res = await fetch(`${API_BASE}/auth/2fa`, {
+    const res = await fetch(`${getApiBase()}/auth/2fa`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
@@ -144,7 +258,7 @@ export const telegramApi = {
   },
 
   async logout(): Promise<{ success: boolean }> {
-    const res = await fetch(`${API_BASE}/auth/logout`, {
+    const res = await fetch(`${getApiBase()}/auth/logout`, {
       method: 'POST',
     });
     if (!res.ok) throw new Error('Logout failed');
@@ -152,7 +266,7 @@ export const telegramApi = {
   },
 
   async getDialogs(limit = 40): Promise<TelegramDialog[]> {
-    const res = await fetch(`${API_BASE}/dialogs?limit=${limit}`);
+    const res = await fetch(`${getApiBase()}/dialogs?limit=${limit}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Failed to load Telegram chats');
@@ -162,7 +276,7 @@ export const telegramApi = {
   },
 
   async getMessages(chatId: string, limit = 50, offsetId?: number): Promise<TelegramMessage[]> {
-    let url = `${API_BASE}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}`;
+    let url = `${getApiBase()}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}`;
     if (offsetId && offsetId > 0) {
       url += `&offsetId=${offsetId}`;
     }
@@ -176,7 +290,7 @@ export const telegramApi = {
   },
 
   async sendMessage(chatId: string, message: string, replyToMsgId?: number): Promise<TelegramMessage> {
-    const res = await fetch(`${API_BASE}/messages/send`, {
+    const res = await fetch(`${getApiBase()}/messages/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chatId, message, replyToMsgId }),
@@ -187,7 +301,7 @@ export const telegramApi = {
   },
 
   async sendReaction(chatId: string, messageId: string, emoji?: string): Promise<{ success: boolean }> {
-    const res = await fetch(`${API_BASE}/messages/react`, {
+    const res = await fetch(`${getApiBase()}/messages/react`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chatId, messageId, emoji }),
@@ -198,7 +312,7 @@ export const telegramApi = {
   },
 
   async editMessage(chatId: string, messageId: string, text: string): Promise<{ success: boolean; message: any }> {
-    const res = await fetch(`${API_BASE}/messages/edit`, {
+    const res = await fetch(`${getApiBase()}/messages/edit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chatId, messageId, text }),
@@ -209,7 +323,7 @@ export const telegramApi = {
   },
 
   async deleteMessage(chatId: string, messageId: string): Promise<{ success: boolean }> {
-    const res = await fetch(`${API_BASE}/messages/delete`, {
+    const res = await fetch(`${getApiBase()}/messages/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chatId, messageId }),
@@ -220,7 +334,7 @@ export const telegramApi = {
   },
 
   async pinMessage(chatId: string, messageId: string, silent = false): Promise<{ success: boolean }> {
-    const res = await fetch(`${API_BASE}/messages/pin`, {
+    const res = await fetch(`${getApiBase()}/messages/pin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chatId, messageId, silent }),
@@ -231,7 +345,7 @@ export const telegramApi = {
   },
 
   async getContacts(): Promise<TelegramUser[]> {
-    const res = await fetch(`${API_BASE}/contacts`);
+    const res = await fetch(`${getApiBase()}/contacts`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Failed to load contacts');
@@ -241,15 +355,15 @@ export const telegramApi = {
   },
 
   getAvatarUrl(peerId: string): string {
-    return `${API_BASE}/avatar?id=${encodeURIComponent(peerId)}`;
+    return `${getApiBase()}/avatar?id=${encodeURIComponent(peerId)}`;
   },
 
   getMediaUrl(chatId: string, messageId: number): string {
-    return `${API_BASE}/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`;
+    return `${getApiBase()}/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`;
   },
 
   async getDialogFilters(): Promise<TeleForgeDialogFilter[]> {
-    const res = await fetch(`${API_BASE}/folders`);
+    const res = await fetch(`${getApiBase()}/folders`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Failed to load Telegram folders');
@@ -263,7 +377,7 @@ export const telegramApi = {
   },
 
   async saveDialogFilter(filter: Partial<TeleForgeDialogFilter> & { title: string }): Promise<{ success: boolean; filter: TeleForgeDialogFilter }> {
-    const res = await fetch(`${API_BASE}/folders`, {
+    const res = await fetch(`${getApiBase()}/folders`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(filter),
@@ -276,7 +390,7 @@ export const telegramApi = {
   },
 
   async deleteDialogFilter(id: string): Promise<{ success: boolean; id: string }> {
-    const res = await fetch(`${API_BASE}/folders/delete`, {
+    const res = await fetch(`${getApiBase()}/folders/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
@@ -289,7 +403,7 @@ export const telegramApi = {
   },
 
   async reorderDialogFilters(order: string[]): Promise<{ success: boolean; order: number[] }> {
-    const res = await fetch(`${API_BASE}/folders/order`, {
+    const res = await fetch(`${getApiBase()}/folders/order`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ order }),
@@ -302,7 +416,7 @@ export const telegramApi = {
   },
 
   async getChatFullInfo(id: string): Promise<{ id: string; memberCount?: number; about?: string }> {
-    const res = await fetch(`${API_BASE}/chat/info?id=${encodeURIComponent(id)}`);
+    const res = await fetch(`${getApiBase()}/chat/info?id=${encodeURIComponent(id)}`);
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || 'Failed to fetch chat info');
@@ -312,7 +426,7 @@ export const telegramApi = {
 
   async markAsRead(chatId: string): Promise<void> {
     try {
-      await fetch(`${API_BASE}/read`, {
+      await fetch(`${getApiBase()}/read`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chatId }),
@@ -329,7 +443,7 @@ export const telegramApi = {
     if (!q || q.trim().length < 2) {
       return { myResults: [], globalResults: [] };
     }
-    const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(q.trim())}&limit=${limit}`);
+    const res = await fetch(`${getApiBase()}/search?q=${encodeURIComponent(q.trim())}&limit=${limit}`);
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || 'Failed to search Telegram');
@@ -338,7 +452,7 @@ export const telegramApi = {
   },
 
   async joinChat(chatId: string): Promise<{ success: boolean; error?: string }> {
-    const res = await fetch(`${API_BASE}/join`, {
+    const res = await fetch(`${getApiBase()}/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chatId }),
@@ -351,7 +465,7 @@ export const telegramApi = {
   },
 
   async getProfile(): Promise<{ success: boolean; user: TelegramUser }> {
-    const res = await fetch(`${API_BASE}/profile`);
+    const res = await fetch(`${getApiBase()}/profile`);
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || 'Failed to fetch profile from Telegram');
@@ -366,7 +480,7 @@ export const telegramApi = {
     bio?: string;
     username?: string;
   }): Promise<{ success: boolean; user: TelegramUser }> {
-    const res = await fetch(`${API_BASE}/profile`, {
+    const res = await fetch(`${getApiBase()}/profile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -383,7 +497,7 @@ export const telegramApi = {
     filename?: string;
     url?: string;
   }): Promise<{ success: boolean; user: TelegramUser; avatarUrl: string }> {
-    const res = await fetch(`${API_BASE}/profile/photo`, {
+    const res = await fetch(`${getApiBase()}/profile/photo`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -396,7 +510,7 @@ export const telegramApi = {
   },
 
   async deleteProfilePhoto(): Promise<{ success: boolean; user: TelegramUser }> {
-    const res = await fetch(`${API_BASE}/profile/photo`, {
+    const res = await fetch(`${getApiBase()}/profile/photo`, {
       method: 'DELETE',
     });
     const data = await res.json();
