@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --tf-primary: #8B1E22;
+  --tf-primary-hover: #74181B;
+  --tf-primary-active: #5F1215;
+  --tf-primary-subtle: rgba(139, 30, 34, 0.20);
+  --tf-secondary-accent: #FFF8EE;
+  --tf-text-primary: #F0F4F8;
+  --tf-text-secondary: #94A3B8;
+  --tf-link: #FF6B7A;
+  --tf-cream: #FFF8EE;
+  --tf-cream-accent: #F5EBE1;
+  --tf-cream-muted: #D8CAB8;
+  --tf-bg: #0c1017;
+  --tf-surface: #151d27;
+  --tf-surface-elevated: #1a2430;
+  --tf-bubble-out: #43191d;
+  --tf-bubble-in: #1a2430;
+  --tf-bubble-out-text: #FFF8EE;
+  --tf-bubble-in-text: #E6EDF3;
+  --tf-reply-accent: #8B1E22;
+  --tf-selected-message: rgba(139, 30, 34, 0.28);
+  --tf-timestamp: #94A3B8;
+  --tf-top-bar: #151d27;
+  --tf-tab-bg: #111722;
+  --tf-tab-selected: #8B1E22;
+  --tf-border: rgba(255, 248, 238, 0.08);
+  --tf-search-bg: #1c2736;
+  --tf-action-button: #8B1E22;
+  --tf-media-overlay: rgba(0, 0, 0, 0.75);
+  --tf-progress-bar: #8B1E22;
+  --tf-switch-active: #8B1E22;
+  --tf-checkbox-active: #8B1E22;
+  --tf-icon-tint: #94A3B8;
+}
+
+.light {
+  --tf-primary: #8B1E22;
+  --tf-primary-hover: #74181B;
+  --tf-primary-active: #5F1215;
+  --tf-primary-subtle: rgba(139, 30, 34, 0.08);
+  --tf-secondary-accent: #D8CAB8;
+  --tf-text-primary: #1E293B;
+  --tf-text-secondary: #64748B;
+  --tf-link: #8B1E22;
+  --tf-cream: #FFF8EE;
+  --tf-cream-accent: #F3E8DB;
+  --tf-cream-muted: #8C7E70;
+  --tf-bg: #F8F4EE;
+  --tf-surface: #FFFFFF;
+  --tf-surface-elevated: #FFFFFF;
+  --tf-bubble-out: #FCEBEB;
+  --tf-bubble-in: #FFFFFF;
+  --tf-bubble-out-text: #2B1214;
+  --tf-bubble-in-text: #1E293B;
+  --tf-reply-accent: #8B1E22;
+  --tf-selected-message: rgba(139, 30, 34, 0.12);
+  --tf-timestamp: #8C7E70;
+  --tf-top-bar: #FFFFFF;
+  --tf-tab-bg: #F2EAE0;
+  --tf-tab-selected: #8B1E22;
+  --tf-border: rgba(139, 30, 34, 0.12);
+  --tf-search-bg: #F2ECE4;
+  --tf-action-button: #8B1E22;
+  --tf-media-overlay: rgba(0, 0, 0, 0.65);
+  --tf-progress-bar: #8B1E22;
+  --tf-switch-active: #8B1E22;
+  --tf-checkbox-active: #8B1E22;
+  --tf-icon-tint: #64748B;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    touch-action: manipulation;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* TeleForge Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 30, 34, 0.25);
+  border-radius: 9999px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 248, 238, 0.15);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 30, 34, 0.45);
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 248, 238, 0.28);
+}
+
+/* TeleForge Pattern Background */
+.telegram-chat-pattern,
+.teleforge-chat-pattern {
+  background-color: var(--tf-bg, #F8F4EE);
+  background-image: radial-gradient(rgba(139, 30, 34, 0.08) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+.dark .telegram-chat-pattern,
+.dark .teleforge-chat-pattern {
+  background-color: var(--tf-bg, #0c1017);
+  background-image: radial-gradient(rgba(255, 248, 238, 0.04) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+/* =========================================================================
+   ACCESSIBILITY & PROFESSIONAL POLISH
+   ========================================================================= */
+
+/* Respect user's motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visible focus rings for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--tf-primary, #8B1E22);
+  outline-offset: 2px;
+}
+
+/* Interactive touch target baseline */
+button,
+a,
+input[type="button"],
+input[type="submit"] {
+  touch-action: manipulation;
+}
+

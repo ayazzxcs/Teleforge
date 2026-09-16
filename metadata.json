@@ -1,0 +1,6 @@
+{
+  "name": "TeleForge",
+  "description": "Real Telegram MTProto 2.0 client supporting production login, 2FA, live messaging, channels, and rich media.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
