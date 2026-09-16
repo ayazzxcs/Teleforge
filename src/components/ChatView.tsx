@@ -83,7 +83,7 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
     const unsub = mediaService.subscribe(chatId, messageId, (url) => {
       if (url) setMediaUrl(url);
     });
-    mediaService.loadMedia(chatId, messageId).then((url) => {
+    mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
       if (url) setMediaUrl(url);
     });
     return unsub;
@@ -147,19 +147,21 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   onOpenMediaModal,
 }) => {
   const [videoUrl, setVideoUrl] = useState<string>(() => {
-    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
-      return attachment.url;
-    }
-    return mediaService.get(chatId, messageId) || '';
+    return mediaService.get(chatId, messageId, { fullVideo: true }) || '';
   });
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     if (videoUrl) return;
-    const unsub = mediaService.subscribe(chatId, messageId, (url) => {
-      if (url) setVideoUrl(url);
-    });
+    const unsub = mediaService.subscribe(
+      chatId,
+      messageId,
+      (url) => {
+        if (url) setVideoUrl(url);
+      },
+      { fullVideo: true }
+    );
     return unsub;
   }, [chatId, messageId, videoUrl]);
 
@@ -169,7 +171,7 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       setIsPlaying(true);
     } else {
       setIsLoading(true);
-      mediaService.loadMedia(chatId, messageId).then((url) => {
+      mediaService.loadMedia(chatId, messageId, { fullVideo: true }).then((url) => {
         setIsLoading(false);
         if (url) {
           setVideoUrl(url);

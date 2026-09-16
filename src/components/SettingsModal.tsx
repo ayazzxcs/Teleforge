@@ -79,16 +79,65 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isLicensesOpen, setIsLicensesOpen] = useState(false);
   const importFileRef = useRef<HTMLInputElement>(null);
 
-  // Profile photo state
-  const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
+  // Profile photo state with session persistence
+  const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(() => {
+    try {
+      return sessionStorage.getItem('teleforge_photo_modal_open') === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
   const [photoSourceTab, setPhotoSourceTab] = useState<'upload' | 'url'>('upload');
   const [photoUrlInput, setPhotoUrlInput] = useState('');
-  const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
+  const [previewPhoto, setPreviewPhoto] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem('teleforge_preview_photo') || null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [isDeletingPhoto, setIsDeletingPhoto] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync photo modal state to sessionStorage
+  React.useEffect(() => {
+    try {
+      if (isPhotoModalOpen) {
+        sessionStorage.setItem('teleforge_photo_modal_open', 'true');
+      } else {
+        sessionStorage.removeItem('teleforge_photo_modal_open');
+      }
+    } catch (e) {}
+  }, [isPhotoModalOpen]);
+
+  React.useEffect(() => {
+    try {
+      if (previewPhoto) {
+        sessionStorage.setItem('teleforge_preview_photo', previewPhoto);
+      } else {
+        sessionStorage.removeItem('teleforge_preview_photo');
+      }
+    } catch (e) {}
+  }, [previewPhoto]);
+
+  // Listen for native Android photo selection event
+  React.useEffect(() => {
+    const handleNativePhoto = (e: any) => {
+      const dataUrl = e.detail?.dataUrl;
+      if (dataUrl) {
+        setPreviewPhoto(dataUrl);
+        setPhotoError(null);
+        setSelectedFile(null);
+        setPhotoSourceTab('upload');
+        setIsPhotoModalOpen(true);
+      }
+    };
+    window.addEventListener('teleforge:photoSelected', handleNativePhoto);
+    return () => window.removeEventListener('teleforge:photoSelected', handleNativePhoto);
+  }, []);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -129,6 +178,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setSelectedFile(null);
     setPhotoSourceTab('upload');
     setIsPhotoModalOpen(true);
+    try {
+      sessionStorage.removeItem('teleforge_preview_photo');
+      sessionStorage.setItem('teleforge_photo_modal_open', 'true');
+    } catch (e) {}
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {

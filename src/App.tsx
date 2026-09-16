@@ -61,7 +61,24 @@ export const App: React.FC = () => {
     return activeTheme.mode === 'dark';
   });
   const [isInfoDrawerOpen, setIsInfoDrawerOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(() => {
+    try {
+      return sessionStorage.getItem('teleforge_settings_open') === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (isSettingsOpen) {
+        sessionStorage.setItem('teleforge_settings_open', 'true');
+      } else {
+        sessionStorage.removeItem('teleforge_settings_open');
+      }
+    } catch (e) {}
+  }, [isSettingsOpen]);
+
   const [isNewChatOpen, setIsNewChatOpen] = useState(false);
   const [mediaModalAttachment, setMediaModalAttachment] = useState<Attachment | null>(null);
   const [isBotTyping, setIsBotTyping] = useState(false);
@@ -193,11 +210,7 @@ export const App: React.FC = () => {
     const checkAuth = async () => {
       setIsLoadingAuth(true);
       try {
-        const statusPromise = telegramApi.getAuthStatus();
-        const timeoutPromise = new Promise<AuthStatusResponse>((resolve) =>
-          setTimeout(() => resolve({ authorized: false, configured: true }), 3500)
-        );
-        const status = await Promise.race([statusPromise, timeoutPromise]);
+        const status = await telegramApi.getAuthStatus();
         if (isMounted) {
           setAuthStatus(status);
           if (status.authorized && status.user) {
@@ -215,7 +228,33 @@ export const App: React.FC = () => {
       } catch (e: any) {
         console.warn('[MTProto] Auth check error:', e.message);
         if (isMounted) {
-          setAuthStatus({ authorized: false, configured: true });
+          // If we have a saved session in localStorage, preserve authorized state!
+          const hasSession = Boolean(localStorage.getItem('teleforge_session'));
+          if (hasSession) {
+            const cached = localStorage.getItem('teleforge_cached_user');
+            let userObj: TelegramUser = {
+              id: 'me',
+              firstName: 'Telegram',
+              lastName: 'User',
+              name: 'Telegram User',
+              username: '',
+              phone: '',
+              isBot: false,
+              isSelf: true,
+              isVerified: false,
+            };
+            if (cached) {
+              try {
+                userObj = JSON.parse(cached);
+              } catch (err) {}
+            }
+            setAuthStatus({ authorized: true, configured: true, user: userObj });
+            setUser(mapTelegramUserToProfile(userObj));
+            loadTelegramDialogs();
+            loadTelegramFolders();
+          } else {
+            setAuthStatus({ authorized: false, configured: true });
+          }
         }
       } finally {
         if (isMounted) {
@@ -270,7 +309,7 @@ export const App: React.FC = () => {
         avatarService.preloadAvatars(incomingSenders);
       }
 
-      const mediaItems = realMsgs.filter((m) => m.hasMedia && m.id).map((m) => ({ chatId, messageId: m.id }));
+      const mediaItems = realMsgs.filter((m) => m.hasMedia && m.id && m.mediaType === 'photo').map((m) => ({ chatId, messageId: m.id }));
       if (mediaItems.length > 0) {
         mediaService.preloadMedia(mediaItems.slice(0, 10));
       }
@@ -339,7 +378,7 @@ export const App: React.FC = () => {
         mapTelegramMessage(m, chatId, chat.name || 'Telegram')
       );
 
-      const mediaItems = olderMsgs.filter((m) => m.hasMedia && m.id).map((m) => ({ chatId, messageId: m.id }));
+      const mediaItems = olderMsgs.filter((m) => m.hasMedia && m.id && m.mediaType === 'photo').map((m) => ({ chatId, messageId: m.id }));
       if (mediaItems.length > 0) {
         mediaService.preloadMedia(mediaItems.slice(0, 5));
       }

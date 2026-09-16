@@ -31,6 +31,7 @@ let clientInitPromise: Promise<TelegramClient> | null = null;
 const peerEntityCache = new Map<string, any>();
 const thumbCache = new Map<string, string>(); // peerId -> base64 data URL
 const avatarBlobUrlCache = new Map<string, string>(); // peerId -> object URL
+const messageMediaMap = new Map<string, any>(); // `${chatId}_${messageId}` -> media object
 const pendingLogins = new Map<string, { phoneCodeHash: string; isCodeViaApp: boolean; type?: string }>();
 
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg = 'Operation timed out'): Promise<T> {
@@ -253,14 +254,51 @@ export const telegramDirectClient = {
       };
     } catch (e: any) {
       console.warn('[MTProto-Direct] Auth check network error:', e.message);
-      // If offline but we have a cached user, show user as authorized
-      try {
-        const cached = localStorage.getItem(USER_CACHE_KEY);
-        if (cached) {
-          const u = JSON.parse(cached);
-          return { authorized: true, configured: true, user: u };
-        }
-      } catch (err) {}
+      const isExplicitRevocation = e?.message && (
+        e.message.includes('AUTH_KEY_UNREGISTERED') ||
+        e.message.includes('SESSION_REVOKED') ||
+        e.message.includes('USER_DEACTIVATED') ||
+        e.message.includes('SESSION_EXPIRED')
+      );
+
+      if (isExplicitRevocation) {
+        saveSessionString('');
+        try {
+          localStorage.removeItem(USER_CACHE_KEY);
+        } catch (err) {}
+        return {
+          authorized: false,
+          configured: true,
+          error: e.message,
+        };
+      }
+
+      // If we have a saved session string, do NOT kick user out on temporary handshake/network delays
+      if (hasSavedSession()) {
+        try {
+          const cached = localStorage.getItem(USER_CACHE_KEY);
+          if (cached) {
+            const u = JSON.parse(cached);
+            return { authorized: true, configured: true, user: u };
+          }
+        } catch (err) {}
+
+        return {
+          authorized: true,
+          configured: true,
+          user: {
+            id: 'me',
+            firstName: 'Telegram',
+            lastName: 'User',
+            name: 'Telegram User',
+            username: '',
+            phone: '',
+            isBot: false,
+            isSelf: true,
+            isVerified: false,
+          },
+        };
+      }
 
       return {
         authorized: false,
@@ -587,6 +625,8 @@ export const telegramDirectClient = {
       let fileSize: string | undefined = undefined;
 
       if (m.media) {
+        messageMediaMap.set(`${chatId}_${m.id}`, m.media);
+        messageMediaMap.set(String(m.id), m.media);
         const cls = m.media.className || m.media._ || '';
         if (cls.includes('Photo')) {
           mediaType = 'photo';
@@ -1335,35 +1375,68 @@ export const telegramDirectClient = {
 
   /**
    * Download message media (photo or video/document) directly via GramJS MTProto
+   * Optimized: uses cached media object, fast responsive thumbnail for photos,
+   * and thumbnail-only for videos until explicit playback is requested.
    */
-  async downloadMessageMedia(chatId: string, messageId: string | number): Promise<{ dataUrl: string; mimeType: string } | null> {
+  async downloadMessageMedia(
+    chatId: string,
+    messageId: string | number,
+    options?: { fullRes?: boolean; fullVideo?: boolean }
+  ): Promise<{ dataUrl: string; mimeType: string } | null> {
     if (!chatId || messageId == null) return null;
     const client = await getDirectClient();
-    let targetPeer = peerEntityCache.get(chatId) || chatId;
-    if (!peerEntityCache.has(chatId)) {
-      try {
-        targetPeer = await client.getInputEntity(chatId);
-      } catch (e) {
-        targetPeer = chatId;
-      }
-    }
-
     const idNum = typeof messageId === 'number' ? messageId : parseInt(String(messageId), 10);
-    try {
-      const messages: any = await client.getMessages(targetPeer, { ids: [idNum] });
-      if (!messages || !messages[0] || !messages[0].media) return null;
-      const msg = messages[0];
+    const mediaKey = `${chatId}_${idNum}`;
 
-      const buffer: any = await client.downloadMedia(msg.media, {});
-      if (!buffer || buffer.length === 0) return null;
+    try {
+      let media = messageMediaMap.get(mediaKey) || messageMediaMap.get(String(idNum));
+      if (!media) {
+        let targetPeer = peerEntityCache.get(chatId) || chatId;
+        if (!peerEntityCache.has(chatId)) {
+          try {
+            targetPeer = await client.getInputEntity(chatId);
+          } catch (e) {
+            targetPeer = chatId;
+          }
+        }
+        const messages: any = await client.getMessages(targetPeer, { ids: [idNum] });
+        if (!messages || !messages[0] || !messages[0].media) return null;
+        media = messages[0].media;
+        messageMediaMap.set(mediaKey, media);
+      }
 
       let mimeType = 'application/octet-stream';
-      const cls = msg.media.className || msg.media._ || '';
-      if (cls.includes('Photo')) {
+      const cls = media.className || media._ || '';
+      const isPhoto = cls.includes('Photo');
+      const isDocument = cls.includes('Document');
+
+      let downloadParams: any = {};
+
+      if (isPhoto) {
         mimeType = 'image/jpeg';
-      } else if (cls.includes('Document')) {
-        mimeType = msg.media.document?.mimeType || 'application/octet-stream';
+        // For inline chat view, download standard medium thumb ('x') for instant ~80KB load
+        // Only fetch full multi-megabyte 4K photo if fullRes is requested (e.g. MediaModal)
+        if (!options?.fullRes) {
+          downloadParams.thumb = 'x';
+        }
+      } else if (isDocument) {
+        mimeType = media.document?.mimeType || 'application/octet-stream';
+        const isVideo = mimeType.startsWith('video/') || (media.document?.attributes || []).some((a: any) =>
+          a._ === 'documentAttributeVideo' || a.className === 'DocumentAttributeVideo' ||
+          a._ === 'documentAttributeAnimated' || a.className === 'DocumentAttributeAnimated'
+        );
+
+        if (isVideo) {
+          // If not playing full video, download the video thumbnail (fast ~25KB), NEVER the full 50MB video!
+          if (!options?.fullVideo) {
+            downloadParams.thumb = -1; // highest quality thumbnail
+            mimeType = 'image/jpeg';
+          }
+        }
       }
+
+      const buffer: any = await client.downloadMedia(media, downloadParams);
+      if (!buffer || buffer.length === 0) return null;
 
       const dataUrl = `data:${mimeType};base64,${Buffer.from(buffer).toString('base64')}`;
       return { dataUrl, mimeType };

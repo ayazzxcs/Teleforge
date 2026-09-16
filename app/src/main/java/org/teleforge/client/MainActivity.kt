@@ -20,7 +20,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ProgressBar
-import android.widget.Toast
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
@@ -51,7 +51,6 @@ class MainActivity : ComponentActivity() {
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
     private val fileChooserLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (fileChooserCallback == null) return@registerForActivityResult
             val results: Array<Uri>? = when {
                 result.resultCode == RESULT_OK && result.data != null -> {
                     val data = result.data
@@ -64,8 +63,33 @@ class MainActivity : ComponentActivity() {
                 }
                 else -> null
             }
+
+            // Deliver results to standard HTML file chooser callback
             fileChooserCallback?.onReceiveValue(results)
             fileChooserCallback = null
+
+            // Also broadcast directly to WebView via JavaScript custom event
+            val selectedUri = results?.firstOrNull()
+            if (selectedUri != null) {
+                try {
+                    contentResolver.openInputStream(selectedUri)?.use { stream ->
+                        val bytes = stream.readBytes()
+                        if (bytes.isNotEmpty()) {
+                            val mime = contentResolver.getType(selectedUri) ?: "image/jpeg"
+                            val b64 = "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+                            val escaped = b64.replace("'", "\\'")
+                            webView.post {
+                                webView.evaluateJavascript(
+                                    "window.dispatchEvent(new CustomEvent('teleforge:photoSelected', { detail: { dataUrl: '$escaped' } }));",
+                                    null
+                                )
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Ignore read errors
+                }
+            }
         }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -253,15 +277,24 @@ class MainActivity : ComponentActivity() {
                 fileChooserCallback?.onReceiveValue(null)
                 fileChooserCallback = filePathCallback
 
-                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                    type = "image/*"
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "image/jpeg", "image/png", "image/webp", "image/gif"))
+                val intent = try {
+                    fileChooserParams?.createIntent()?.apply {
+                        if (type.isNullOrEmpty() || type == "*/*") {
+                            type = "image/*"
+                        }
+                    } ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "image/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }
+                } catch (e: Exception) {
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "image/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }
                 }
-                val chooser = Intent.createChooser(intent, "Select Photo")
 
                 return try {
-                    fileChooserLauncher.launch(chooser)
+                    fileChooserLauncher.launch(intent)
                     true
                 } catch (e: Exception) {
                     fileChooserCallback = null

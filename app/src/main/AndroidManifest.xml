@@ -33,7 +33,7 @@
             android:name="org.teleforge.client.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:launchMode="singleTask"
+            android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|uiMode"
             android:theme="@style/Theme.MyApplication">
             <!-- Launcher Intent Filter -->

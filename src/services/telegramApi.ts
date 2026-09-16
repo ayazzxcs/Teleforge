@@ -581,7 +581,11 @@ export const telegramApi = {
     return telegramDirectClient.deleteProfilePhoto();
   },
 
-  async downloadMessageMedia(chatId: string, messageId: string | number): Promise<{ dataUrl: string; mimeType: string } | null> {
-    return telegramDirectClient.downloadMessageMedia(chatId, messageId);
+  async downloadMessageMedia(
+    chatId: string,
+    messageId: string | number,
+    options?: { fullRes?: boolean; fullVideo?: boolean }
+  ): Promise<{ dataUrl: string; mimeType: string } | null> {
+    return telegramDirectClient.downloadMessageMedia(chatId, messageId, options);
   },
 };

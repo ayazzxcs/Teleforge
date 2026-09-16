@@ -74,7 +74,7 @@ function notifySubscribers(key: string, url: string): void {
 // Download queue for message media
 const downloadQueue: Array<() => Promise<void>> = [];
 let activeWorkers = 0;
-const MAX_CONCURRENT_DOWNLOADS = 2;
+const MAX_CONCURRENT_DOWNLOADS = 4;
 
 function enqueueDownload(fn: () => Promise<void>) {
   downloadQueue.push(fn);
@@ -102,18 +102,20 @@ export const mediaService = {
   /**
    * Synchronous check if media is already cached in memory
    */
-  get(chatId: string, messageId: string | number): string | null {
+  get(chatId: string, messageId: string | number, options?: { fullRes?: boolean; fullVideo?: boolean }): string | null {
     if (!chatId || messageId == null) return null;
-    const key = `${chatId}_${messageId}`;
+    const suffix = options?.fullVideo ? '_video' : options?.fullRes ? '_fullres' : '';
+    const key = `${chatId}_${messageId}${suffix}`;
     return memoryCache.get(key) || null;
   },
 
   /**
    * Store media data URL in memory and IndexedDB
    */
-  set(chatId: string, messageId: string | number, dataUrl: string): void {
+  set(chatId: string, messageId: string | number, dataUrl: string, options?: { fullRes?: boolean; fullVideo?: boolean }): void {
     if (!chatId || messageId == null || !dataUrl) return;
-    const key = `${chatId}_${messageId}`;
+    const suffix = options?.fullVideo ? '_video' : options?.fullRes ? '_fullres' : '';
+    const key = `${chatId}_${messageId}${suffix}`;
     memoryCache.set(key, dataUrl);
     putToIndexedDB(key, dataUrl);
     notifySubscribers(key, dataUrl);
@@ -122,8 +124,14 @@ export const mediaService = {
   /**
    * Subscribe to media download updates
    */
-  subscribe(chatId: string, messageId: string | number, callback: (url: string) => void): () => void {
-    const key = `${chatId}_${messageId}`;
+  subscribe(
+    chatId: string,
+    messageId: string | number,
+    callback: (url: string) => void,
+    options?: { fullRes?: boolean; fullVideo?: boolean }
+  ): () => void {
+    const suffix = options?.fullVideo ? '_video' : options?.fullRes ? '_fullres' : '';
+    const key = `${chatId}_${messageId}${suffix}`;
     if (!subscribers.has(key)) {
       subscribers.set(key, new Set());
     }
@@ -153,9 +161,14 @@ export const mediaService = {
   /**
    * Load media directly via MTProto
    */
-  async loadMedia(chatId: string, messageId: string | number): Promise<string> {
+  async loadMedia(
+    chatId: string,
+    messageId: string | number,
+    options?: { fullRes?: boolean; fullVideo?: boolean }
+  ): Promise<string> {
     if (!chatId || messageId == null) return '';
-    const key = `${chatId}_${messageId}`;
+    const suffix = options?.fullVideo ? '_video' : options?.fullRes ? '_fullres' : '';
+    const key = `${chatId}_${messageId}${suffix}`;
 
     if (memoryCache.has(key)) {
       return memoryCache.get(key)!;
@@ -178,7 +191,7 @@ export const mediaService = {
       return new Promise<string>((resolve) => {
         enqueueDownload(async () => {
           try {
-            const res = await telegramDirectClient.downloadMessageMedia(chatId, messageId);
+            const res = await telegramDirectClient.downloadMessageMedia(chatId, messageId, options);
             if (res && res.dataUrl && res.dataUrl.length > 100) {
               memoryCache.set(key, res.dataUrl);
               putToIndexedDB(key, res.dataUrl);
