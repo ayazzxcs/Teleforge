@@ -13,7 +13,7 @@ import { PowerToolsModal } from './components/PowerToolsModal';
 import { CommandCenterModal } from './components/CommandCenterModal';
 import { TelegramAuthView } from './components/TelegramAuthView';
 import { TeleForgeLogo } from './components/TeleForgeLogo';
-import { telegramApi, TelegramUser, AuthStatusResponse, TelegramDialog, isAndroidApp, probeBackendServer } from './services/telegramApi';
+import { telegramApi, TelegramUser, AuthStatusResponse, TelegramDialog, isAndroidApp } from './services/telegramApi';
 import { mapDialogToChat, mapTelegramMessage, mapTelegramUserToProfile } from './utils/telegramAdapter';
 import { TeleForgeTheme, getInitialTheme, applyTheme, BUILTIN_PRESETS } from './theme/teleforgeTheme';
 import {
@@ -186,25 +186,19 @@ export const App: React.FC = () => {
   // Initial Auth Status Check
   useEffect(() => {
     let isMounted = true;
-    let retryTimer: any = null;
 
-    const checkAuth = async (isRetry = false) => {
+    const checkAuth = async () => {
       setIsLoadingAuth(true);
       try {
-        if (isAndroidApp() && !isRetry) {
-          await probeBackendServer();
-        }
-        const status = await telegramApi.getAuthStatus();
+        const statusPromise = telegramApi.getAuthStatus();
+        const timeoutPromise = new Promise<AuthStatusResponse>((resolve) =>
+          setTimeout(() => resolve({ authorized: false, configured: true }), 3500)
+        );
+        const status = await Promise.race([statusPromise, timeoutPromise]);
         if (isMounted) {
           setAuthStatus(status);
           if (status.authorized && status.user) {
             setUser(mapTelegramUserToProfile(status.user));
-          }
-          // Immediately unblock auth loading so chats render
-          setIsLoadingAuth(false);
-
-          if (status.authorized && status.user) {
-            // Progressive non-blocking loading
             loadTelegramDialogs();
             loadTelegramFolders();
             loadTelegramContacts();
@@ -212,17 +206,11 @@ export const App: React.FC = () => {
         }
       } catch (e: any) {
         console.warn('[MTProto] Auth check error:', e.message);
-        // If initial check failed, retry once after a short delay in case backend is warming up
-        if (!isRetry && isMounted) {
-          retryTimer = setTimeout(() => {
-            if (isMounted) {
-              checkAuth(true);
-            }
-          }, 1500);
-          return;
+        if (isMounted) {
+          setAuthStatus({ authorized: false, configured: true });
         }
       } finally {
-        if (isMounted && (!retryTimer || isRetry)) {
+        if (isMounted) {
           setIsLoadingAuth(false);
         }
       }
@@ -231,7 +219,6 @@ export const App: React.FC = () => {
     checkAuth();
     return () => {
       isMounted = false;
-      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [loadTelegramDialogs, loadTelegramFolders, loadTelegramContacts]);
 

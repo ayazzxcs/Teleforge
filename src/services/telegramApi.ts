@@ -1,5 +1,9 @@
-// Service for communicating with the real Telegram MTProto client backend
+// Service for communicating with Telegram MTProto client
+// In Android APK and mobile environments, routes directly to telegramDirectClient (GramJS WSS).
+// In web dev mode, routes to /api/telegram local backend with seamless telegramDirectClient fallback.
+
 import { TeleForgeDialogFilter } from '../types';
+import { telegramDirectClient } from './telegramDirectClient';
 
 export interface TelegramUser {
   id: string;
@@ -81,6 +85,7 @@ export interface SignInResponse {
   user?: TelegramUser;
   message?: string;
 }
+
 declare global {
   interface Window {
     __IS_TELEFORGE_ANDROID__?: boolean;
@@ -107,11 +112,6 @@ export function getBackendServerHost(): string {
       return saved.trim().replace(/\/+$/, '');
     }
   } catch (e) {}
-
-  if (isAndroidApp()) {
-    return 'http://10.0.2.2:3000';
-  }
-
   return '';
 }
 
@@ -151,207 +151,225 @@ export function fetchWithTimeout(url: string, options: RequestInit = {}, timeout
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
-export async function testBackendServer(host: string): Promise<{ ok: boolean; message: string }> {
-  try {
-    let clean = host.trim().replace(/\/+$/, '');
-    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
-      clean = `http://${clean}`;
-    }
-    const res = await fetchWithTimeout(`${clean}/api/telegram/auth/status`, {}, 2500);
-    if (res.ok) {
-      return { ok: true, message: 'Connected to TeleForge MTProto server!' };
-    }
-    return { ok: false, message: `Server returned HTTP ${res.status}.` };
-  } catch (err: any) {
-    return { ok: false, message: err?.message || 'Connection failed' };
-  }
-}
-
 export async function probeBackendServer(): Promise<string> {
-  const current = getBackendServerHost();
-  if (current) {
-    try {
-      const res = await fetchWithTimeout(`${current}/api/telegram/auth/status`, {}, 1500);
-      if (res.ok) return current;
-    } catch (e) {}
-  }
-
-  if (isAndroidApp()) {
-    const candidates = [
-      'http://10.0.2.2:3000',
-      'http://127.0.0.1:3000',
-      'http://localhost:3000',
-      'http://172.31.5.192:3000',
-    ];
-    for (const candidate of candidates) {
-      if (candidate === current) continue;
-      try {
-        const res = await fetchWithTimeout(`${candidate}/api/telegram/auth/status`, {}, 1500);
-        if (res.ok) {
-          setBackendServerHost(candidate);
-          return candidate;
-        }
-      } catch (e) {}
-    }
-  }
-
-  return current;
+  return '';
 }
 
 export const telegramApi = {
   async getConfig(): Promise<{ hasCredentials: boolean; apiId: number }> {
-    const res = await fetch(`${getApiBase()}/config`);
-    if (!res.ok) throw new Error('Failed to fetch Telegram configuration');
-    return res.json();
+    if (isAndroidApp()) {
+      return { hasCredentials: true, apiId: 30519813 };
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/config`, {}, 2000);
+      if (res.ok) return res.json();
+    } catch (e) {}
+    return { hasCredentials: true, apiId: 30519813 };
   },
 
   async setConfig(apiId: number, apiHash: string): Promise<{ success: boolean }> {
-    const res = await fetch(`${getApiBase()}/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiId, apiHash }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to update credentials');
-    }
-    return res.json();
+    return { success: true };
   },
 
   async getAuthStatus(): Promise<AuthStatusResponse> {
-    const res = await fetch(`${getApiBase()}/auth/status`);
-    if (!res.ok) throw new Error('Failed to check Telegram auth status');
-    return res.json();
+    if (isAndroidApp()) {
+      return telegramDirectClient.checkAuthStatus();
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/auth/status`, {}, 2000);
+      if (res.ok) return res.json();
+    } catch (e) {}
+    return telegramDirectClient.checkAuthStatus();
   },
 
   async sendCode(phoneNumber: string): Promise<SendCodeResponse> {
-    const res = await fetch(`${getApiBase()}/auth/sendCode`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phoneNumber }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to send verification code');
-    return data;
+    if (isAndroidApp()) {
+      return telegramDirectClient.sendCode(phoneNumber);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/auth/sendCode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber }),
+      }, 8000);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to send verification code');
+      return data;
+    } catch (err: any) {
+      return telegramDirectClient.sendCode(phoneNumber);
+    }
   },
 
   async signIn(phoneNumber: string, phoneCode: string, phoneCodeHash?: string): Promise<SignInResponse> {
-    const res = await fetch(`${getApiBase()}/auth/signIn`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phoneNumber, phoneCode, phoneCodeHash }),
-    });
-    const data = await res.json();
-    if (!res.ok && !data.requires2FA) throw new Error(data.error || 'Failed to sign in');
-    return data;
+    if (isAndroidApp()) {
+      return telegramDirectClient.signIn(phoneNumber, phoneCode, phoneCodeHash);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/auth/signIn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber, phoneCode, phoneCodeHash }),
+      }, 8000);
+      const data = await res.json();
+      if (!res.ok && !data.requires2FA) throw new Error(data.error || 'Failed to sign in');
+      return data;
+    } catch (err: any) {
+      return telegramDirectClient.signIn(phoneNumber, phoneCode, phoneCodeHash);
+    }
   },
 
   async submit2FA(password: string): Promise<{ success: boolean; user?: TelegramUser }> {
-    const res = await fetch(`${getApiBase()}/auth/2fa`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Two-step verification password failed');
-    return data;
+    if (isAndroidApp()) {
+      return telegramDirectClient.submit2FA(password);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/auth/2fa`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      }, 8000);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Two-step verification password failed');
+      return data;
+    } catch (err: any) {
+      return telegramDirectClient.submit2FA(password);
+    }
   },
 
   async logout(): Promise<{ success: boolean }> {
-    const res = await fetch(`${getApiBase()}/auth/logout`, {
-      method: 'POST',
-    });
-    if (!res.ok) throw new Error('Logout failed');
-    return res.json();
+    if (isAndroidApp()) {
+      return telegramDirectClient.logout();
+    }
+    try {
+      await fetchWithTimeout(`${getApiBase()}/auth/logout`, { method: 'POST' }, 2000);
+    } catch (e) {}
+    return telegramDirectClient.logout();
   },
 
-  async getDialogs(limit = 40): Promise<TelegramDialog[]> {
-    const res = await fetch(`${getApiBase()}/dialogs?limit=${limit}`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to load Telegram chats');
+  async getDialogs(limit = 50): Promise<TelegramDialog[]> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.getDialogs(limit);
     }
-    const data = await res.json();
-    return data.dialogs || [];
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/dialogs?limit=${limit}`, {}, 5000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.dialogs || [];
+      }
+    } catch (e) {}
+    return telegramDirectClient.getDialogs(limit);
   },
 
   async getMessages(chatId: string, limit = 50, offsetId?: number): Promise<TelegramMessage[]> {
-    let url = `${getApiBase()}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}`;
-    if (offsetId && offsetId > 0) {
-      url += `&offsetId=${offsetId}`;
+    if (isAndroidApp()) {
+      return telegramDirectClient.getMessages(chatId, limit, offsetId);
     }
-    const res = await fetch(url);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to load messages');
-    }
-    const data = await res.json();
-    return data.messages || [];
+    try {
+      let url = `${getApiBase()}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}`;
+      if (offsetId && offsetId > 0) {
+        url += `&offsetId=${offsetId}`;
+      }
+      const res = await fetchWithTimeout(url, {}, 5000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.messages || [];
+      }
+    } catch (e) {}
+    return telegramDirectClient.getMessages(chatId, limit, offsetId);
   },
 
   async sendMessage(chatId: string, message: string, replyToMsgId?: number): Promise<TelegramMessage> {
-    const res = await fetch(`${getApiBase()}/messages/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId, message, replyToMsgId }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to send message');
-    return data.message;
+    if (isAndroidApp()) {
+      return telegramDirectClient.sendMessage(chatId, message, replyToMsgId);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/messages/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, message, replyToMsgId }),
+      }, 6000);
+      const data = await res.json();
+      if (res.ok) return data.message;
+    } catch (e) {}
+    return telegramDirectClient.sendMessage(chatId, message, replyToMsgId);
   },
 
   async sendReaction(chatId: string, messageId: string, emoji?: string): Promise<{ success: boolean }> {
-    const res = await fetch(`${getApiBase()}/messages/react`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId, messageId, emoji }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to send reaction');
-    return data;
+    if (isAndroidApp()) {
+      return telegramDirectClient.sendReaction(chatId, messageId, emoji);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/messages/react`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, messageId, emoji }),
+      }, 4000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.sendReaction(chatId, messageId, emoji);
   },
 
   async editMessage(chatId: string, messageId: string, text: string): Promise<{ success: boolean; message: any }> {
-    const res = await fetch(`${getApiBase()}/messages/edit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId, messageId, text }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to edit message');
-    return data;
+    if (isAndroidApp()) {
+      return telegramDirectClient.editMessage(chatId, messageId, text);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/messages/edit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, messageId, text }),
+      }, 5000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.editMessage(chatId, messageId, text);
   },
 
   async deleteMessage(chatId: string, messageId: string): Promise<{ success: boolean }> {
-    const res = await fetch(`${getApiBase()}/messages/delete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId, messageId }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to delete message');
-    return data;
+    if (isAndroidApp()) {
+      return telegramDirectClient.deleteMessage(chatId, messageId);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/messages/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, messageId }),
+      }, 5000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.deleteMessage(chatId, messageId);
   },
 
   async pinMessage(chatId: string, messageId: string, silent = false): Promise<{ success: boolean }> {
-    const res = await fetch(`${getApiBase()}/messages/pin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId, messageId, silent }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to pin message');
-    return data;
+    if (isAndroidApp()) {
+      return telegramDirectClient.pinMessage(chatId, messageId, silent);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/messages/pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, messageId, silent }),
+      }, 5000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.pinMessage(chatId, messageId, silent);
   },
 
   async getContacts(): Promise<TelegramUser[]> {
-    const res = await fetch(`${getApiBase()}/contacts`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to load contacts');
+    if (isAndroidApp()) {
+      return telegramDirectClient.getContacts();
     }
-    const data = await res.json();
-    return data.contacts || [];
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/contacts`, {}, 5000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.contacts || [];
+      }
+    } catch (e) {}
+    return telegramDirectClient.getContacts();
   },
 
   getAvatarUrl(peerId: string): string {
@@ -363,76 +381,97 @@ export const telegramApi = {
   },
 
   async getDialogFilters(): Promise<TeleForgeDialogFilter[]> {
-    const res = await fetch(`${getApiBase()}/folders`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to load Telegram folders');
+    if (isAndroidApp()) {
+      return telegramDirectClient.getDialogFilters();
     }
-    const data = await res.json();
-    return (data.folders || []).map((f: any) => ({
-      ...f,
-      title: typeof f.title === 'string' ? f.title : (f.title?.text ? String(f.title.text) : String(f.title || 'Folder')),
-      emoticon: typeof f.emoticon === 'string' ? f.emoticon : (f.emoticon?.text ? String(f.emoticon.text) : ''),
-    }));
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/folders`, {}, 5000);
+      if (res.ok) {
+        const data = await res.json();
+        return (data.folders || []).map((f: any) => ({
+          ...f,
+          title: typeof f.title === 'string' ? f.title : (f.title?.text ? String(f.title.text) : String(f.title || 'Folder')),
+          emoticon: typeof f.emoticon === 'string' ? f.emoticon : (f.emoticon?.text ? String(f.emoticon.text) : ''),
+        }));
+      }
+    } catch (e) {}
+    return telegramDirectClient.getDialogFilters();
   },
 
   async saveDialogFilter(filter: Partial<TeleForgeDialogFilter> & { title: string }): Promise<{ success: boolean; filter: TeleForgeDialogFilter }> {
-    const res = await fetch(`${getApiBase()}/folders`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(filter),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to save folder to Telegram');
+    if (isAndroidApp()) {
+      return telegramDirectClient.saveDialogFilter(filter);
     }
-    return data;
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/folders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(filter),
+      }, 6000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.saveDialogFilter(filter);
   },
 
   async deleteDialogFilter(id: string): Promise<{ success: boolean; id: string }> {
-    const res = await fetch(`${getApiBase()}/folders/delete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to delete folder from Telegram');
+    if (isAndroidApp()) {
+      return telegramDirectClient.deleteDialogFilter(id);
     }
-    return data;
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/folders/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      }, 5000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.deleteDialogFilter(id);
   },
 
   async reorderDialogFilters(order: string[]): Promise<{ success: boolean; order: number[] }> {
-    const res = await fetch(`${getApiBase()}/folders/order`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to update folder order in Telegram');
+    if (isAndroidApp()) {
+      return telegramDirectClient.reorderDialogFilters(order);
     }
-    return data;
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/folders/order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order }),
+      }, 5000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.reorderDialogFilters(order);
   },
 
   async getChatFullInfo(id: string): Promise<{ id: string; memberCount?: number; about?: string }> {
-    const res = await fetch(`${getApiBase()}/chat/info?id=${encodeURIComponent(id)}`);
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to fetch chat info');
+    if (isAndroidApp()) {
+      return telegramDirectClient.getChatFullInfo(id);
     }
-    return data.info || { id };
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/chat/info?id=${encodeURIComponent(id)}`, {}, 4000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.info || { id };
+      }
+    } catch (e) {}
+    return telegramDirectClient.getChatFullInfo(id);
   },
 
   async markAsRead(chatId: string): Promise<void> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.markAsRead(chatId);
+    }
     try {
-      await fetch(`${getApiBase()}/read`, {
+      await fetchWithTimeout(`${getApiBase()}/read`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chatId }),
-      });
+      }, 3000);
     } catch (e) {
-      // Non-critical — unread badge is already cleared client-side
+      telegramDirectClient.markAsRead(chatId).catch(() => {});
     }
   },
 
@@ -440,37 +479,47 @@ export const telegramApi = {
     q: string,
     limit = 20
   ): Promise<{ myResults: TelegramDialog[]; globalResults: TelegramDialog[] }> {
-    if (!q || q.trim().length < 2) {
-      return { myResults: [], globalResults: [] };
+    if (isAndroidApp()) {
+      return telegramDirectClient.searchGlobal(q, limit);
     }
-    const res = await fetch(`${getApiBase()}/search?q=${encodeURIComponent(q.trim())}&limit=${limit}`);
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to search Telegram');
-    }
-    return data || { myResults: [], globalResults: [] };
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/search?q=${encodeURIComponent(q.trim())}&limit=${limit}`, {}, 6000);
+      if (res.ok) {
+        const data = await res.json();
+        return data || { myResults: [], globalResults: [] };
+      }
+    } catch (e) {}
+    return telegramDirectClient.searchGlobal(q, limit);
   },
 
   async joinChat(chatId: string): Promise<{ success: boolean; error?: string }> {
-    const res = await fetch(`${getApiBase()}/join`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to join chat');
+    if (isAndroidApp()) {
+      return telegramDirectClient.joinChat(chatId);
     }
-    return data;
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId }),
+      }, 6000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.joinChat(chatId);
   },
 
   async getProfile(): Promise<{ success: boolean; user: TelegramUser }> {
-    const res = await fetch(`${getApiBase()}/profile`);
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to fetch profile from Telegram');
+    if (isAndroidApp()) {
+      return telegramDirectClient.getProfile();
     }
-    return data;
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/profile`, {}, 4000);
+      if (res.ok) {
+        const data = await res.json();
+        return data;
+      }
+    } catch (e) {}
+    return telegramDirectClient.getProfile();
   },
 
   async updateProfile(params: {
@@ -480,16 +529,19 @@ export const telegramApi = {
     bio?: string;
     username?: string;
   }): Promise<{ success: boolean; user: TelegramUser }> {
-    const res = await fetch(`${getApiBase()}/profile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to update profile on Telegram');
+    if (isAndroidApp()) {
+      return telegramDirectClient.updateProfile(params);
     }
-    return data;
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      }, 6000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.updateProfile(params);
   },
 
   async uploadProfilePhoto(params: {

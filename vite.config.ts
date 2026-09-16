@@ -1,10 +1,19 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { telegramMiddleware } from './server/telegramMiddleware.js';
 
 export default defineConfig({
   base: './',
   plugins: [
+    nodePolyfills({
+      include: ['buffer', 'crypto', 'os', 'path', 'stream', 'util', 'events'],
+      globals: {
+        Buffer: true,
+        global: true,
+        process: true,
+      },
+    }),
     react(),
     {
       name: 'telegram-mtproto-api',
