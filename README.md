@@ -52,23 +52,28 @@ TeleForge strictly adheres to Telegram's official MTProto protocols, using direc
 
 ---
 
-## 🏗️ Architecture & Layout
+## 📱 Dual Form Factor Architecture
 
-`
-+-------------------------------------------------------------+
-| TeleForge UI (React 18 + TypeScript + Tailwind CSS)         |
-+-------------------------------------------------------------+
-| TeleForge State Manager & Power Tools Services (App.tsx)   |
-+-------------------------------------------------------------+
-| REST / JSON Middleware API (server/telegramMiddleware.js)   |
-+-------------------------------------------------------------+
-| MTProto Layer 198 Engine & Entity Cache (telegramBackend.js)|
-+-------------------------------------------------------------+
-| Encrypted MTProto 2.0 TCP Transport (GramJS)                |
-+-------------------------------------------------------------+
-| Telegram Cloud Datacenters (DC4 / DC2 / DC1 / DC3 / DC5)   |
-+-------------------------------------------------------------+
-`
+TeleForge is designed to run across multiple environments with zero compromise on user experience or security:
+
+```
++-------------------------------------------------------------------------+
+|                  TeleForge 1.0 Client Architecture                     |
++------------------------------------+------------------------------------+
+|         Web & Desktop Client       |           Android Client           |
+| (React 18 + Vite + Tailwind CSS)   |  (org.teleforge.client container)  |
++------------------------------------+------------------------------------+
+|  • Local Vite / Node.js runtime    |  • Hardened hardware WebView       |
+|  • Direct MTProto 2.0 via GramJS   |  • Bundled local assets via        |
+|  • Responsive desktop & mobile web |    WebViewAssetLoader              |
+|  • Full keyboard & mouse shortcuts |  • System file chooser for avatar  |
+|                                    |  • tg:// and t.me deep link scheme |
++------------------------------------+------------------------------------+
+|              Direct MTProto 2.0 Encrypted TCP Transport                 |
++-------------------------------------------------------------------------+
+|                  Telegram Production Cloud Datacenters                  |
++-------------------------------------------------------------------------+
+```
 
 ---
 
@@ -78,38 +83,57 @@ TeleForge strictly adheres to Telegram's official MTProto protocols, using direc
 - **Node.js**: v18.0.0 or higher (v24.x recommended)
 - **npm**: v9.0.0 or higher
 - **Telegram API Credentials**: Obtained from [my.telegram.org](https://my.telegram.org)
+- **Android SDK (for Android target)**: API 34+ and JDK 17+
 
-### 1. Configure Telegram API Credentials
-Set your credentials in .telegram_config.json or as environment variables:
-`json
+### 1. Web & Desktop Client
+
+#### Step 1: Configure Telegram API Credentials
+Set your credentials in `.telegram_config.json` or as environment variables:
+```json
 {
   "apiId": YOUR_TELEGRAM_API_ID,
   "apiHash": "YOUR_TELEGRAM_API_HASH"
 }
-`
-*Note: Never share or commit your piHash or .telegram_session.*
+```
+*Note: Never share or commit your `apiHash` or `.telegram_session`.*
 
-### 2. Install Dependencies
-`ash
+#### Step 2: Install Dependencies & Run Locally
+```bash
 npm install
-`
-
-### 3. Start Development Server
-`ash
 npm run dev
-`
-Access the application at http://localhost:3000.
+```
+Access the application at `http://localhost:3000`.
 
-### 4. Production Release Build
-`ash
+#### Step 3: Production Web Build
+```bash
 npm run build
-`
-Generates an optimized, minified production distribution in dist/.
-
-### 5. Preview Production Build
-`ash
 npm run preview
-`
+```
+Generates an optimized, minified production distribution in `dist/`.
+
+---
+
+### 2. Android Client (`org.teleforge.client`)
+
+The Android application embeds the production TeleForge client in a native container located in `app/`.
+
+#### Step 1: Build & Sync Web Assets to Android
+```bash
+# Build the production bundle with portable relative assets
+npm run build
+
+# Copy web bundle to Android assets
+mkdir -p app/src/main/assets/web
+cp -r dist/* app/src/main/assets/web/
+```
+
+#### Step 2: Build Android APK via Gradle
+```bash
+cd app
+./gradlew assembleRelease
+```
+The resulting release package will be generated at:
+`app/build/outputs/apk/release/app-release-unsigned.apk`
 
 ---
 

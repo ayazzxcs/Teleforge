@@ -22,6 +22,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 - **Real Member Count**: Querying channels.GetFullChannel and messages.GetFullChat for live member counts.
 - **Security & Privacy Hardening**: Strict credential protection with no plaintext logging of tokens or passwords, removal of unused third-party APIs, and hardened backup/transfer rules.
 
+#### Android Native Client Container (`org.teleforge.client`)
+- **Native WebView Container**: Embedded production TeleForge client in hardware-accelerated Android `WebView` (`MainActivity.kt`).
+- **Asset Loader**: Configured `WebViewAssetLoader` with local HTTPS origin mapping for zero-latency asset loading.
+- **Deep Linking Integration**: Full `tg://` and `https://t.me/` URL routing with runtime intent evaluation.
+- **Native File Chooser**: Standard Android document/media picker bridge (`WebChromeClient.onShowFileChooser`) for local avatar and media uploads.
+- **System Theme & Hardware Back**: Edge-to-edge system bar coloring and native `OnBackPressedCallback` history traversal.
+
 #### TeleForge Brand & Visual Identity
 - **Signature Palette**: Deep TeleForge Red (#8B1E22) paired with Warm Cream (#FFF8EE) and dark canvas (#0c1017).
 - **Responsive Web & Mobile Layout**: Fluid chat sidebar, sticky header, adaptive drawer navigation, and touch-optimized action targets.
