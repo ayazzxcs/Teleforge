@@ -16,7 +16,7 @@ import { TeleForgeLogo } from './components/TeleForgeLogo';
 import { telegramApi, TelegramUser, AuthStatusResponse, TelegramDialog, isAndroidApp } from './services/telegramApi';
 import { avatarService } from './services/avatarService';
 import { mediaService } from './services/mediaService';
-import { mapDialogToChat, mapTelegramMessage, mapTelegramUserToProfile } from './utils/telegramAdapter';
+import { mapDialogToChat, mapTelegramMessage, mapTelegramUserToProfile, formatMessageTime } from './utils/telegramAdapter';
 import { TeleForgeTheme, getInitialTheme, applyTheme, BUILTIN_PRESETS } from './theme/teleforgeTheme';
 import {
   getPowerToolsSettings,
@@ -346,6 +346,99 @@ export const App: React.FC = () => {
       console.error('[MTProto] Failed to load messages for chat:', chatId, err.message);
     }
   };
+
+  // Listen for real-time MTProto updates from Telegram servers
+  useEffect(() => {
+    if (!authStatus.authorized) return;
+
+    const unsubscribe = telegramApi.onNewMessage(({ chatId, message: newMsg }) => {
+      setChats((prevChats) => {
+        const chatIdx = prevChats.findIndex((c) => c.id === chatId);
+        const mappedMsg = mapTelegramMessage(newMsg, chatId, chatIdx >= 0 ? prevChats[chatIdx].name : 'Telegram');
+
+        if (chatIdx >= 0) {
+          const chat = prevChats[chatIdx];
+          const exists = chat.messages.some((m) => String(m.id) === String(newMsg.id));
+          const updatedMessages = exists ? chat.messages : [...chat.messages, mappedMsg];
+          const isCurrentActive = activeChatId === chatId;
+
+          const updatedChat: Chat = {
+            ...chat,
+            messages: updatedMessages,
+            unreadCount: isCurrentActive ? 0 : (chat.unreadCount || 0) + (newMsg.out ? 0 : 1),
+            lastMessage: {
+              text: newMsg.text || (newMsg.hasMedia ? (newMsg.mediaType === 'photo' ? '📷 Photo' : '📎 Media') : ''),
+              timestamp: formatMessageTime(newMsg.date),
+              rawDate: newMsg.date,
+              isOutgoing: newMsg.out,
+            },
+          };
+
+          const otherChats = prevChats.filter((_, idx) => idx !== chatIdx);
+          return [updatedChat, ...otherChats];
+        }
+
+        return prevChats;
+      });
+
+      if (!newMsg.out && newMsg.senderId) {
+        avatarService.loadAvatar(newMsg.senderId, false).catch(() => {});
+      }
+    });
+
+    return unsubscribe;
+  }, [authStatus.authorized, activeChatId]);
+
+  // Active chat real-time polling (every 3.5 seconds)
+  useEffect(() => {
+    if (!authStatus.authorized || !activeChatId || activeChatId === 'saved-messages') return;
+
+    let isCancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const latestMsgs = await telegramApi.getMessages(activeChatId, 15);
+        if (isCancelled || !latestMsgs || latestMsgs.length === 0) return;
+
+        setChats((prevChats) => {
+          const targetChat = prevChats.find((c) => c.id === activeChatId);
+          if (!targetChat) return prevChats;
+
+          const existingIds = new Set(targetChat.messages.map((m) => String(m.id)));
+          const newBatch = latestMsgs.filter((m) => !existingIds.has(String(m.id)));
+
+          if (newBatch.length === 0) return prevChats;
+
+          const mappedBatch = newBatch.map((m) =>
+            mapTelegramMessage(m, activeChatId, targetChat.name || 'Telegram')
+          );
+
+          const merged = [...targetChat.messages, ...mappedBatch].sort((a, b) => {
+            const timeA = a.rawDate || (a.id.startsWith('temp-') ? Date.now() : 0);
+            const timeB = b.rawDate || (b.id.startsWith('temp-') ? Date.now() : 0);
+            return timeA - timeB;
+          });
+
+          return prevChats.map((c) => (c.id === activeChatId ? { ...c, messages: merged } : c));
+        });
+      } catch (err) {}
+    }, 3500);
+
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [authStatus.authorized, activeChatId]);
+
+  // Periodic dialogs sync (every 8 seconds to refresh unread badges and snippets)
+  useEffect(() => {
+    if (!authStatus.authorized) return;
+
+    const interval = setInterval(() => {
+      loadTelegramDialogs();
+    }, 8000);
+
+    return () => clearInterval(interval);
+  }, [authStatus.authorized, loadTelegramDialogs]);
 
   // Load older messages for pagination / infinite scroll
   const handleLoadOlderMessages = async (chatId: string): Promise<boolean> => {

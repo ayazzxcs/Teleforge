@@ -65,8 +65,8 @@ export const TeleForgeLogo: React.FC<TeleForgeLogoProps> = ({
           </linearGradient>
         </defs>
 
-        {/* Red Circular Background with Signature Cream Outline reaching end edge */}
-        <circle cx="120" cy="120" r="116" fill="url(#teleforgeRedGradient)" stroke="#FFF8EE" strokeWidth="8" />
+        {/* Red Circular Background with Signature Cream Outline */}
+        <circle cx="120" cy="120" r="112" fill="url(#teleforgeRedGradient)" stroke="#FFF8EE" strokeWidth="7" />
 
         {/* Warm Cream Paper-Plane Silhouette (Authentic Geometry) */}
         <path

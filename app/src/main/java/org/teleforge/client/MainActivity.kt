@@ -244,6 +244,96 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // Native Video / Media Streamer: serves locally cached media with full HTTP 206 Range support
+                    if (uri.host == "appassets.androidplatform.net" && uri.path == "/api/local-media") {
+                        val id = uri.getQueryParameter("id")
+                        if (!id.isNullOrBlank()) {
+                            try {
+                                val file = java.io.File(cacheDir, "media/$id.mp4")
+                                if (file.exists() && file.length() > 0L) {
+                                    val fileLength = file.length()
+                                    val rangeHeader = request.requestHeaders?.get("Range")
+                                        ?: request.requestHeaders?.get("range")
+
+                                    if (!rangeHeader.isNullOrBlank() && rangeHeader.startsWith("bytes=")) {
+                                        val rangeSpec = rangeHeader.substringAfter("bytes=").trim()
+                                        val parts = rangeSpec.split("-")
+                                        var start = parts[0].toLongOrNull() ?: 0L
+                                        var end = if (parts.size > 1 && parts[1].isNotEmpty()) {
+                                            parts[1].toLongOrNull() ?: (fileLength - 1L)
+                                        } else {
+                                            fileLength - 1L
+                                        }
+                                        if (end >= fileLength) end = fileLength - 1L
+                                        if (start > end) start = 0L
+                                        val contentLength = end - start + 1L
+
+                                        val fis = java.io.FileInputStream(file)
+                                        if (start > 0L) {
+                                            fis.channel.position(start)
+                                        }
+
+                                        val limitedStream = object : java.io.InputStream() {
+                                            private var bytesRemaining = contentLength
+                                            override fun read(): Int {
+                                                if (bytesRemaining <= 0L) return -1
+                                                val b = fis.read()
+                                                if (b != -1) bytesRemaining--
+                                                return b
+                                            }
+                                            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                                                if (bytesRemaining <= 0L) return -1
+                                                val toRead = Math.min(len.toLong(), bytesRemaining).toInt()
+                                                val count = fis.read(b, off, toRead)
+                                                if (count > 0) bytesRemaining -= count.toLong()
+                                                return count
+                                            }
+                                            override fun available(): Int =
+                                                Math.min(fis.available().toLong(), bytesRemaining).toInt()
+                                            override fun close() {
+                                                fis.close()
+                                            }
+                                        }
+
+                                        val headers = mapOf(
+                                            "Access-Control-Allow-Origin" to "*",
+                                            "Accept-Ranges" to "bytes",
+                                            "Content-Range" to "bytes $start-$end/$fileLength",
+                                            "Content-Length" to contentLength.toString(),
+                                            "Content-Type" to "video/mp4"
+                                        )
+
+                                        return WebResourceResponse(
+                                            "video/mp4",
+                                            null,
+                                            206,
+                                            "Partial Content",
+                                            headers,
+                                            limitedStream
+                                        )
+                                    } else {
+                                        val headers = mapOf(
+                                            "Access-Control-Allow-Origin" to "*",
+                                            "Accept-Ranges" to "bytes",
+                                            "Content-Length" to fileLength.toString(),
+                                            "Content-Type" to "video/mp4"
+                                        )
+                                        return WebResourceResponse(
+                                            "video/mp4",
+                                            null,
+                                            200,
+                                            "OK",
+                                            headers,
+                                            java.io.FileInputStream(file)
+                                        )
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                // Fall through to assetLoader
+                            }
+                        }
+                    }
+
                     val response = assetLoader.shouldInterceptRequest(uri)
                     if (response != null) return response
                 }
@@ -523,6 +613,39 @@ class MainActivity : ComponentActivity() {
                     android.widget.Toast.makeText(activity, "Failed to save file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun writeMediaChunk(id: String, base64Chunk: String, isAppend: Boolean): Boolean {
+            return try {
+                val mediaDir = java.io.File(activity.cacheDir, "media")
+                if (!mediaDir.exists()) mediaDir.mkdirs()
+                val file = java.io.File(mediaDir, "$id.mp4")
+                val rawB64 = if (base64Chunk.contains(",")) base64Chunk.substringAfter(",") else base64Chunk
+                val bytes = Base64.decode(rawB64, Base64.DEFAULT)
+                java.io.FileOutputStream(file, isAppend).use { fos ->
+                    fos.write(bytes)
+                }
+                true
+            } catch (e: Exception) {
+                android.util.Log.e("TeleForgeBridge", "writeMediaChunk error: ${e.message}", e)
+                false
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun getLocalMediaUrl(id: String): String {
+            val file = java.io.File(activity.cacheDir, "media/$id.mp4")
+            if (file.exists() && file.length() > 0L) {
+                return "https://appassets.androidplatform.net/api/local-media?id=$id"
+            }
+            return ""
+        }
+
+        @android.webkit.JavascriptInterface
+        fun hasLocalMedia(id: String): Boolean {
+            val file = java.io.File(activity.cacheDir, "media/$id.mp4")
+            return file.exists() && file.length() > 0L
         }
     }
 }

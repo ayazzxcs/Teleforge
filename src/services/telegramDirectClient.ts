@@ -68,6 +68,237 @@ export function hasSavedSession(): boolean {
   return Boolean(getStoredSessionString().trim());
 }
 
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function extractPeerId(peer: any): string | null {
+  if (!peer) return null;
+  if (typeof peer === 'string' || typeof peer === 'number') return peer.toString();
+  if (peer.userId != null) return peer.userId.toString();
+  if (peer.chatId != null) return `-${peer.chatId.toString()}`;
+  if (peer.channelId != null) return `-100${peer.channelId.toString()}`;
+  if (peer.id != null) return peer.id.toString();
+  return null;
+}
+
+export type DirectMessageListener = (event: {
+  chatId: string;
+  message: TelegramMessage;
+}) => void;
+
+const messageListeners = new Set<DirectMessageListener>();
+
+export function onDirectNewMessage(listener: DirectMessageListener): () => void {
+  messageListeners.add(listener);
+  return () => messageListeners.delete(listener);
+}
+
+function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
+  let senderIdStr = m.senderId ? m.senderId.toString() : (m.fromId ? extractPeerId(m.fromId) : null);
+  const senderEntity = m.sender || m._sender || (senderIdStr ? peerEntityCache.get(senderIdStr) : null);
+
+  if (senderEntity && senderEntity.id) {
+    const sId = senderEntity.id.toString();
+    if (!senderIdStr) senderIdStr = sId;
+    peerEntityCache.set(sId, senderEntity);
+
+    if (senderEntity.photo?.strippedThumb) {
+      try {
+        const thumbBuf = strippedPhotoToJpg(senderEntity.photo.strippedThumb);
+        if (thumbBuf && thumbBuf.length > 0) {
+          const b64 = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+          thumbCache.set(sId, b64);
+          if (senderIdStr) thumbCache.set(senderIdStr, b64);
+        }
+      } catch (e) {}
+    }
+  }
+
+  let senderName = '';
+  if (senderEntity) {
+    if (senderEntity.title) senderName = senderEntity.title;
+    else senderName = [senderEntity.firstName, senderEntity.lastName].filter(Boolean).join(' ');
+  }
+  if (!senderName && m.postAuthor) senderName = m.postAuthor;
+
+  const senderThumbUrl = !m.out && senderIdStr ? thumbCache.get(senderIdStr) : undefined;
+
+  let hasMedia = Boolean(m.media);
+  let mediaType: 'photo' | 'video' | 'voice' | 'audio' | 'document' | null = null;
+  let mediaThumb: string | undefined = undefined;
+  let fileName: string | undefined = undefined;
+  let fileSize: string | undefined = undefined;
+
+  if (m.media) {
+    messageMediaMap.set(`${chatId}_${m.id}`, m.media);
+    messageMediaMap.set(String(m.id), m.media);
+    messageObjectMap.set(`${chatId}_${m.id}`, m);
+    messageObjectMap.set(String(m.id), m);
+    const cls = m.media.className || m.media._ || '';
+    if (cls.includes('Photo')) {
+      mediaType = 'photo';
+      if (m.media.photo?.strippedThumb) {
+        try {
+          const thumbBuf = strippedPhotoToJpg(m.media.photo.strippedThumb);
+          if (thumbBuf && thumbBuf.length > 0) {
+            mediaThumb = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+          }
+        } catch (e) {}
+      }
+    } else if (cls.includes('Document')) {
+      const attrs = m.media.document?.attributes || [];
+      const isVideoAttr = attrs.some((a: any) =>
+        a._ === 'documentAttributeVideo' ||
+        a.className === 'DocumentAttributeVideo' ||
+        a._ === 'documentAttributeAnimated' ||
+        a.className === 'DocumentAttributeAnimated'
+      );
+      const isVoice = attrs.some((a: any) =>
+        (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio') && a.voice
+      );
+      const isAudio = attrs.some((a: any) =>
+        (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio') && !a.voice
+      );
+      const filenameAttr = attrs.find((a: any) =>
+        a._ === 'documentAttributeFilename' || a.className === 'DocumentAttributeFilename'
+      );
+
+      const mime = (m.media.document?.mimeType || '').toLowerCase();
+
+      if (isVideoAttr || mime.startsWith('video/')) {
+        mediaType = 'video';
+      } else if (isVoice) {
+        mediaType = 'voice';
+      } else if (isAudio || mime.startsWith('audio/')) {
+        mediaType = 'audio';
+      } else if (mime.startsWith('image/')) {
+        mediaType = 'photo';
+      } else {
+        mediaType = 'document';
+      }
+
+      if (m.media.document?.thumbs) {
+        const stripped = m.media.document.thumbs.find((t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize');
+        if (stripped?.bytes) {
+          try {
+            const thumbBuf = strippedPhotoToJpg(stripped.bytes);
+            if (thumbBuf && thumbBuf.length > 0) {
+              mediaThumb = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+            }
+          } catch (e) {}
+        }
+      }
+
+      if (filenameAttr) fileName = filenameAttr.fileName;
+      fileSize = m.media.document?.size ? formatBytes(Number(m.media.document.size)) : undefined;
+    }
+  }
+
+  let reactions: { emoji: string; count: number; userReacted?: boolean }[] = [];
+  if (m.reactions && m.reactions.results) {
+    reactions = m.reactions.results.map((r: any) => {
+      let emojiStr = '👍';
+      if (r.reaction && r.reaction.emoticon) emojiStr = r.reaction.emoticon;
+      return {
+        emoji: emojiStr,
+        count: r.count || 1,
+        userReacted: Boolean(r.chosenOrder !== undefined || r.chosen),
+      };
+    });
+  }
+
+  return {
+    id: m.id,
+    text: m.message || '',
+    date: m.date ? m.date * 1000 : Date.now(),
+    out: Boolean(m.out),
+    senderId: senderIdStr || undefined,
+    senderName: senderName || undefined,
+    senderAvatar: (!m.out && senderIdStr) ? avatarBlobUrlCache.get(senderIdStr) : undefined,
+    senderThumbUrl,
+    hasMedia,
+    mediaType,
+    mediaThumb,
+    fileName,
+    fileSize,
+    replyToMsgId: m.replyTo?.replyToMsgId,
+    reactions,
+  };
+}
+
+function handleSingleUpdate(u: any) {
+  if (!u) return;
+  const cls = u.className || u._ || '';
+  let msgObj: any = null;
+  let chatId: string | null = null;
+
+  if (u.message && (cls.includes('UpdateNewMessage') || cls.includes('UpdateNewChannelMessage'))) {
+    msgObj = u.message;
+    chatId = msgObj.peerId ? extractPeerId(msgObj.peerId) : null;
+  } else if (cls.includes('UpdateShortChatMessage')) {
+    chatId = `-${u.chatId}`;
+    msgObj = {
+      id: u.id,
+      message: u.message,
+      date: u.date,
+      out: Boolean(u.out),
+      fromId: u.fromId ? { userId: u.fromId } : undefined,
+    };
+  } else if (cls.includes('UpdateShortMessage')) {
+    chatId = u.userId ? u.userId.toString() : null;
+    msgObj = {
+      id: u.id,
+      message: u.message,
+      date: u.date,
+      out: Boolean(u.out),
+      fromId: u.out ? undefined : (u.userId ? { userId: u.userId } : undefined),
+    };
+  }
+
+  if (msgObj && chatId) {
+    const mapped = mapGramJsMessage(msgObj, chatId);
+    if (mapped) {
+      messageListeners.forEach((fn) => {
+        try {
+          fn({ chatId: chatId!, message: mapped });
+        } catch (err) {}
+      });
+    }
+  }
+}
+
+function processUpdateEvent(event: any) {
+  if (!event) return;
+  if (Array.isArray(event.users)) {
+    for (const user of event.users) {
+      if (user && user.id) peerEntityCache.set(user.id.toString(), user);
+    }
+  }
+  if (Array.isArray(event.chats)) {
+    for (const chat of event.chats) {
+      if (chat && chat.id) {
+        const idStr = chat.id.toString();
+        peerEntityCache.set(idStr, chat);
+        peerEntityCache.set(`-${idStr}`, chat);
+        peerEntityCache.set(`-100${idStr}`, chat);
+      }
+    }
+  }
+
+  if (Array.isArray(event.updates)) {
+    for (const sub of event.updates) {
+      handleSingleUpdate(sub);
+    }
+  } else {
+    handleSingleUpdate(event);
+  }
+}
+
 /**
  * Get or create the singleton GramJS TelegramClient instance
  */
@@ -100,6 +331,16 @@ export async function getDirectClient(): Promise<TelegramClient> {
       await withTimeout(client.connect(), 12000, 'Could not connect to Telegram servers (timeout).');
       console.log('[MTProto-Direct] Connected to Telegram production servers.');
 
+      try {
+        client.addEventHandler((event: any) => {
+          try {
+            processUpdateEvent(event);
+          } catch (e) {
+            console.warn('[MTProto-Direct] Update processing error:', e);
+          }
+        });
+      } catch (e) {}
+
       clientInstance = client;
       return client;
     } catch (err: any) {
@@ -120,24 +361,6 @@ function hasEntityPhoto(entity: any): boolean {
   const cls = p.className || p._ || '';
   if (cls.includes('Empty') || cls.includes('empty')) return false;
   return true;
-}
-
-function formatBytes(bytes: number): string {
-  if (!bytes || bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-function extractPeerId(peer: any): string | null {
-  if (!peer) return null;
-  if (typeof peer === 'string' || typeof peer === 'number') return peer.toString();
-  if (peer.userId != null) return peer.userId.toString();
-  if (peer.chatId != null) return `-${peer.chatId.toString()}`;
-  if (peer.channelId != null) return `-100${peer.channelId.toString()}`;
-  if (peer.id != null) return peer.id.toString();
-  return null;
 }
 
 function serializeUser(u: any): TelegramUser | null {
@@ -590,138 +813,7 @@ export const telegramDirectClient = {
 
     const messages = await client.getMessages(targetPeer, fetchOptions);
 
-    return messages.map((m: any) => {
-      let senderIdStr = m.senderId ? m.senderId.toString() : (m.fromId ? extractPeerId(m.fromId) : null);
-      const senderEntity = m.sender || m._sender || (senderIdStr ? peerEntityCache.get(senderIdStr) : null);
-
-      if (senderEntity && senderEntity.id) {
-        const sId = senderEntity.id.toString();
-        if (!senderIdStr) senderIdStr = sId;
-        peerEntityCache.set(sId, senderEntity);
-
-        if (senderEntity.photo?.strippedThumb) {
-          try {
-            const thumbBuf = strippedPhotoToJpg(senderEntity.photo.strippedThumb);
-            if (thumbBuf && thumbBuf.length > 0) {
-              const b64 = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
-              thumbCache.set(sId, b64);
-              if (senderIdStr) thumbCache.set(senderIdStr, b64);
-            }
-          } catch (e) {}
-        }
-      }
-
-      let senderName = '';
-      if (senderEntity) {
-        if (senderEntity.title) senderName = senderEntity.title;
-        else senderName = [senderEntity.firstName, senderEntity.lastName].filter(Boolean).join(' ');
-      }
-      if (!senderName && m.postAuthor) senderName = m.postAuthor;
-
-      const senderThumbUrl = !m.out && senderIdStr ? thumbCache.get(senderIdStr) : undefined;
-
-      let hasMedia = Boolean(m.media);
-      let mediaType: 'photo' | 'video' | 'voice' | 'audio' | 'document' | null = null;
-      let mediaThumb: string | undefined = undefined;
-      let fileName: string | undefined = undefined;
-      let fileSize: string | undefined = undefined;
-
-      if (m.media) {
-        messageMediaMap.set(`${chatId}_${m.id}`, m.media);
-        messageMediaMap.set(String(m.id), m.media);
-        messageObjectMap.set(`${chatId}_${m.id}`, m);
-        messageObjectMap.set(String(m.id), m);
-        const cls = m.media.className || m.media._ || '';
-        if (cls.includes('Photo')) {
-          mediaType = 'photo';
-          if (m.media.photo?.strippedThumb) {
-            try {
-              const thumbBuf = strippedPhotoToJpg(m.media.photo.strippedThumb);
-              if (thumbBuf && thumbBuf.length > 0) {
-                mediaThumb = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
-              }
-            } catch (e) {}
-          }
-        } else if (cls.includes('Document')) {
-          const attrs = m.media.document?.attributes || [];
-          const isVideoAttr = attrs.some((a: any) =>
-            a._ === 'documentAttributeVideo' ||
-            a.className === 'DocumentAttributeVideo' ||
-            a._ === 'documentAttributeAnimated' ||
-            a.className === 'DocumentAttributeAnimated'
-          );
-          const isVoice = attrs.some((a: any) =>
-            (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio') && a.voice
-          );
-          const isAudio = attrs.some((a: any) =>
-            (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio') && !a.voice
-          );
-          const filenameAttr = attrs.find((a: any) =>
-            a._ === 'documentAttributeFilename' || a.className === 'DocumentAttributeFilename'
-          );
-
-          const mime = (m.media.document?.mimeType || '').toLowerCase();
-
-          if (isVideoAttr || mime.startsWith('video/')) {
-            mediaType = 'video';
-          } else if (isVoice) {
-            mediaType = 'voice';
-          } else if (isAudio || mime.startsWith('audio/')) {
-            mediaType = 'audio';
-          } else if (mime.startsWith('image/')) {
-            mediaType = 'photo';
-          } else {
-            mediaType = 'document';
-          }
-
-          if (m.media.document?.thumbs) {
-            const stripped = m.media.document.thumbs.find((t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize');
-            if (stripped?.bytes) {
-              try {
-                const thumbBuf = strippedPhotoToJpg(stripped.bytes);
-                if (thumbBuf && thumbBuf.length > 0) {
-                  mediaThumb = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
-                }
-              } catch (e) {}
-            }
-          }
-
-          if (filenameAttr) fileName = filenameAttr.fileName;
-          fileSize = m.media.document?.size ? formatBytes(Number(m.media.document.size)) : undefined;
-        }
-      }
-
-      let reactions: { emoji: string; count: number; userReacted?: boolean }[] = [];
-      if (m.reactions && m.reactions.results) {
-        reactions = m.reactions.results.map((r: any) => {
-          let emojiStr = '👍';
-          if (r.reaction && r.reaction.emoticon) emojiStr = r.reaction.emoticon;
-          return {
-            emoji: emojiStr,
-            count: r.count || 1,
-            userReacted: Boolean(r.chosenOrder !== undefined || r.chosen),
-          };
-        });
-      }
-
-      return {
-        id: m.id,
-        text: m.message || '',
-        date: m.date ? m.date * 1000 : Date.now(),
-        out: Boolean(m.out),
-        senderId: senderIdStr || undefined,
-        senderName: senderName || undefined,
-        senderAvatar: (!m.out && senderIdStr) ? avatarBlobUrlCache.get(senderIdStr) : undefined,
-        senderThumbUrl,
-        hasMedia,
-        mediaType,
-        mediaThumb,
-        fileName,
-        fileSize,
-        replyToMsgId: m.replyTo?.replyToMsgId,
-        reactions,
-      };
-    });
+    return messages.map((m: any) => mapGramJsMessage(m, chatId));
   },
 
   /**
@@ -1539,11 +1631,8 @@ export const telegramDirectClient = {
 
       if (isPhoto) {
         mimeType = 'image/jpeg';
-        // For inline chat view, download standard medium thumb ('x') for instant ~80KB load
-        // Only fetch full multi-megabyte 4K photo if fullRes is requested (e.g. MediaModal)
-        if (!options?.fullRes) {
-          downloadParams.thumb = 'x';
-        }
+        // Note: Do NOT hardcode thumb = 'x' because photos lacking 'x' return empty buffer in GramJS.
+        // GramJS will download the best available size if thumb is omitted.
       } else if (isDocument) {
         mimeType = mediaObj.document?.mimeType || 'application/octet-stream';
         const isVideo = mimeType.startsWith('video/') || (mediaObj.document?.attributes || []).some((a: any) =>
@@ -1552,6 +1641,7 @@ export const telegramDirectClient = {
         );
 
         if (isVideo) {
+          mimeType = mimeType.startsWith('video/') ? mimeType : 'video/mp4';
           // If not playing full video, download the video thumbnail (fast ~25KB), NEVER the full video!
           if (!options?.fullVideo) {
             downloadParams.thumb = -1; // highest quality thumbnail
@@ -1560,16 +1650,47 @@ export const telegramDirectClient = {
         }
       }
 
-      // If downloading full video/large file, stream chunks into an array of Uint8Array parts
-      // This completely avoids GramJS BinaryWriter doing Buffer.concat which runs out of memory on long videos!
+      // If downloading full video/large file, stream chunks into Android local cache or Blob parts
       if (options?.fullVideo) {
+        const isAndroid = typeof window !== 'undefined' && Boolean((window as any).TeleForgeBridge?.writeMediaChunk);
+        if (isAndroid && (window as any).TeleForgeBridge?.hasLocalMedia?.(mediaKey)) {
+          const localUrl = (window as any).TeleForgeBridge.getLocalMediaUrl(mediaKey);
+          if (localUrl) {
+            options?.onProgress?.(100, 1, 1);
+            return { dataUrl: localUrl, mimeType: 'video/mp4', size: 1 };
+          }
+        }
+
         const chunks: Uint8Array[] = [];
         let totalDownloaded = 0;
+        let chunkIndex = 0;
+
         const customWriter = {
           write: (chunk: any) => {
             if (chunk && chunk.length > 0) {
-              chunks.push(chunk);
               totalDownloaded += chunk.length;
+              if (isAndroid) {
+                try {
+                  let b64: string;
+                  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(chunk)) {
+                    b64 = chunk.toString('base64');
+                  } else {
+                    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+                    let binary = '';
+                    const len = bytes.byteLength;
+                    for (let i = 0; i < len; i++) {
+                      binary += String.fromCharCode(bytes[i]);
+                    }
+                    b64 = btoa(binary);
+                  }
+                  (window as any).TeleForgeBridge.writeMediaChunk(mediaKey, b64, chunkIndex > 0);
+                  chunkIndex++;
+                } catch (bErr) {
+                  chunks.push(chunk);
+                }
+              } else {
+                chunks.push(chunk);
+              }
             }
           },
           close: () => {},
@@ -1590,16 +1711,29 @@ export const telegramDirectClient = {
         // Pass targetMsg if available so GramJS has inputChat and message ID for automatic file reference renewal
         await client.downloadMedia(targetMsg || mediaObj, downloadParams);
 
+        if (isAndroid) {
+          const localUrl = (window as any).TeleForgeBridge?.getLocalMediaUrl?.(mediaKey);
+          if (localUrl) {
+            options?.onProgress?.(100, totalDownloaded, totalDownloaded);
+            return { dataUrl: localUrl, mimeType: 'video/mp4', size: totalDownloaded };
+          }
+        }
+
         if (chunks.length === 0) return null;
 
-        const blob = new Blob(chunks as any[], { type: mimeType });
+        const blob = new Blob(chunks as any[], { type: 'video/mp4' });
         const blobUrl = URL.createObjectURL(blob);
         options?.onProgress?.(100, totalDownloaded, totalDownloaded);
-        return { dataUrl: blobUrl, mimeType, blob, size: totalDownloaded };
+        return { dataUrl: blobUrl, mimeType: 'video/mp4', blob, size: totalDownloaded };
       }
 
-      // Normal thumbnail / image download
-      const buffer: any = await client.downloadMedia(targetMsg || mediaObj, downloadParams);
+      // Normal thumbnail / image download with fallback retry if thumb returns empty
+      let buffer: any = await client.downloadMedia(targetMsg || mediaObj, downloadParams);
+      if ((!buffer || buffer.length === 0) && downloadParams.thumb !== undefined) {
+        const fallbackParams = { ...downloadParams };
+        delete fallbackParams.thumb;
+        buffer = await client.downloadMedia(targetMsg || mediaObj, fallbackParams);
+      }
       if (!buffer || buffer.length === 0) return null;
 
       if (typeof window !== 'undefined' && window.URL && window.Blob) {
@@ -1873,6 +2007,8 @@ export const telegramDirectClient = {
 
     return dialog;
   },
+
+  onNewMessage: onDirectNewMessage,
 };
 
 /**

@@ -133,6 +133,11 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
   const [showControls, setShowControls] = useState(true);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [src]);
 
   // Audio track switching state
   const [audioTracks, setAudioTracks] = useState<AudioTrackItem[]>([]);
@@ -380,11 +385,50 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onEnded={() => setIsPlaying(false)}
+        onError={(e) => {
+          console.warn('[TeleForgeVideoPlayer] Playback error on src:', src, e);
+          setHasError(true);
+          setIsPlaying(false);
+        }}
         className={`w-full object-contain ${isFullscreen ? 'h-full max-h-screen' : maxHeightClass}`}
       />
 
-      {/* Center Big Play Button (when paused) */}
-      {!isPlaying && (
+      {/* Error Fallback Overlay */}
+      {hasError && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-black/85 text-white p-4 text-center">
+          <div className="text-xs sm:text-sm font-semibold text-red-400">Unable to play video stream</div>
+          <div className="text-[11px] text-gray-300 max-w-xs">
+            The media codec or format could not be decoded. You can retry or download the video directly.
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setHasError(false);
+                if (videoRef.current) {
+                  videoRef.current.load();
+                  videoRef.current.play().catch(() => {});
+                }
+              }}
+              className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors"
+            >
+              <RotateCcw size={14} /> Retry
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                downloadFileToDevice(src, title || 'teleforge-video.mp4', 'video/mp4');
+              }}
+              className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors"
+            >
+              <Download size={14} /> Download
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Center Big Play Button (when paused and no error) */}
+      {!isPlaying && !hasError && (
         <button
           onClick={(e) => {
             e.stopPropagation();

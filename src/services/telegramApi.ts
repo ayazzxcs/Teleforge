@@ -642,4 +642,8 @@ export const telegramApi = {
   }): Promise<TelegramDialog> {
     return telegramDirectClient.createChannelOrGroup(params);
   },
+
+  onNewMessage(listener: (event: { chatId: string; message: TelegramMessage }) => void): () => void {
+    return telegramDirectClient.onNewMessage(listener);
+  },
 };
