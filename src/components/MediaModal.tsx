@@ -28,6 +28,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
   const [zoom, setZoom] = useState(1);
   const [immersive, setImmersive] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [isModalFullscreen, setIsModalFullscreen] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string>('');
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{ pct: number; dl: number; tot: number } | null>(null);
@@ -161,6 +162,22 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
               title="Toggle Media Info (I)"
             >
               <Info size={16} />
+            </button>
+
+            {/* Fullscreen Toggle */}
+            <button
+              onClick={() => {
+                if (!document.fullscreenElement) {
+                  document.documentElement.requestFullscreen?.().then(() => setIsModalFullscreen(true)).catch(() => setIsModalFullscreen(true));
+                } else {
+                  document.exitFullscreen?.().catch(() => {});
+                  setIsModalFullscreen(false);
+                }
+              }}
+              className="p-1.5 rounded-xl hover:bg-white/20 transition-colors text-white"
+              title={isModalFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+            >
+              {isModalFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
             </button>
 
             {/* Download */}

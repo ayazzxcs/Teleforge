@@ -389,12 +389,13 @@ export const App: React.FC = () => {
     return unsubscribe;
   }, [authStatus.authorized, activeChatId]);
 
-  // Active chat real-time polling (every 3.5 seconds)
+  // Active chat polling (every 6 seconds, paused in background to preserve MTProto connection)
   useEffect(() => {
     if (!authStatus.authorized || !activeChatId || activeChatId === 'saved-messages') return;
 
     let isCancelled = false;
     const interval = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       try {
         const latestMsgs = await telegramApi.getMessages(activeChatId, 15);
         if (isCancelled || !latestMsgs || latestMsgs.length === 0) return;
@@ -421,7 +422,7 @@ export const App: React.FC = () => {
           return prevChats.map((c) => (c.id === activeChatId ? { ...c, messages: merged } : c));
         });
       } catch (err) {}
-    }, 3500);
+    }, 6000);
 
     return () => {
       isCancelled = true;
@@ -429,16 +430,34 @@ export const App: React.FC = () => {
     };
   }, [authStatus.authorized, activeChatId]);
 
-  // Periodic dialogs sync (every 8 seconds to refresh unread badges and snippets)
+  // Periodic dialogs sync (every 18 seconds, paused when backgrounded)
   useEffect(() => {
     if (!authStatus.authorized) return;
 
     const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       loadTelegramDialogs();
-    }, 8000);
+    }, 18000);
 
     return () => clearInterval(interval);
   }, [authStatus.authorized, loadTelegramDialogs]);
+
+  // Instant refresh when returning from background
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden && authStatus.authorized) {
+        loadTelegramDialogs();
+        if (activeChatId && activeChatId !== 'saved-messages') {
+          telegramApi.getMessages(activeChatId, 20).catch(() => {});
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [authStatus.authorized, activeChatId, loadTelegramDialogs]);
 
   // Load older messages for pagination / infinite scroll
   const handleLoadOlderMessages = async (chatId: string): Promise<boolean> => {
@@ -941,6 +960,7 @@ export const App: React.FC = () => {
               isOpen={isInfoDrawerOpen}
               onClose={() => setIsInfoDrawerOpen(false)}
               onToggleMute={handleToggleMute}
+              onOpenMediaModal={(att) => setMediaModalAttachment(att)}
             />
           </div>
 
@@ -956,6 +976,7 @@ export const App: React.FC = () => {
                 isOpen={isInfoDrawerOpen}
                 onClose={() => setIsInfoDrawerOpen(false)}
                 onToggleMute={handleToggleMute}
+                onOpenMediaModal={(att) => setMediaModalAttachment(att)}
               />
             </div>
           </div>

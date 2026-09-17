@@ -314,6 +314,15 @@ function processUpdateEvent(event: any) {
   }
 }
 
+function persistSession(client: TelegramClient): void {
+  try {
+    const s = (client.session as any)?.save?.() as string | undefined;
+    if (s && typeof s === 'string' && s.length > 5) {
+      saveSessionString(s);
+    }
+  } catch (e) {}
+}
+
 /**
  * Get or create the singleton GramJS TelegramClient instance
  */
@@ -328,23 +337,44 @@ export async function getDirectClient(): Promise<TelegramClient> {
 
   clientInitPromise = (async () => {
     try {
+      // 1. If existing clientInstance is disconnected, attempt clean reconnect first
+      if (clientInstance) {
+        try {
+          console.log('[MTProto-Direct] Reconnecting existing Telegram client instance...');
+          await withTimeout(clientInstance.connect(), 12000, 'Reconnection timed out.');
+          if (clientInstance.connected) {
+            persistSession(clientInstance);
+            console.log('[MTProto-Direct] Reconnected existing client successfully.');
+            return clientInstance;
+          }
+        } catch (reconnectErr) {
+          console.warn('[MTProto-Direct] Reconnection failed, destroying stale client:', reconnectErr);
+          try {
+            await clientInstance.disconnect();
+          } catch (e) {}
+          clientInstance = null;
+        }
+      }
+
       const sessionStr = getStoredSessionString();
       const session = new StringSession(sessionStr);
 
       const client = new TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH, {
         connectionRetries: 5,
         useWSS: true,
-        timeout: 15,
-        deviceModel: 'TeleForge Mobile',
+        timeout: 20,
+        deviceModel: 'Samsung Galaxy S24 Ultra',
         systemVersion: 'Android 14',
-        appVersion: '1.0.0',
+        appVersion: '10.8.1',
         langCode: 'en',
         systemLangCode: 'en',
       });
 
       console.log('[MTProto-Direct] Connecting to Telegram production servers over WSS...');
-      await withTimeout(client.connect(), 12000, 'Could not connect to Telegram servers (timeout).');
+      await withTimeout(client.connect(), 15000, 'Could not connect to Telegram servers (timeout).');
       console.log('[MTProto-Direct] Connected to Telegram production servers.');
+
+      persistSession(client);
 
       try {
         client.addEventHandler((event: any) => {
@@ -486,6 +516,8 @@ export const telegramDirectClient = {
           localStorage.setItem(USER_CACHE_KEY, JSON.stringify(sUser));
         } catch (e) {}
       }
+
+      persistSession(client);
 
       return {
         authorized: true,
@@ -829,6 +861,50 @@ export const telegramDirectClient = {
     const messages = await client.getMessages(targetPeer, fetchOptions);
 
     return messages.map((m: any) => mapGramJsMessage(m, chatId));
+  },
+
+  /**
+   * Fetch shared media (photos, videos, files, audio) directly from Telegram cloud
+   */
+  async getChatSharedMedia(
+    chatId: string,
+    type: 'photos' | 'videos' | 'files' | 'audio',
+    limit = 50
+  ): Promise<TelegramMessage[]> {
+    if (!chatId) return [];
+    try {
+      const client = await getDirectClient();
+      let targetPeer: any = peerEntityCache.get(chatId) || chatId;
+      if (!peerEntityCache.has(chatId)) {
+        try {
+          targetPeer = await client.getInputEntity(chatId);
+          if (targetPeer) peerEntityCache.set(chatId, targetPeer);
+        } catch (e) {
+          targetPeer = chatId;
+        }
+      }
+
+      let filter: any;
+      if (type === 'photos') {
+        filter = new Api.InputMessagesFilterPhotos();
+      } else if (type === 'videos') {
+        filter = new Api.InputMessagesFilterVideo();
+      } else if (type === 'audio') {
+        filter = new Api.InputMessagesFilterMusic();
+      } else {
+        filter = new Api.InputMessagesFilterDocument();
+      }
+
+      const messages: any = await client.getMessages(targetPeer, {
+        filter,
+        limit: Math.min(limit, 100),
+      });
+
+      return messages.map((m: any) => mapGramJsMessage(m, chatId));
+    } catch (err: any) {
+      console.warn('[MTProto-Direct] getChatSharedMedia failed:', err?.message || err);
+      return [];
+    }
   },
 
   /**

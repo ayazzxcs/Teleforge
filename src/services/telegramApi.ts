@@ -646,4 +646,12 @@ export const telegramApi = {
   onNewMessage(listener: (event: { chatId: string; message: TelegramMessage }) => void): () => void {
     return telegramDirectClient.onNewMessage(listener);
   },
+
+  async getChatSharedMedia(
+    chatId: string,
+    type: 'photos' | 'videos' | 'files' | 'audio',
+    limit = 50
+  ): Promise<TelegramMessage[]> {
+    return telegramDirectClient.getChatSharedMedia(chatId, type, limit);
+  },
 };

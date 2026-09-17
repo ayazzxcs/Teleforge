@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Play,
   Pause,
@@ -291,26 +292,29 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
     setShowSpeedMenu(false);
   };
 
-  // Toggle Fullscreen (Resilient dual-mode: HTML5 API + simulated overlay)
+  // Toggle Fullscreen (Native WebKit video element fullscreen on Android + Simulated Portal Overlay)
   const toggleFullscreen = () => {
-    const container = containerRef.current;
-    if (!container) return;
-
+    const video = videoRef.current;
     if (!isFullscreen) {
-      if (container.requestFullscreen) {
-        container
-          .requestFullscreen()
-          .then(() => setIsFullscreen(true))
-          .catch(() => {
-            // Simulated fullscreen fallback
-            setIsFullscreen(true);
-          });
-      } else {
-        setIsFullscreen(true);
+      if ((video as any)?.webkitRequestFullscreen) {
+        try {
+          (video as any).webkitRequestFullscreen();
+        } catch (e) {}
+      } else if ((video as any)?.webkitEnterFullscreen) {
+        try {
+          (video as any).webkitEnterFullscreen();
+        } catch (e) {}
+      } else if (video?.requestFullscreen) {
+        try {
+          video.requestFullscreen().catch(() => {});
+        } catch (e) {}
       }
+      setIsFullscreen(true);
     } else {
       if (document.fullscreenElement) {
         document.exitFullscreen?.().catch(() => {});
+      } else if ((document as any).webkitFullscreenElement) {
+        (document as any).webkitExitFullscreen?.();
       }
       setIsFullscreen(false);
     }
@@ -353,17 +357,31 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
       ? `${channelMode === 'left' ? 'Left Audio' : 'Right Audio'}`
       : 'Audio';
 
-  return (
+  const playerContent = (
     <div
       ref={containerRef}
       onMouseMove={resetControlsTimeout}
       onTouchStart={resetControlsTimeout}
       className={`relative group bg-black overflow-hidden flex items-center justify-center select-none ${className} ${
         isFullscreen
-          ? 'fixed inset-0 z-[99999] w-screen h-screen max-w-none max-h-none rounded-none'
+          ? 'fixed inset-0 z-[999999] w-screen h-screen max-w-none max-h-none rounded-none'
           : 'w-full rounded-2xl'
       }`}
     >
+      {/* Top right floating full screen toggle */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleFullscreen();
+        }}
+        className={`absolute top-3 right-3 z-30 p-2 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 shadow-xl transition-opacity duration-200 ${
+          showControls || isFullscreen ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+        title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+      >
+        {isFullscreen ? <Minimize size={18} /> : <Maximize size={16} />}
+      </button>
+
       {/* Native Video Element */}
       <video
         ref={videoRef}
@@ -501,13 +519,13 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
                 step="0.05"
                 value={isMuted ? 0 : volume}
                 onChange={handleVolumeChange}
-                className="w-14 sm:w-20 h-1 bg-white/30 accent-blue-500 rounded-lg cursor-pointer hidden group-hover/vol:inline-block sm:inline-block transition-all"
+                className="w-14 sm:w-20 h-1 bg-white/30 accent-blue-500 rounded-lg cursor-pointer hidden md:inline-block transition-all"
                 title="Volume"
               />
             </div>
 
             {/* Time readout */}
-            <div className="text-[11px] sm:text-xs font-mono text-gray-200">
+            <div className="text-[11px] sm:text-xs font-mono text-gray-200 shrink-0">
               <span>{formatTime(currentTime)}</span>
               <span className="text-gray-400 mx-1">/</span>
               <span>{formatTime(duration)}</span>
@@ -515,15 +533,15 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
           </div>
 
           {/* Right: Audio Languages Switcher, Speed, Fullscreen */}
-          <div className="flex items-center gap-1.5 sm:gap-2 relative">
+          <div className="flex items-center gap-1 sm:gap-1.5 relative shrink-0">
             {/* Audio Language Switcher */}
-            <div className="relative">
+            <div className="relative shrink-0">
               <button
                 onClick={() => {
                   setShowLanguageMenu(!showLanguageMenu);
                   setShowSpeedMenu(false);
                 }}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors border ${
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors border ${
                   audioTracks.length > 1 || channelMode !== 'both'
                     ? 'bg-blue-600/80 border-blue-400 text-white'
                     : 'bg-white/10 hover:bg-white/20 border-white/10 text-gray-200'
@@ -531,7 +549,7 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
                 title="Switch Audio Language"
               >
                 <Languages size={15} />
-                <span className="hidden xs:inline max-w-[90px] truncate">{currentTrackLabel}</span>
+                <span className="hidden sm:inline max-w-[80px] truncate">{currentTrackLabel}</span>
                 {audioTracks.length > 1 && (
                   <span className="ml-0.5 px-1 py-0.2 rounded bg-blue-500 text-[10px] font-bold">
                     {audioTracks.length}
@@ -652,7 +670,7 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
                 e.stopPropagation();
                 downloadFileToDevice(src, title || 'teleforge-video.mp4', 'video/mp4');
               }}
-              className="p-1.5 rounded-lg hover:bg-white/20 transition-colors"
+              className="shrink-0 p-1.5 rounded-lg hover:bg-white/20 transition-colors"
               title="Download Video"
             >
               <Download size={18} />
@@ -661,7 +679,7 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
             {/* Fullscreen Button */}
             <button
               onClick={toggleFullscreen}
-              className="p-1.5 rounded-lg hover:bg-white/20 transition-colors"
+              className="shrink-0 p-1.5 rounded-lg hover:bg-white/20 transition-colors"
               title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
             >
               {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
@@ -671,4 +689,10 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
       </div>
     </div>
   );
+
+  if (isFullscreen && typeof document !== 'undefined') {
+    return createPortal(playerContent, document.body);
+  }
+
+  return playerContent;
 };

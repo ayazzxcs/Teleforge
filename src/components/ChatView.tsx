@@ -38,6 +38,7 @@ import {
   Play,
   Video,
   Download,
+  Maximize2,
 } from 'lucide-react';
 import { Chat, Message, Reaction, Attachment } from '../types';
 import { AudioPlayer } from './AudioPlayer';
@@ -313,14 +314,26 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       {/* Dim overlay */}
       <div className="absolute inset-0 bg-black/30 group-hover:bg-black/40 transition-colors" />
 
-      {/* Quick Download Button in Top-Right */}
-      <button
-        onClick={handleDownload}
-        className="absolute top-2 right-2 z-20 p-1.5 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-xs border border-white/20 transition-all hover:scale-105 shadow-md"
-        title="Download video"
-      >
-        <Download size={13} />
-      </button>
+      {/* Quick Actions in Top-Right: Fullscreen / Expand and Download */}
+      <div className="absolute top-2 right-2 z-20 flex items-center gap-1.5">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleOpenFull();
+          }}
+          className="p-1.5 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-xs border border-white/20 transition-all hover:scale-105 shadow-md"
+          title="Fullscreen / Open in player"
+        >
+          <Maximize2 size={13} />
+        </button>
+        <button
+          onClick={handleDownload}
+          className="p-1.5 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-xs border border-white/20 transition-all hover:scale-105 shadow-md"
+          title="Download video"
+        >
+          <Download size={13} />
+        </button>
+      </div>
 
       {/* Center Play Button */}
       <button
