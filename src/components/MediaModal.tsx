@@ -11,10 +11,12 @@ import {
   Minimize,
   Eye,
   EyeOff,
+  Loader2,
 } from 'lucide-react';
 import { Attachment } from '../types';
 import { showToast } from './Toast';
 import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
+import { mediaService } from '../services/mediaService';
 
 interface MediaModalProps {
   attachment: Attachment | null;
@@ -25,11 +27,39 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
   const [zoom, setZoom] = useState(1);
   const [immersive, setImmersive] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [videoUrl, setVideoUrl] = useState<string>('');
+  const [isVideoLoading, setIsVideoLoading] = useState(false);
 
   useEffect(() => {
     setZoom(1);
     setImmersive(false);
     setShowInfo(false);
+
+    if (attachment?.type !== 'video') {
+      setVideoUrl('');
+      setIsVideoLoading(false);
+      return;
+    }
+
+    const isValidVideo = attachment.url && (attachment.url.startsWith('blob:') || attachment.url.startsWith('http') || attachment.url.startsWith('data:video/'));
+    if (isValidVideo) {
+      setVideoUrl(attachment.url);
+      setIsVideoLoading(false);
+    } else if (attachment.chatId && attachment.messageId) {
+      const cached = mediaService.get(attachment.chatId, attachment.messageId, { fullVideo: true });
+      if (cached) {
+        setVideoUrl(cached);
+        setIsVideoLoading(false);
+      } else {
+        setIsVideoLoading(true);
+        mediaService.loadMedia(attachment.chatId, attachment.messageId, { fullVideo: true }).then((url) => {
+          if (url) setVideoUrl(url);
+        }).finally(() => setIsVideoLoading(false));
+      }
+    } else {
+      setVideoUrl(attachment.url || '');
+      setIsVideoLoading(false);
+    }
   }, [attachment]);
 
   useEffect(() => {
@@ -164,15 +194,35 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
           {attachment.type === 'video' && (
             <div
               style={{ transform: `scale(${zoom})`, transition: 'transform 0.15s ease-out' }}
-              className="max-h-[82vh] max-w-[95%] w-full flex items-center justify-center transition-transform"
+              className="max-h-[82vh] max-w-[95%] w-full flex items-center justify-center transition-transform relative"
               onClick={(e) => e.stopPropagation()}
             >
-              <TeleForgeVideoPlayer
-                src={attachment.url}
-                poster={attachment.thumbUrl}
-                title={attachment.name}
-                autoPlay={true}
-              />
+              {videoUrl ? (
+                <TeleForgeVideoPlayer
+                  src={videoUrl}
+                  poster={attachment.thumbUrl}
+                  title={attachment.name}
+                  autoPlay={true}
+                />
+              ) : (
+                <div className="relative w-full max-h-[82vh] flex items-center justify-center bg-black/80 rounded-2xl overflow-hidden min-h-[260px] border border-white/10">
+                  {attachment.thumbUrl && (
+                    <img
+                      src={attachment.thumbUrl}
+                      alt={attachment.name || 'Video poster'}
+                      className="max-h-[82vh] w-full object-contain filter blur-xs opacity-60"
+                    />
+                  )}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-white">
+                    <div className="w-14 h-14 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center border border-white/20 shadow-xl">
+                      <Loader2 size={28} className="animate-spin text-teleforge-primary" />
+                    </div>
+                    <span className="text-xs font-semibold tracking-wide drop-shadow-md">
+                      {isVideoLoading ? 'Loading video from Telegram...' : 'Preparing video...'}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

@@ -624,4 +624,8 @@ export const telegramApi = {
   async terminateAllOtherSessions(): Promise<{ success: boolean }> {
     return telegramDirectClient.terminateAllOtherSessions();
   },
+
+  async getUserFull(userId: string): Promise<{ bio?: string; phone?: string; username?: string; name?: string }> {
+    return telegramDirectClient.getUserFull(userId);
+  },
 };

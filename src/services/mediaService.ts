@@ -188,6 +188,21 @@ export const mediaService = {
         }
       } catch (e) {}
 
+      // For full video playback, bypass background queue and download immediately with high priority
+      if (options?.fullVideo) {
+        try {
+          const res = await telegramDirectClient.downloadMessageMedia(chatId, messageId, options);
+          if (res && res.dataUrl) {
+            memoryCache.set(key, res.dataUrl);
+            notifySubscribers(key, res.dataUrl);
+            return res.dataUrl;
+          }
+          return '';
+        } catch (err) {
+          return '';
+        }
+      }
+
       return new Promise<string>((resolve) => {
         enqueueDownload(async () => {
           try {

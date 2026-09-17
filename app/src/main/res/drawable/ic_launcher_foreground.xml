@@ -3,6 +3,12 @@
     android:height="108dp"
     android:viewportWidth="240"
     android:viewportHeight="240">
+    <!-- Signature Cream Circular Outline -->
+    <path
+        android:strokeColor="#FFF8EE"
+        android:strokeWidth="5"
+        android:fillColor="#00000000"
+        android:pathData="M120,120 m -70,0 a 70,70 0 1,0 140,0 a 70,70 0 1,0 -140,0" />
     <group
         android:scaleX="0.55"
         android:scaleY="0.55"

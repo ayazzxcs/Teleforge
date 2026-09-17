@@ -42,6 +42,7 @@ import { Chat, Message, Reaction, Attachment } from '../types';
 import { AudioPlayer } from './AudioPlayer';
 import { Avatar } from './Avatar';
 import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
+import { UserProfileModal, UserProfileDetails } from './UserProfileModal';
 import { mediaService } from '../services/mediaService';
 import { getAvatarColor } from '../utils/telegramAdapter';
 import {
@@ -185,7 +186,9 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   const handleOpenFull = () => {
     onOpenMediaModal({
       ...attachment,
-      url: videoUrl || attachment.thumbUrl || '',
+      chatId,
+      messageId,
+      url: videoUrl || '',
     });
   };
 
@@ -265,6 +268,7 @@ interface ChatViewProps {
   onLoadOlderMessages?: (chatId: string) => Promise<boolean>;
   isLoadingOlderMessages?: boolean;
   hasMoreOlderMessages?: boolean;
+  onSelectChat?: (chatId: string) => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -286,6 +290,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onLoadOlderMessages,
   isLoadingOlderMessages = false,
   hasMoreOlderMessages,
+  onSelectChat,
 }) => {
   const [inputText, setInputText] = useState('');
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -295,6 +300,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [activeReactionPickerId, setActiveReactionPickerId] = useState<string | null>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [userProfileModalData, setUserProfileModalData] = useState<UserProfileDetails | null>(null);
   const [isJoining, setIsJoining] = useState(false);
 
   const handleJoinChat = async () => {
@@ -633,13 +639,35 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const isCompact = Boolean(chatConfig.compactSpacing ?? globalCompactMode);
   const fontSizeClass = getFontSizeClass(chatConfig.fontSize || globalFontSize);
 
+  const handleOpenProfileOrDrawer = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!chat) return;
+    if (chat.type === 'direct' || chat.type === 'bot') {
+      setUserProfileModalData({
+        id: chat.id,
+        name: chat.name,
+        username: chat.username,
+        phone: chat.phone,
+        bio: chat.bio || chat.description,
+        avatar: chat.avatar,
+        thumbUrl: chat.thumbUrl,
+        online: chat.online,
+        lastSeen: chat.lastSeen,
+        verified: chat.verified,
+        isBot: chat.type === 'bot',
+      });
+    } else {
+      onToggleInfoDrawer();
+    }
+  };
+
   return (
     <main className="flex-1 h-full flex flex-col bg-teleforge-bg dark:bg-teleforge-bg relative overflow-hidden">
       {/* =========================================================================
           CHAT HEADER
          ========================================================================= */}
       <header className="h-14 px-4 bg-white dark:bg-teleforge-surface border-b border-gray-200 dark:border-gray-800 flex items-center justify-between z-10 select-none shadow-xs shrink-0">
-        <div className="flex items-center gap-3 min-w-0 cursor-pointer" onClick={onToggleInfoDrawer}>
+        <div className="flex items-center gap-3 min-w-0 cursor-pointer" onClick={handleOpenProfileOrDrawer}>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -652,26 +680,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           <div
             className="relative cursor-pointer transition-transform hover:scale-105 active:scale-95"
-            onClick={(e) => {
-              if (chat.type === 'direct' || chat.type === 'bot') {
-                e.stopPropagation();
-                const picUrl = chat.avatar || chat.thumbUrl;
-                if (picUrl) {
-                  onOpenMediaModal({
-                    type: 'image',
-                    url: picUrl,
-                    thumbUrl: chat.thumbUrl,
-                    name: `${chat.name}'s Profile Photo`,
-                  });
-                } else {
-                  onToggleInfoDrawer();
-                }
-              } else {
-                e.stopPropagation();
-                onToggleInfoDrawer();
-              }
-            }}
-            title={chat.type === 'direct' || chat.type === 'bot' ? 'View Profile Photo' : 'View Channel / Group Info'}
+            onClick={handleOpenProfileOrDrawer}
+            title={chat.type === 'direct' || chat.type === 'bot' ? 'View User Profile' : 'View Channel / Group Info'}
           >
             <Avatar
               src={chat.avatar}
@@ -953,17 +963,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   className="shrink-0 mb-0.5 w-8 h-8 cursor-pointer transition-transform hover:scale-105 active:scale-95"
                   onClick={(e) => {
                     e.stopPropagation();
-                    const pic = avatarSrc || message.senderThumbUrl;
-                    if (pic) {
-                      onOpenMediaModal({
-                        type: 'image',
-                        url: pic,
-                        thumbUrl: message.senderThumbUrl,
-                        name: `${senderDisplayName}'s Profile Photo`,
-                      });
-                    }
+                    setUserProfileModalData({
+                      id: message.senderId || '',
+                      name: senderDisplayName,
+                      avatar: avatarSrc,
+                      thumbUrl: message.senderThumbUrl,
+                      online: false,
+                      isBot: false,
+                    });
                   }}
-                  title={`View ${senderDisplayName}'s Profile Photo`}
+                  title={`View ${senderDisplayName}'s Profile`}
                 >
                   {isLastInGroup ? (
                     <Avatar
@@ -999,17 +1008,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     className="text-xs font-semibold mb-1 cursor-pointer hover:underline"
                     onClick={(e) => {
                       e.stopPropagation();
-                      const pic = avatarSrc || message.senderThumbUrl;
-                      if (pic) {
-                        onOpenMediaModal({
-                          type: 'image',
-                          url: pic,
-                          thumbUrl: message.senderThumbUrl,
-                          name: `${senderDisplayName}'s Profile Photo`,
-                        });
-                      }
+                      setUserProfileModalData({
+                        id: message.senderId || '',
+                        name: senderDisplayName,
+                        avatar: avatarSrc,
+                        thumbUrl: message.senderThumbUrl,
+                        online: false,
+                        isBot: false,
+                      });
                     }}
-                    title={`View ${senderDisplayName}'s Profile Photo`}
+                    title={`View ${senderDisplayName}'s Profile`}
                   >
                     {senderDisplayName}
                   </div>
@@ -1484,6 +1492,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
           reactions={reactionDetailsData.reactions}
           messageText={reactionDetailsData.text}
           onSelectReaction={(emoji) => onToggleReaction(chat.id, reactionDetailsData.messageId, emoji)}
+        />
+      )}
+
+      {/* User Profile Details Modal */}
+      {userProfileModalData && (
+        <UserProfileModal
+          isOpen={Boolean(userProfileModalData)}
+          onClose={() => setUserProfileModalData(null)}
+          user={userProfileModalData}
+          onOpenDirectChat={(userId) => {
+            setUserProfileModalData(null);
+            onSelectChat?.(userId);
+          }}
+          onOpenMediaModal={onOpenMediaModal}
         />
       )}
     </main>

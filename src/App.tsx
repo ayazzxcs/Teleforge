@@ -831,19 +831,39 @@ export const App: React.FC = () => {
           onLoadOlderMessages={handleLoadOlderMessages}
           isLoadingOlderMessages={isLoadingOlderMessages}
           hasMoreOlderMessages={activeChatId ? hasMoreOlderMessages[activeChatId] : undefined}
+          onSelectChat={handleSelectChat}
         />
       </div>
 
       {/* Right Drawer: Profile / Channel Info */}
       {isInfoDrawerOpen && activeChat && (
-        <div className="hidden lg:block h-full shrink-0">
-          <ChatInfoDrawer
-            chat={activeChat}
-            isOpen={isInfoDrawerOpen}
-            onClose={() => setIsInfoDrawerOpen(false)}
-            onToggleMute={handleToggleMute}
-          />
-        </div>
+        <>
+          {/* Desktop inline panel */}
+          <div className="hidden lg:block w-80 md:w-96 h-full shrink-0">
+            <ChatInfoDrawer
+              chat={activeChat}
+              isOpen={isInfoDrawerOpen}
+              onClose={() => setIsInfoDrawerOpen(false)}
+              onToggleMute={handleToggleMute}
+            />
+          </div>
+
+          {/* Mobile slide-over drawer modal */}
+          <div className="lg:hidden fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+            <div
+              className="fixed inset-0"
+              onClick={() => setIsInfoDrawerOpen(false)}
+            />
+            <div className="relative w-full max-w-md h-full bg-white dark:bg-teleforge-surface shadow-2xl z-10 animate-in slide-in-from-right duration-200">
+              <ChatInfoDrawer
+                chat={activeChat}
+                isOpen={isInfoDrawerOpen}
+                onClose={() => setIsInfoDrawerOpen(false)}
+                onToggleMute={handleToggleMute}
+              />
+            </div>
+          </div>
+        </>
       )}
 
       {/* Modals */}

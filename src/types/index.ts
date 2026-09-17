@@ -42,6 +42,8 @@ export interface Attachment {
   size?: string;
   duration?: string; // e.g. "0:24" for audio
   thumbUrl?: string;
+  chatId?: string;
+  messageId?: string;
 }
 
 export interface Message {
@@ -79,6 +81,7 @@ export interface Chat {
   lastSeen?: string;
   memberCount?: number;
   description?: string;
+  bio?: string;
   username?: string;
   phone?: string;
   isMuted?: boolean;

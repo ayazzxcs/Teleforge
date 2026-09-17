@@ -31,7 +31,7 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({ chat, isOpen, on
   const audioItems = chat.messages.filter((m) => m.attachment?.type === 'audio');
 
   return (
-    <div className="w-80 md:w-96 h-full bg-white dark:bg-teleforge-surface border-l border-gray-200 dark:border-gray-800 flex flex-col z-20 shadow-lg animate-in slide-in-from-right duration-200">
+    <div className="w-full h-full bg-white dark:bg-teleforge-surface border-l border-gray-200 dark:border-gray-800 flex flex-col z-20 shadow-lg animate-in slide-in-from-right duration-200">
       {/* Drawer Header */}
       <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-100 dark:border-gray-800">
         <h3 className="font-medium text-sm text-gray-800 dark:text-gray-150">

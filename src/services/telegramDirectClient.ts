@@ -1047,30 +1047,104 @@ export const telegramDirectClient = {
         })
       );
 
-      const mapResult = (peer: any): TelegramDialog | null => {
-        if (!peer) return null;
-        const id = peer.id ? peer.id.toString() : '';
-        const title = peer.title || [peer.firstName, peer.lastName].filter(Boolean).join(' ') || peer.username || 'Telegram User';
+      const entityMap = new Map<string, any>();
+
+      // 1. Index all chats (channels & groups)
+      for (const chat of (res.chats || [])) {
+        if (!chat) continue;
+        const idStr = chat.id ? chat.id.toString() : '';
+        if (idStr) {
+          entityMap.set(idStr, chat);
+          entityMap.set(`-${idStr}`, chat);
+          entityMap.set(`-100${idStr}`, chat);
+          peerEntityCache.set(idStr, chat);
+          peerEntityCache.set(`-100${idStr}`, chat);
+        }
+      }
+
+      // 2. Index all users
+      for (const user of (res.users || [])) {
+        if (!user) continue;
+        const idStr = user.id ? user.id.toString() : '';
+        if (idStr) {
+          entityMap.set(idStr, user);
+          peerEntityCache.set(idStr, user);
+        }
+      }
+
+      // 3. Helper to map any entity (Chat, Channel, or User) to TelegramDialog
+      const mapEntity = (entity: any): TelegramDialog | null => {
+        if (!entity) return null;
+        const rawId = entity.id ? entity.id.toString() : '';
+        if (!rawId) return null;
+
+        const isUser = entity.className === 'User' || entity._ === 'user';
+        const isChannel = (entity.className === 'Channel' || entity._ === 'channel') && !entity.megagroup;
+        const isGroup = Boolean(entity.megagroup || entity.className === 'Chat' || entity._ === 'chat');
+
+        let title = entity.title;
+        if (!title && isUser) {
+          title = [entity.firstName, entity.lastName].filter(Boolean).join(' ') || entity.username || 'User';
+        }
+        if (!title) {
+          title = entity.username || (isChannel ? 'Telegram Channel' : isGroup ? 'Telegram Group' : 'Telegram User');
+        }
+
+        const memberCount = typeof entity.participantsCount === 'number' ? entity.participantsCount : undefined;
+        const normalizedId = isChannel || isGroup ? (rawId.startsWith('-') ? rawId : `-100${rawId}`) : rawId;
+
         return {
-          id,
+          id: normalizedId,
           title,
-          username: peer.username,
-          isUser: peer.className === 'User',
-          isGroup: Boolean(peer.megagroup || peer.className === 'Chat'),
-          isChannel: peer.className === 'Channel' && !peer.megagroup,
-          isVerified: Boolean(peer.verified),
-          hasAvatar: Boolean(peer.photo),
+          username: entity.username,
+          isUser,
+          isGroup,
+          isChannel,
+          isVerified: Boolean(entity.verified),
+          hasAvatar: Boolean(entity.photo),
           unreadCount: 0,
           unreadMentionsCount: 0,
           pinned: false,
           date: Date.now(),
+          memberCount,
         };
       };
 
-      const myResults = (res.myResults || []).map(mapResult).filter(Boolean) as TelegramDialog[];
-      const globalResults = (res.results || []).map(mapResult).filter(Boolean) as TelegramDialog[];
+      // Helper to resolve a Peer pointer to its real entity
+      const resolvePeer = (peer: any): any => {
+        if (!peer) return null;
+        if (peer.className === 'User' || peer.className === 'Channel' || peer.className === 'Chat') {
+          return peer;
+        }
+        const peerId = (peer.userId || peer.channelId || peer.chatId || peer.id)?.toString();
+        if (peerId && entityMap.has(peerId)) {
+          return entityMap.get(peerId);
+        }
+        return null;
+      };
+
+      // Map myResults and results
+      const myResults = (res.myResults || []).map((p: any) => mapEntity(resolvePeer(p))).filter(Boolean) as TelegramDialog[];
+      const globalFromResults = (res.results || []).map((p: any) => mapEntity(resolvePeer(p))).filter(Boolean) as TelegramDialog[];
+
+      // In addition, include all real public channels, groups, and users returned by Telegram
+      const allChatsMapped = (res.chats || []).map(mapEntity).filter(Boolean) as TelegramDialog[];
+      const allUsersMapped = (res.users || []).map(mapEntity).filter(Boolean) as TelegramDialog[];
+
+      // Combine and deduplicate by id
+      const seenIds = new Set<string>();
+      const globalResults: TelegramDialog[] = [];
+
+      for (const item of [...globalFromResults, ...allChatsMapped, ...allUsersMapped]) {
+        if (!seenIds.has(item.id)) {
+          seenIds.add(item.id);
+          globalResults.push(item);
+        }
+      }
+
       return { myResults, globalResults };
     } catch (e) {
+      console.warn('[MTProto-Direct] searchGlobal error:', e);
       return { myResults: [], globalResults: [] };
     }
   },
@@ -1126,6 +1200,33 @@ export const telegramDirectClient = {
       }
     }
     return { success: true, user: sUser! };
+  },
+
+  /**
+   * Get full user details for any user
+   */
+  async getUserFull(userId: string): Promise<{ bio?: string; phone?: string; username?: string; name?: string }> {
+    try {
+      const client = await getDirectClient();
+      let target: any = peerEntityCache.get(userId);
+      if (!target) {
+        try {
+          target = await client.getInputEntity(userId);
+        } catch (e) {
+          target = userId;
+        }
+      }
+      const full: any = await client.invoke(new Api.users.GetFullUser({ id: target }));
+      const bio = full?.fullUser?.about || full?.about || '';
+      const user = full?.users?.[0] || full?.user || target;
+      const phone = user?.phone || '';
+      const username = user?.username || '';
+      const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || '';
+      return { bio, phone, username, name };
+    } catch (err) {
+      console.warn('[MTProto-Direct] getUserFull error:', err);
+      return {};
+    }
   },
 
   /**
@@ -1438,6 +1539,17 @@ export const telegramDirectClient = {
 
       const buffer: any = await client.downloadMedia(media, downloadParams);
       if (!buffer || buffer.length === 0) return null;
+
+      // For full video playback, convert to Blob URL directly for instant hardware decoding and zero base64 overhead
+      if (options?.fullVideo && typeof window !== 'undefined' && window.URL && window.Blob) {
+        try {
+          const blob = new Blob([buffer], { type: mimeType });
+          const blobUrl = URL.createObjectURL(blob);
+          return { dataUrl: blobUrl, mimeType };
+        } catch (e) {
+          // fallback if blob creation fails
+        }
+      }
 
       const dataUrl = `data:${mimeType};base64,${Buffer.from(buffer).toString('base64')}`;
       return { dataUrl, mimeType };
