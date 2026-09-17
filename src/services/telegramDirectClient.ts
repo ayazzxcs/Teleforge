@@ -16,6 +16,9 @@ import {
   AuthStatusResponse,
   SendCodeResponse,
   SignInResponse,
+  OnlineGifItem,
+  TelegramStickerSet,
+  TelegramStickerItem,
 } from './telegramApi';
 
 // Production Telegram API Credentials
@@ -134,6 +137,11 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
   let fileName: string | undefined = undefined;
   let fileSize: string | undefined = undefined;
   let durationStr: string | undefined = undefined;
+  let stickerEmoji: string | undefined = undefined;
+  let stickerSet: any = undefined;
+  let documentId: string | undefined = undefined;
+  let accessHash: string | undefined = undefined;
+  let fileReference: string | undefined = undefined;
 
   if (m.media) {
     messageMediaMap.set(`${chatId}_${m.id}`, m.media);
@@ -167,10 +175,32 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
         }
       }
     } else if (cls.includes('Document')) {
-      const attrs = m.media.document?.attributes || [];
+      const doc = m.media.document;
+      if (doc) {
+        documentId = doc.id ? doc.id.toString() : undefined;
+        accessHash = doc.accessHash ? doc.accessHash.toString() : undefined;
+        if (doc.fileReference) {
+          try {
+            fileReference = Buffer.from(doc.fileReference).toString('hex');
+          } catch (e) {}
+        }
+      }
+
+      const attrs = doc?.attributes || [];
       const stickerAttr = attrs.find((a: any) =>
         a._ === 'documentAttributeSticker' || a.className === 'DocumentAttributeSticker'
       );
+      if (stickerAttr) {
+        stickerEmoji = stickerAttr.alt || undefined;
+        if (stickerAttr.stickerset) {
+          const ss = stickerAttr.stickerset;
+          stickerSet = {
+            id: ss.id ? ss.id.toString() : undefined,
+            accessHash: ss.accessHash ? ss.accessHash.toString() : undefined,
+            shortName: ss.shortName || undefined,
+          };
+        }
+      }
       const isSticker = Boolean(stickerAttr);
       const isGifAttr = attrs.some((a: any) =>
         a._ === 'documentAttributeAnimated' || a.className === 'DocumentAttributeAnimated'
@@ -335,6 +365,11 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
     isRound,
     isSticker,
     isGif,
+    stickerEmoji,
+    stickerSet,
+    documentId,
+    accessHash,
+    fileReference,
     actionText,
     forwardFrom,
   };
@@ -2275,6 +2310,376 @@ export const telegramDirectClient = {
     };
 
     return dialog;
+  },
+
+  /**
+   * Fetch online GIFs from Telegram's native MTProto @gif bot with infinite scroll
+   */
+  async getOnlineGifs(query = '', offset = ''): Promise<{ results: OnlineGifItem[]; nextOffset: string }> {
+    const client = await getDirectClient();
+    try {
+      let bot: any = peerEntityCache.get('gif_bot');
+      if (!bot) {
+        bot = await client.getInputEntity('gif');
+        peerEntityCache.set('gif_bot', bot);
+      }
+      const peer = await client.getInputEntity('me');
+
+      const res: any = await client.invoke(
+        new Api.messages.GetInlineBotResults({
+          bot,
+          peer,
+          query: query || '',
+          offset: offset || '',
+        })
+      );
+
+      const queryIdStr = res.queryId ? res.queryId.toString() : '';
+      const nextOffsetStr = res.nextOffset || '';
+      const results: OnlineGifItem[] = [];
+
+      for (const item of (res.results || [])) {
+        if (!item) continue;
+        let thumbUrl = '';
+        let gifUrl = '';
+        let width: number | undefined;
+        let height: number | undefined;
+
+        const doc = item.document;
+        if (doc) {
+          const stripped = (doc.thumbs || []).find(
+            (t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
+          );
+          if (stripped?.bytes) {
+            try {
+              const jpgBuf = strippedPhotoToJpg(stripped.bytes);
+              if (jpgBuf && jpgBuf.length > 0) {
+                thumbUrl = `data:image/jpeg;base64,${Buffer.from(jpgBuf).toString('base64')}`;
+              }
+            } catch (e) {}
+          }
+
+          const videoAttr = (doc.attributes || []).find(
+            (a: any) => a._ === 'documentAttributeVideo' || a.className === 'DocumentAttributeVideo'
+          );
+          if (videoAttr) {
+            width = videoAttr.w;
+            height = videoAttr.h;
+          }
+        }
+
+        const photo = item.photo;
+        if (!thumbUrl && photo) {
+          const stripped = (photo.sizes || []).find(
+            (s: any) => s._ === 'photoStrippedSize' || s.className === 'PhotoStrippedSize'
+          );
+          if (stripped?.bytes) {
+            try {
+              const jpgBuf = strippedPhotoToJpg(stripped.bytes);
+              if (jpgBuf && jpgBuf.length > 0) {
+                thumbUrl = `data:image/jpeg;base64,${Buffer.from(jpgBuf).toString('base64')}`;
+              }
+            } catch (e) {}
+          }
+        }
+
+        if (!thumbUrl) {
+          if (item.url && item.url.startsWith('http')) {
+            thumbUrl = item.url;
+          } else if (item.thumb?.url) {
+            thumbUrl = item.thumb.url;
+          }
+        }
+
+        results.push({
+          id: item.id || `gif-${Date.now()}-${Math.random()}`,
+          url: gifUrl || thumbUrl,
+          thumbUrl: thumbUrl || '',
+          title: item.title || item.description || query || 'GIF',
+          width,
+          height,
+          queryId: queryIdStr,
+          rawItem: item,
+        });
+      }
+
+      return { results, nextOffset: nextOffsetStr };
+    } catch (e: any) {
+      console.warn('[MTProto] getOnlineGifs error:', e?.message || e);
+      return { results: [], nextOffset: '' };
+    }
+  },
+
+  /**
+   * Send an inline bot result (such as a GIF from @gif) directly into a chat
+   */
+  async sendInlineBotResult(
+    chatId: string,
+    queryId: string,
+    resultId: string,
+    replyToMsgId?: number
+  ): Promise<{ success: boolean; messageId?: number }> {
+    const client = await getDirectClient();
+    let targetPeer = peerEntityCache.get(chatId);
+    if (!targetPeer) {
+      targetPeer = await client.getInputEntity(chatId);
+    }
+
+    const qId = bigInt(queryId);
+    const randId = bigInt.randBetween(bigInt(1), bigInt(9223372036854775807));
+
+    const res: any = await client.invoke(
+      new Api.messages.SendInlineBotResult({
+        peer: targetPeer,
+        queryId: qId,
+        id: resultId,
+        randomId: randId,
+        replyTo: replyToMsgId ? new Api.InputReplyToMessage({ replyToMsgId }) : undefined,
+      })
+    );
+
+    let sentId: number | undefined;
+    if (res?.updates) {
+      const msgUpdate = res.updates.find((u: any) => u.message?.id);
+      if (msgUpdate?.message?.id) sentId = msgUpdate.message.id;
+    }
+
+    return { success: true, messageId: sentId };
+  },
+
+  /**
+   * Get all installed Telegram sticker sets for the current user
+   */
+  async getInstalledStickerSets(): Promise<TelegramStickerSet[]> {
+    const client = await getDirectClient();
+    try {
+      const isAuth = await client.isUserAuthorized();
+      if (!isAuth) return [];
+
+      const res: any = await client.invoke(new Api.messages.GetAllStickers({ hash: BigInt(0) as any }));
+      const sets = res?.sets || [];
+      const result: TelegramStickerSet[] = [];
+
+      for (const s of sets) {
+        if (!s || s.archived) continue;
+        let thumbUrl = '';
+        if (s.thumbs) {
+          const stripped = (s.thumbs || []).find(
+            (t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
+          );
+          if (stripped?.bytes) {
+            try {
+              const jpgBuf = strippedPhotoToJpg(stripped.bytes);
+              if (jpgBuf) {
+                thumbUrl = `data:image/jpeg;base64,${Buffer.from(jpgBuf).toString('base64')}`;
+              }
+            } catch (e) {}
+          }
+        }
+
+        result.push({
+          id: s.id ? s.id.toString() : '',
+          accessHash: s.accessHash ? s.accessHash.toString() : '',
+          title: s.title || 'Sticker Set',
+          shortName: s.shortName || '',
+          count: s.count || 0,
+          thumbUrl,
+        });
+      }
+
+      return result;
+    } catch (e: any) {
+      console.warn('[MTProto] getInstalledStickerSets error:', e?.message || e);
+      return [];
+    }
+  },
+
+  /**
+   * Fetch full stickers list for a sticker set
+   */
+  async getStickerSet(stickerset: {
+    id?: string;
+    accessHash?: string;
+    shortName?: string;
+  }): Promise<TelegramStickerSet | null> {
+    const client = await getDirectClient();
+    try {
+      let inputSet: any;
+      if (stickerset.id && stickerset.accessHash) {
+        inputSet = new Api.InputStickerSetID({
+          id: BigInt(stickerset.id) as any,
+          accessHash: BigInt(stickerset.accessHash) as any,
+        });
+      } else if (stickerset.shortName) {
+        inputSet = new Api.InputStickerSetShortName({
+          shortName: stickerset.shortName,
+        });
+      } else {
+        return null;
+      }
+
+      const res: any = await client.invoke(
+        new Api.messages.GetStickerSet({
+          stickerset: inputSet,
+          hash: 0,
+        })
+      );
+
+      const s = res?.set;
+      if (!s) return null;
+
+      const stickers: TelegramStickerItem[] = [];
+      const docs = res.documents || [];
+      const packs = res.packs || [];
+
+      // Build emoji lookup map
+      const emojiMap = new Map<string, string>();
+      for (const pack of packs) {
+        const emoji = pack.emoticon;
+        for (const docId of pack.documents || []) {
+          emojiMap.set(docId.toString(), emoji);
+        }
+      }
+
+      for (const doc of docs) {
+        if (!doc) continue;
+        const dId = doc.id ? doc.id.toString() : '';
+        const aHash = doc.accessHash ? doc.accessHash.toString() : '';
+        const fileRef = doc.fileReference ? Buffer.from(doc.fileReference).toString('hex') : undefined;
+        let thumbUrl = '';
+
+        const stripped = (doc.thumbs || []).find(
+          (t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
+        );
+        if (stripped?.bytes) {
+          try {
+            const jpgBuf = strippedPhotoToJpg(stripped.bytes);
+            if (jpgBuf) {
+              thumbUrl = `data:image/jpeg;base64,${Buffer.from(jpgBuf).toString('base64')}`;
+            }
+          } catch (e) {}
+        }
+
+        stickers.push({
+          id: dId,
+          documentId: dId,
+          accessHash: aHash,
+          fileReference: fileRef,
+          emoji: emojiMap.get(dId),
+          thumbUrl,
+          rawDoc: doc,
+        });
+      }
+
+      return {
+        id: s.id ? s.id.toString() : '',
+        accessHash: s.accessHash ? s.accessHash.toString() : '',
+        title: s.title || 'Sticker Set',
+        shortName: s.shortName || '',
+        count: stickers.length,
+        stickers,
+      };
+    } catch (e: any) {
+      console.warn('[MTProto] getStickerSet error:', e?.message || e);
+      return null;
+    }
+  },
+
+  /**
+   * Install a sticker set to the user's Telegram cloud
+   */
+  async installStickerSet(stickerset: {
+    id?: string;
+    accessHash?: string;
+    shortName?: string;
+  }): Promise<boolean> {
+    const client = await getDirectClient();
+    try {
+      let inputSet: any;
+      if (stickerset.id && stickerset.accessHash) {
+        inputSet = new Api.InputStickerSetID({
+          id: BigInt(stickerset.id) as any,
+          accessHash: BigInt(stickerset.accessHash) as any,
+        });
+      } else if (stickerset.shortName) {
+        inputSet = new Api.InputStickerSetShortName({
+          shortName: stickerset.shortName,
+        });
+      } else {
+        return false;
+      }
+
+      await client.invoke(
+        new Api.messages.InstallStickerSet({
+          stickerset: inputSet,
+          archived: false,
+        })
+      );
+      return true;
+    } catch (e: any) {
+      console.warn('[MTProto] installStickerSet error:', e?.message || e);
+      return false;
+    }
+  },
+
+  /**
+   * Save a sticker to user's Telegram favorite stickers
+   */
+  async faveSticker(documentId: string, accessHash: string, fileReference?: string): Promise<boolean> {
+    const client = await getDirectClient();
+    try {
+      const inputDoc = new Api.InputDocument({
+        id: BigInt(documentId) as any,
+        accessHash: BigInt(accessHash) as any,
+        fileReference: fileReference ? Buffer.from(fileReference, 'hex') : Buffer.alloc(0),
+      });
+
+      await client.invoke(
+        new Api.messages.FaveSticker({
+          id: inputDoc,
+          unfave: false,
+        })
+      );
+      return true;
+    } catch (e: any) {
+      console.warn('[MTProto] faveSticker error:', e?.message || e);
+      return false;
+    }
+  },
+
+  /**
+   * Send a sticker document natively to a chat
+   */
+  async sendStickerDocument(chatId: string, docOrInput: any, replyToMsgId?: number): Promise<TelegramMessage> {
+    const client = await getDirectClient();
+    let targetPeer = peerEntityCache.get(chatId);
+    if (!targetPeer) {
+      targetPeer = await client.getInputEntity(chatId);
+    }
+
+    let fileToSend = docOrInput;
+    if (docOrInput && typeof docOrInput === 'object' && docOrInput.documentId && docOrInput.accessHash) {
+      fileToSend = new Api.InputDocument({
+        id: BigInt(docOrInput.documentId) as any,
+        accessHash: BigInt(docOrInput.accessHash) as any,
+        fileReference: docOrInput.fileReference ? Buffer.from(docOrInput.fileReference, 'hex') : Buffer.alloc(0),
+      });
+    }
+
+    const sendParams: any = { file: fileToSend };
+    if (replyToMsgId) {
+      sendParams.replyTo = parseInt(String(replyToMsgId), 10);
+    }
+
+    const result: any = await client.sendMessage(targetPeer, sendParams);
+    return {
+      id: result.id,
+      text: '',
+      date: result.date ? result.date * 1000 : Date.now(),
+      out: true,
+      mediaType: 'sticker',
+      isSticker: true,
+    };
   },
 
   onNewMessage: onDirectNewMessage,

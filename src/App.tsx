@@ -638,7 +638,31 @@ export const App: React.FC = () => {
     if (authStatus.authorized) {
       try {
         const replyToId = replyTo ? parseInt(replyTo.id, 10) : undefined;
-        const sentTelegramMsg = await telegramApi.sendMessage(activeChatId, text, replyToId);
+        let sentTelegramId: number | undefined;
+
+        if (attachment?.type === 'gif' && attachment.inlineResult) {
+          const res = await telegramApi.sendInlineBotResult(
+            activeChatId,
+            attachment.inlineResult.queryId,
+            attachment.inlineResult.id,
+            replyToId
+          );
+          sentTelegramId = res.messageId;
+        } else if (attachment?.type === 'sticker' && attachment.documentId && attachment.accessHash) {
+          const res = await telegramApi.sendStickerDocument(
+            activeChatId,
+            {
+              documentId: attachment.documentId,
+              accessHash: attachment.accessHash,
+              fileReference: attachment.fileReference,
+            },
+            replyToId
+          );
+          sentTelegramId = res.id;
+        } else {
+          const sentTelegramMsg = await telegramApi.sendMessage(activeChatId, text, replyToId);
+          sentTelegramId = sentTelegramMsg.id;
+        }
 
         // Update with real Telegram message ID and mark sent
         setChats((prev) =>
@@ -650,7 +674,7 @@ export const App: React.FC = () => {
                   m.id === tempId
                     ? {
                         ...m,
-                        id: String(sentTelegramMsg.id),
+                        id: sentTelegramId ? String(sentTelegramId) : m.id,
                         status: 'sent',
                       }
                     : m

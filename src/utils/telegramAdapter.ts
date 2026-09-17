@@ -138,6 +138,11 @@ export function mapTelegramMessage(
       isRound: Boolean(m.isRound || m.mediaType === 'videoNote'),
       isSticker: Boolean(m.isSticker || m.mediaType === 'sticker'),
       isGif: Boolean(m.isGif || m.mediaType === 'gif'),
+      stickerEmoji: m.stickerEmoji,
+      stickerSet: m.stickerSet,
+      documentId: m.documentId,
+      accessHash: m.accessHash,
+      fileReference: m.fileReference,
     };
   }
 

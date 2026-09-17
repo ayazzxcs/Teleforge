@@ -70,10 +70,51 @@ export interface TelegramMessage {
   isSticker?: boolean;
   isGif?: boolean;
   stickerEmoji?: string;
+  stickerSet?: {
+    id?: string;
+    accessHash?: string;
+    shortName?: string;
+    title?: string;
+  };
+  documentId?: string;
+  accessHash?: string;
+  fileReference?: string;
   actionText?: string;
   webPage?: { title?: string; description?: string; url?: string; siteName?: string };
   poll?: { question: string; totalVoters?: number; closed?: boolean };
   forwardFrom?: { id?: string; name: string; avatar?: string; thumbUrl?: string; isChannel?: boolean };
+}
+
+export interface OnlineGifItem {
+  id: string;
+  url: string;
+  thumbUrl: string;
+  title: string;
+  width?: number;
+  height?: number;
+  queryId: string;
+  rawItem?: any;
+}
+
+export interface TelegramStickerItem {
+  id: string;
+  documentId: string;
+  accessHash: string;
+  fileReference?: string;
+  emoji?: string;
+  thumbUrl?: string;
+  url?: string;
+  rawDoc?: any;
+}
+
+export interface TelegramStickerSet {
+  id: string;
+  accessHash: string;
+  title: string;
+  shortName: string;
+  count: number;
+  thumbUrl?: string;
+  stickers?: TelegramStickerItem[];
 }
 
 export interface AuthStatusResponse {
@@ -624,6 +665,39 @@ export const telegramApi = {
 
   async getAuthorizations(): Promise<TelegramSessionInfo[]> {
     return telegramDirectClient.getAuthorizations();
+  },
+
+  async getOnlineGifs(query = '', offset = ''): Promise<{ results: OnlineGifItem[]; nextOffset: string }> {
+    return telegramDirectClient.getOnlineGifs(query, offset);
+  },
+
+  async sendInlineBotResult(
+    chatId: string,
+    queryId: string,
+    resultId: string,
+    replyToMsgId?: number
+  ): Promise<{ success: boolean; messageId?: number }> {
+    return telegramDirectClient.sendInlineBotResult(chatId, queryId, resultId, replyToMsgId);
+  },
+
+  async getInstalledStickerSets(): Promise<TelegramStickerSet[]> {
+    return telegramDirectClient.getInstalledStickerSets();
+  },
+
+  async getStickerSet(stickerset: { id?: string; accessHash?: string; shortName?: string }): Promise<TelegramStickerSet | null> {
+    return telegramDirectClient.getStickerSet(stickerset);
+  },
+
+  async installStickerSet(stickerset: { id?: string; accessHash?: string; shortName?: string }): Promise<boolean> {
+    return telegramDirectClient.installStickerSet(stickerset);
+  },
+
+  async faveSticker(documentId: string, accessHash: string, fileReference?: string): Promise<boolean> {
+    return telegramDirectClient.faveSticker(documentId, accessHash, fileReference);
+  },
+
+  async sendStickerDocument(chatId: string, docOrInput: any, replyToMsgId?: number): Promise<TelegramMessage> {
+    return telegramDirectClient.sendStickerDocument(chatId, docOrInput, replyToMsgId);
   },
 
   async terminateSession(hash: string): Promise<{ success: boolean }> {

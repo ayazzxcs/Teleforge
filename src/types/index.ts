@@ -48,6 +48,20 @@ export interface Attachment {
   isSticker?: boolean;
   isGif?: boolean;
   mimeType?: string;
+  stickerEmoji?: string;
+  stickerSet?: {
+    id?: string;
+    accessHash?: string;
+    shortName?: string;
+    title?: string;
+  };
+  documentId?: string;
+  accessHash?: string;
+  fileReference?: string;
+  inlineResult?: {
+    queryId: string;
+    id: string;
+  };
 }
 
 export interface Message {
