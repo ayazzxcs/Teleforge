@@ -671,6 +671,10 @@ export const telegramApi = {
     return telegramDirectClient.getOnlineGifs(query, offset);
   },
 
+  async downloadDocumentThumb(doc: any): Promise<string | null> {
+    return telegramDirectClient.downloadDocumentThumb(doc);
+  },
+
   async sendInlineBotResult(
     chatId: string,
     queryId: string,

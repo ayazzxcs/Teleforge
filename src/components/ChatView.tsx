@@ -39,6 +39,7 @@ import {
   Video,
   Download,
   Maximize2,
+  Package,
 } from 'lucide-react';
 import { Chat, Message, Reaction, Attachment } from '../types';
 import { AudioPlayer } from './AudioPlayer';
@@ -643,7 +644,7 @@ const ChatMediaSticker: React.FC<{
   );
 };
 
-// Sticker Preview & Add Sheet Modal
+// Sticker Preview & Add Sheet Modal with Dual Adding Options (Clicked Sticker + Full Pack)
 const StickerPreviewModal: React.FC<{
   data: {
     attachment: Attachment;
@@ -654,111 +655,357 @@ const StickerPreviewModal: React.FC<{
   onSendMessage: (text: string, replyTo?: Message, attachment?: Attachment) => void;
 }> = ({ data, onClose, onSendMessage }) => {
   if (!data) return null;
-  const { attachment } = data;
-  const isSaved = stickerService.isStickerSaved(attachment.url) ||
-    Boolean(attachment.documentId && stickerService.isStickerSaved(attachment.documentId));
+  const initialAttachment = data.attachment;
+  const [currentAttachment, setCurrentAttachment] = useState<Attachment>(initialAttachment);
+  const [packData, setPackData] = useState<TelegramStickerSet | null>(null);
+  const [loadingPack, setLoadingPack] = useState(false);
+  const [isSavingSticker, setIsSavingSticker] = useState(false);
+  const [isSavingPack, setIsSavingPack] = useState(false);
 
-  const [saving, setSaving] = useState(false);
+  const isStickerSaved =
+    stickerService.isStickerSaved(currentAttachment.url) ||
+    Boolean(currentAttachment.documentId && stickerService.isStickerSaved(currentAttachment.documentId));
 
-  const handleToggleSave = () => {
-    setSaving(true);
+  const packId = currentAttachment.stickerSet?.id || currentAttachment.stickerSet?.shortName;
+  const [isPackSaved, setIsPackSaved] = useState(() =>
+    Boolean(packId && stickerService.isPackSaved(packId))
+  );
+
+  useEffect(() => {
+    setCurrentAttachment(data.attachment);
+    const ss = data.attachment.stickerSet;
+    if (ss && (ss.id || ss.shortName)) {
+      setLoadingPack(true);
+      telegramApi
+        .getStickerSet(ss)
+        .then((set) => {
+          if (set) setPackData(set);
+        })
+        .catch(() => {})
+        .finally(() => setLoadingPack(false));
+    } else {
+      setPackData(null);
+    }
+  }, [data]);
+
+  useEffect(() => {
+    const unsub = stickerService.subscribe(() => {
+      const pid = currentAttachment.stickerSet?.id || currentAttachment.stickerSet?.shortName;
+      setIsPackSaved(Boolean(pid && stickerService.isPackSaved(pid)));
+    });
+    return unsub;
+  }, [currentAttachment.stickerSet]);
+
+  const handleToggleSingleSticker = () => {
+    setIsSavingSticker(true);
     try {
-      if (isSaved) {
-        stickerService.removeCustomSticker(attachment.documentId || attachment.url);
+      if (isStickerSaved) {
+        stickerService.removeCustomSticker(currentAttachment.documentId || currentAttachment.url);
         showToast('Removed from your stickers', 'info');
       } else {
         stickerService.addCustomSticker({
-          id: attachment.documentId || `stk-${Date.now()}`,
-          name: attachment.name || (attachment.stickerEmoji ? `Sticker ${attachment.stickerEmoji}` : 'Custom Sticker'),
-          emoji: attachment.stickerEmoji,
-          url: attachment.url,
-          thumbUrl: attachment.thumbUrl || attachment.url,
-          stickerSet: attachment.stickerSet,
-          documentId: attachment.documentId,
-          accessHash: attachment.accessHash,
-          fileReference: attachment.fileReference,
+          id: currentAttachment.documentId || `stk-${Date.now()}`,
+          name:
+            currentAttachment.name ||
+            (currentAttachment.stickerEmoji ? `Sticker ${currentAttachment.stickerEmoji}` : 'Custom Sticker'),
+          emoji: currentAttachment.stickerEmoji,
+          url: currentAttachment.url,
+          thumbUrl: currentAttachment.thumbUrl || currentAttachment.url,
+          stickerSet: currentAttachment.stickerSet,
+          documentId: currentAttachment.documentId,
+          accessHash: currentAttachment.accessHash,
+          fileReference: currentAttachment.fileReference,
         });
         showToast('Sticker added to your stickers! ⭐', 'success');
       }
     } catch (e: any) {
       showToast('Failed to update sticker', 'error');
     } finally {
-      setSaving(false);
+      setIsSavingSticker(false);
+    }
+  };
+
+  const handleTogglePack = async () => {
+    if (!currentAttachment.stickerSet) return;
+    setIsSavingPack(true);
+    try {
+      if (isPackSaved) {
+        const pid = currentAttachment.stickerSet.id || currentAttachment.stickerSet.shortName;
+        if (pid) {
+          stickerService.removeStickerPack(pid);
+          showToast('Removed sticker pack from your collection', 'info');
+        }
+      } else {
+        const res = await stickerService.addStickerPack({
+          id: currentAttachment.stickerSet.id,
+          accessHash: currentAttachment.stickerSet.accessHash,
+          shortName: currentAttachment.stickerSet.shortName,
+          title: packData?.title || currentAttachment.stickerSet.title || 'Sticker Pack',
+          stickers: packData?.stickers,
+        });
+        if (res.success) {
+          showToast(`Sticker pack added (${res.addedCount} stickers)! 📦`, 'success');
+        } else {
+          showToast('Failed to add sticker pack', 'error');
+        }
+      }
+    } catch (e) {
+      showToast('Failed to update sticker pack', 'error');
+    } finally {
+      setIsSavingPack(false);
     }
   };
 
   const handleSend = () => {
-    onSendMessage('', undefined, attachment);
+    onSendMessage('', undefined, currentAttachment);
     onClose();
     showToast('Sticker sent! 🚀', 'success');
   };
 
-  const stickerTitle = attachment.stickerSet?.title || attachment.name?.replace('Sticker', '').trim() || 'Custom Sticker';
-  const stickerSub = attachment.stickerSet?.shortName ? `@${attachment.stickerSet.shortName}` : 'Custom Telegram Sticker';
-  const displaySrc = attachment.url.startsWith('/stickers/') || attachment.url.startsWith('/gifs/') ? '.' + attachment.url : attachment.url;
+  const stickerTitle =
+    packData?.title ||
+    currentAttachment.stickerSet?.title ||
+    currentAttachment.name?.replace('Sticker', '').trim() ||
+    'Custom Sticker';
+  const stickerCount = packData?.stickers?.length || (currentAttachment.stickerSet as any)?.count;
+  const stickerSub = currentAttachment.stickerSet?.shortName
+    ? `@${currentAttachment.stickerSet.shortName}${stickerCount ? ` • ${stickerCount} stickers` : ''}`
+    : 'Custom Telegram Sticker';
+  const displaySrc =
+    currentAttachment.url.startsWith('/stickers/') || currentAttachment.url.startsWith('/gifs/')
+      ? '.' + currentAttachment.url
+      : currentAttachment.url;
 
   return (
-    <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-      <div className="bg-white dark:bg-[#131b26] rounded-3xl p-6 max-w-xs sm:max-w-sm w-full border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col items-center relative text-center">
+    <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-4 animate-in fade-in duration-150">
+      <div className="bg-white dark:bg-[#131b26] rounded-3xl p-5 max-w-sm sm:max-w-md w-full max-h-[92vh] overflow-y-auto border border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col items-center relative text-center">
         <button
           type="button"
           onClick={onClose}
-          className="absolute top-4 right-4 p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors cursor-pointer"
+          className="absolute top-3.5 right-3.5 p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors cursor-pointer z-10"
         >
           <X size={18} />
         </button>
 
-        <div className="w-36 h-36 sm:w-44 sm:h-44 flex items-center justify-center my-3 relative">
+        {/* Selected Sticker Large Preview */}
+        <div className="w-32 h-32 sm:w-36 sm:h-36 flex items-center justify-center my-2 relative">
           <img
             src={displaySrc}
-            alt={attachment.name || 'Sticker'}
+            alt={currentAttachment.name || 'Sticker'}
             className="w-full h-full object-contain filter drop-shadow-xl"
             onError={(e) => {
-              if (attachment.thumbUrl && e.currentTarget.src !== attachment.thumbUrl) {
-                e.currentTarget.src = attachment.thumbUrl;
+              if (currentAttachment.thumbUrl && e.currentTarget.src !== currentAttachment.thumbUrl) {
+                e.currentTarget.src = currentAttachment.thumbUrl;
               }
             }}
           />
-          {attachment.stickerEmoji && (
+          {currentAttachment.stickerEmoji && (
             <span className="absolute bottom-0 right-0 text-2xl p-1 bg-white/90 dark:bg-black/90 rounded-full shadow-md backdrop-blur-xs">
-              {attachment.stickerEmoji}
+              {currentAttachment.stickerEmoji}
             </span>
           )}
         </div>
 
-        <h3 className="text-base font-bold text-gray-900 dark:text-gray-100 mt-2">
+        <h3 className="text-base font-bold text-gray-900 dark:text-gray-100 mt-1">
           {stickerTitle}
         </h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-6">
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
           {stickerSub}
         </p>
 
-        <div className="w-full space-y-2">
+        {/* Pack Stickers Preview Grid */}
+        {currentAttachment.stickerSet && (
+          <div className="w-full my-2 bg-gray-50 dark:bg-[#0e1520] rounded-2xl p-2.5 border border-gray-100 dark:border-gray-800/80 text-left">
+            <div className="flex items-center justify-between px-1 mb-1.5 text-xs">
+              <span className="font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1.5">
+                <Package size={13} className="text-teleforge-primary" />
+                <span>Pack Stickers {stickerCount ? `(${stickerCount})` : ''}</span>
+              </span>
+              {loadingPack && (
+                <span className="flex items-center gap-1 text-[11px] text-teleforge-primary">
+                  <Loader2 size={12} className="animate-spin" />
+                  <span>Loading pack...</span>
+                </span>
+              )}
+            </div>
+
+            {/* Scrollable grid of pack stickers */}
+            <div className="grid grid-cols-5 gap-1.5 max-h-32 overflow-y-auto p-1 custom-scrollbar">
+              {(packData?.stickers || []).map((stk) => {
+                const isSelected = stk.documentId === currentAttachment.documentId || stk.id === currentAttachment.documentId;
+                return (
+                  <button
+                    key={stk.id}
+                    type="button"
+                    onClick={() => {
+                      setCurrentAttachment({
+                        type: 'sticker',
+                        url: stk.thumbUrl || stk.url || '',
+                        name: stk.emoji ? `Sticker ${stk.emoji}` : 'Telegram Sticker',
+                        isSticker: true,
+                        documentId: stk.documentId,
+                        accessHash: stk.accessHash,
+                        fileReference: stk.fileReference,
+                        stickerEmoji: stk.emoji,
+                        stickerSet: currentAttachment.stickerSet,
+                        thumbUrl: stk.thumbUrl,
+                      });
+                    }}
+                    className={`p-1 rounded-xl transition-all flex flex-col items-center justify-center aspect-square cursor-pointer hover:scale-105 active:scale-95 ${
+                      isSelected
+                        ? 'bg-teleforge-primary/20 ring-2 ring-teleforge-primary'
+                        : 'hover:bg-black/5 dark:hover:bg-white/5'
+                    }`}
+                    title={stk.emoji || 'Sticker'}
+                  >
+                    {stk.thumbUrl ? (
+                      <img src={stk.thumbUrl} alt="" className="w-full h-full object-contain" loading="lazy" />
+                    ) : (
+                      <span className="text-xl">{stk.emoji || '⭐️'}</span>
+                    )}
+                  </button>
+                );
+              })}
+
+              {!loadingPack && (!packData?.stickers || packData.stickers.length === 0) && (
+                <div className="col-span-5 py-3 text-center text-xs text-gray-400">
+                  Preview not available for this pack
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Action Buttons: Dual Add Options + Send */}
+        <div className="w-full space-y-2 mt-2">
+          {/* Option A: Add/Remove This Specific Clicked Sticker */}
           <button
             type="button"
-            onClick={handleToggleSave}
-            disabled={saving}
-            className={`w-full py-3 rounded-2xl font-semibold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
-              isSaved
-                ? 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-red-500/10 hover:text-red-500'
-                : 'bg-teleforge-primary hover:bg-teleforge-hover text-white shadow-lg shadow-teleforge-primary/25 active:scale-98'
+            onClick={handleToggleSingleSticker}
+            disabled={isSavingSticker}
+            className={`w-full py-2.5 rounded-2xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              isStickerSaved
+                ? 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-red-500/10 hover:text-red-500 border border-gray-200 dark:border-gray-700'
+                : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white shadow-md shadow-amber-500/20 active:scale-98'
             }`}
           >
-            {isSaved ? <Check size={18} className="text-green-500 stroke-[2.5]" /> : <Sparkles size={18} />}
-            <span>{isSaved ? 'In Your Stickers (Remove)' : (attachment.stickerSet ? 'Add Sticker Pack' : 'Add to Stickers')}</span>
+            {isStickerSaved ? (
+              <>
+                <Check size={16} className="text-green-500 stroke-[2.5]" />
+                <span>In My Stickers (Tap to Remove)</span>
+              </>
+            ) : (
+              <>
+                <Sparkles size={16} />
+                <span>Add This Sticker to My Stickers</span>
+              </>
+            )}
           </button>
 
+          {/* Option B: Add/Install Full Sticker Pack (with all other stickers included) */}
+          {currentAttachment.stickerSet && (
+            <button
+              type="button"
+              onClick={handleTogglePack}
+              disabled={isSavingPack || loadingPack}
+              className={`w-full py-2.5 rounded-2xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                isPackSaved
+                  ? 'bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800/50 hover:bg-red-500/10 hover:text-red-500'
+                  : 'bg-teleforge-primary hover:bg-teleforge-hover text-white shadow-md shadow-teleforge-primary/25 active:scale-98'
+              }`}
+            >
+              {isSavingPack ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : isPackSaved ? (
+                <Check size={16} className="text-green-500 stroke-[2.5]" />
+              ) : (
+                <Package size={16} />
+              )}
+              <span>
+                {isPackSaved
+                  ? 'Full Pack Added (Tap to Remove)'
+                  : `Add Full Sticker Pack ${stickerCount ? `(${stickerCount} Stickers)` : ''}`}
+              </span>
+            </button>
+          )}
+
+          {/* Send to Chat */}
           <button
             type="button"
             onClick={handleSend}
-            className="w-full py-2.5 rounded-2xl font-medium text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800/80 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+            className="w-full py-2 rounded-2xl font-medium text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800/80 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
           >
-            <Send size={14} />
+            <Send size={13} />
             <span>Send to Chat</span>
           </button>
         </div>
       </div>
     </div>
+  );
+};
+
+// Crisp Online GIF Tile with high-res auto-upgrade and video playback
+const OnlineGifTile: React.FC<{
+  gif: OnlineGifItem;
+  onSelect: () => void;
+}> = ({ gif, onSelect }) => {
+  const [src, setSrc] = useState<string>(() => gif.thumbUrl || gif.url);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    // If the thumbnail is a stripped low-res data URL or we have a raw Telegram document,
+    // asynchronously fetch the high-res thumbnail via MTProto
+    if (gif.rawItem?.document && (!gif.thumbUrl || gif.thumbUrl.startsWith('data:image/jpeg;base64'))) {
+      telegramApi.downloadDocumentThumb(gif.rawItem.document).then((highRes) => {
+        if (highRes && active) {
+          setSrc(highRes);
+        }
+      }).catch(() => {});
+    }
+    return () => {
+      active = false;
+    };
+  }, [gif.id, gif.thumbUrl, gif.rawItem]);
+
+  const isVideo = (gif.url && gif.url.endsWith('.mp4')) || (gif.thumbUrl && gif.thumbUrl.endsWith('.mp4'));
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="relative rounded-xl overflow-hidden hover:opacity-90 active:scale-98 transition-all group cursor-pointer bg-black/10 dark:bg-white/5 aspect-4/3 flex items-center justify-center"
+      title={gif.title}
+    >
+      {isVideo ? (
+        <video
+          src={gif.url || gif.thumbUrl}
+          autoPlay
+          loop
+          muted
+          playsInline
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform pointer-events-none"
+        />
+      ) : (
+        <img
+          src={src}
+          alt={gif.title}
+          className={`w-full h-full object-cover group-hover:scale-105 transition-all duration-200 ${
+            src.startsWith('data:') && !isLoaded ? 'filter blur-[1px]' : ''
+          }`}
+          loading="lazy"
+          onLoad={() => setIsLoaded(true)}
+          onError={() => {
+            if (gif.url && src !== gif.url) {
+              setSrc(gif.url);
+            }
+          }}
+        />
+      )}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
+        <span className="text-[11px] text-white font-medium truncate">{gif.title}</span>
+      </div>
+    </button>
   );
 };
 
@@ -992,16 +1239,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (isGifsLoading) return;
     setIsGifsLoading(true);
     try {
-      const effectiveQuery = query.trim() || (gifCategory !== 'all' ? gifCategory : '');
+      const effectiveQuery = query.trim() || (gifCategory !== 'all' ? gifCategory : 'trending');
       const res = await telegramApi.getOnlineGifs(effectiveQuery, offset);
+      const newResults = res?.results || [];
       if (append) {
-        setOnlineGifs((prev) => [...prev, ...(res.results || [])]);
+        setOnlineGifs((prev) => {
+          const seen = new Set(prev.map((g) => g.id));
+          const unique = newResults.filter((g) => !seen.has(g.id));
+          return [...prev, ...unique];
+        });
       } else {
-        setOnlineGifs(res.results || []);
+        setOnlineGifs(newResults);
       }
-      setGifNextOffset(res.nextOffset || '');
+      setGifNextOffset(res?.nextOffset || '');
     } catch (err) {
       console.warn('[ChatView] Online GIF error:', err);
+      setGifNextOffset('');
     } finally {
       setIsGifsLoading(false);
     }
@@ -1010,6 +1263,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   useEffect(() => {
     if (emojiPickerTab !== 'gifs') return;
     const timer = setTimeout(() => {
+      setGifNextOffset('');
       loadOnlineGifs(gifSearch, '', false);
     }, gifSearch ? 350 : 0);
     return () => clearTimeout(timer);
@@ -1017,7 +1271,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const handleGifScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-    if (scrollHeight - scrollTop - clientHeight < 180 && !isGifsLoading && gifNextOffset) {
+    if (scrollHeight - scrollTop - clientHeight < 250 && !isGifsLoading && gifNextOffset) {
       loadOnlineGifs(gifSearch, gifNextOffset, true);
     }
   };
@@ -2571,12 +2825,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     onScroll={handleGifScroll}
                     className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto p-1"
                   >
-                    {/* 1. Live Online Telegram MTProto GIFs */}
+                    {/* 1. Live Online Telegram MTProto GIFs with Crisp Playback */}
                     {onlineGifs.map((gif) => (
-                      <button
+                      <OnlineGifTile
                         key={gif.id}
-                        type="button"
-                        onClick={() => {
+                        gif={gif}
+                        onSelect={() => {
                           onSendMessage('', replyingTo || undefined, {
                             type: 'gif',
                             url: gif.url || gif.thumbUrl,
@@ -2590,19 +2844,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           setReplyingTo(null);
                           setShowEmojiPicker(false);
                         }}
-                        className="relative rounded-xl overflow-hidden hover:opacity-90 active:scale-98 transition-all group cursor-pointer bg-black/10 aspect-4/3"
-                        title={gif.title}
-                      >
-                        <img
-                          src={gif.thumbUrl || gif.url}
-                          alt={gif.title}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                          loading="lazy"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
-                          <span className="text-[11px] text-white font-medium truncate">{gif.title}</span>
-                        </div>
-                      </button>
+                      />
                     ))}
 
                     {/* 2. Curated Offline GIFs Fallback / Complement */}

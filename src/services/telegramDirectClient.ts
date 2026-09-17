@@ -34,6 +34,7 @@ let clientInitPromise: Promise<TelegramClient> | null = null;
 // Entity and media caches
 const peerEntityCache = new Map<string, any>();
 const thumbCache = new Map<string, string>(); // peerId -> base64 data URL
+const gifThumbCache = new Map<string, string>(); // docId -> base64 data URL
 const avatarBlobUrlCache = new Map<string, string>(); // peerId -> object URL
 const messageMediaMap = new Map<string, any>(); // `${chatId}_${messageId}` -> media object
 const messageObjectMap = new Map<string, any>(); // `${chatId}_${messageId}` -> full Api.Message object
@@ -2323,48 +2324,92 @@ export const telegramDirectClient = {
         bot = await client.getInputEntity('gif');
         peerEntityCache.set('gif_bot', bot);
       }
-      const peer = await client.getInputEntity('me');
+      // Use InputPeerSelf directly (never fails or delays)
+      const peer = new Api.InputPeerSelf();
 
-      const res: any = await client.invoke(
-        new Api.messages.GetInlineBotResults({
-          bot,
-          peer,
-          query: query || '',
-          offset: offset || '',
-        })
+      // Ensure query is never empty for @gif, since @gif requires a query keyword (e.g. 'trending') to paginate properly
+      const q = query.trim() || 'trending';
+
+      const res: any = await withTimeout(
+        client.invoke(
+          new Api.messages.GetInlineBotResults({
+            bot,
+            peer,
+            query: q,
+            offset: offset || '',
+          })
+        ),
+        10000,
+        'Inline bot results timeout'
       );
 
-      const queryIdStr = res.queryId ? res.queryId.toString() : '';
-      const nextOffsetStr = res.nextOffset || '';
+      const queryIdStr = res?.queryId ? res.queryId.toString() : '';
+      const nextOffsetStr = res?.nextOffset || '';
       const results: OnlineGifItem[] = [];
 
-      for (const item of (res.results || [])) {
+      for (const item of (res?.results || [])) {
         if (!item) continue;
         let thumbUrl = '';
         let gifUrl = '';
         let width: number | undefined;
         let height: number | undefined;
 
+        // 1. Prioritize direct high-resolution web URLs (Tenor / Giphy via BotInlineResult)
+        if (item.content?.url && typeof item.content.url === 'string') {
+          gifUrl = item.content.url;
+        }
+        if (item.thumb?.url && typeof item.thumb.url === 'string') {
+          thumbUrl = item.thumb.url;
+        }
+
+        // Direct media URL fallback
+        if (item.url && typeof item.url === 'string' && item.url.startsWith('http')) {
+          const isDirectMedia = /\.(gif|mp4|webm|webp|png|jpg|jpeg)($|\?)/i.test(item.url) ||
+            item.url.includes('/media.') || item.url.includes('/c.tenor.com');
+          if (isDirectMedia) {
+            if (!gifUrl) gifUrl = item.url;
+            if (!thumbUrl) thumbUrl = item.url;
+          }
+        }
+
+        // Upgrade Tenor nanogif/tinymp4 to crisp high-res versions
+        if (thumbUrl && thumbUrl.includes('tenor.com')) {
+          if (thumbUrl.includes('/nanogif.gif')) {
+            thumbUrl = thumbUrl.replace('/nanogif.gif', '/tinygif.gif');
+          } else if (thumbUrl.includes('/nanomp4.mp4')) {
+            thumbUrl = thumbUrl.replace('/nanomp4.mp4', '/tinymp4.mp4');
+          }
+        }
+        if (gifUrl && gifUrl.includes('tenor.com')) {
+          if (gifUrl.includes('/nanogif.gif')) {
+            gifUrl = gifUrl.replace('/nanogif.gif', '/mediumgif.gif');
+          } else if (gifUrl.includes('/nanomp4.mp4')) {
+            gifUrl = gifUrl.replace('/nanomp4.mp4', '/mediummp4.mp4');
+          }
+        }
+
+        // 2. Telegram MTProto Document / Photo (BotInlineMediaResult)
         const doc = item.document;
         if (doc) {
-          const stripped = (doc.thumbs || []).find(
-            (t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
-          );
-          if (stripped?.bytes) {
-            try {
-              const jpgBuf = strippedPhotoToJpg(stripped.bytes);
-              if (jpgBuf && jpgBuf.length > 0) {
-                thumbUrl = `data:image/jpeg;base64,${Buffer.from(jpgBuf).toString('base64')}`;
-              }
-            } catch (e) {}
-          }
-
           const videoAttr = (doc.attributes || []).find(
             (a: any) => a._ === 'documentAttributeVideo' || a.className === 'DocumentAttributeVideo'
           );
           if (videoAttr) {
             width = videoAttr.w;
             height = videoAttr.h;
+          }
+
+          // Stripped photo used as immediate smooth placeholder if no web URL
+          const stripped = (doc.thumbs || []).find(
+            (t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
+          );
+          if (stripped?.bytes && !thumbUrl) {
+            try {
+              const jpgBuf = strippedPhotoToJpg(stripped.bytes);
+              if (jpgBuf && jpgBuf.length > 0) {
+                thumbUrl = `data:image/jpeg;base64,${Buffer.from(jpgBuf).toString('base64')}`;
+              }
+            } catch (e) {}
           }
         }
 
@@ -2383,19 +2428,20 @@ export const telegramDirectClient = {
           }
         }
 
+        // Final fallback
         if (!thumbUrl) {
-          if (item.url && item.url.startsWith('http')) {
-            thumbUrl = item.url;
-          } else if (item.thumb?.url) {
+          if (item.thumb?.url) {
             thumbUrl = item.thumb.url;
+          } else if (item.url && item.url.startsWith('http')) {
+            thumbUrl = item.url;
           }
         }
 
         results.push({
           id: item.id || `gif-${Date.now()}-${Math.random()}`,
           url: gifUrl || thumbUrl,
-          thumbUrl: thumbUrl || '',
-          title: item.title || item.description || query || 'GIF',
+          thumbUrl: thumbUrl || gifUrl || '',
+          title: item.title || item.description || q || 'GIF',
           width,
           height,
           queryId: queryIdStr,
@@ -2407,6 +2453,41 @@ export const telegramDirectClient = {
     } catch (e: any) {
       console.warn('[MTProto] getOnlineGifs error:', e?.message || e);
       return { results: [], nextOffset: '' };
+    }
+  },
+
+  /**
+   * Download a high-res thumbnail for a document (GIF or sticker) via MTProto
+   */
+  async downloadDocumentThumb(doc: any): Promise<string | null> {
+    if (!doc) return null;
+    const docId = doc.id ? doc.id.toString() : '';
+    if (docId && gifThumbCache.has(docId)) {
+      return gifThumbCache.get(docId)!;
+    }
+    const client = await getDirectClient();
+    try {
+      const normalThumbs = (doc.thumbs || []).filter((t: any) =>
+        t._ === 'photoSize' || t.className === 'PhotoSize' ||
+        t._ === 'photoSizeProgressive' || t.className === 'PhotoSizeProgressive'
+      );
+      if (normalThumbs.length === 0) return null;
+      const best = normalThumbs[normalThumbs.length - 1];
+      const buffer: any = await withTimeout(
+        client.downloadMedia(doc, {
+          thumb: best.type || (normalThumbs.length - 1),
+        }),
+        8000,
+        'Thumb download timeout'
+      );
+      if (buffer && buffer.length > 0) {
+        const dataUrl = `data:image/jpeg;base64,${Buffer.from(buffer).toString('base64')}`;
+        if (docId) gifThumbCache.set(docId, dataUrl);
+        return dataUrl;
+      }
+      return null;
+    } catch (e) {
+      return null;
     }
   },
 
