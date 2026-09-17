@@ -16,7 +16,7 @@ import { TeleForgeLogo } from './components/TeleForgeLogo';
 import { telegramApi, TelegramUser, AuthStatusResponse, TelegramDialog, isAndroidApp } from './services/telegramApi';
 import { avatarService } from './services/avatarService';
 import { mediaService } from './services/mediaService';
-import { mapDialogToChat, mapTelegramMessage, mapTelegramUserToProfile, formatMessageTime } from './utils/telegramAdapter';
+import { mapDialogToChat, mapTelegramMessage, mapTelegramUserToProfile, formatMessageTime, getAvatarColor } from './utils/telegramAdapter';
 import { TeleForgeTheme, getInitialTheme, applyTheme, BUILTIN_PRESETS } from './theme/teleforgeTheme';
 import {
   getPowerToolsSettings,
@@ -317,7 +317,8 @@ export const App: React.FC = () => {
       setChats((prev) => {
         const targetChat = prev.find((c) => c.id === chatId);
         const mapped = realMsgs.map((m) => mapTelegramMessage(m, chatId, targetChat?.name || 'Telegram'));
-        return prev.map((c) => (c.id === chatId ? { ...c, messages: mapped } : c));
+        const sorted = mapped.sort((a, b) => (a.rawDate || 0) - (b.rawDate || 0));
+        return prev.map((c) => (c.id === chatId ? { ...c, messages: sorted } : c));
       });
 
       // Update hasMore state for this chat
@@ -503,9 +504,10 @@ export const App: React.FC = () => {
             if (newBatch.length === 0) {
               return c;
             }
+            const combined = [...newBatch, ...c.messages].sort((a, b) => (a.rawDate || 0) - (b.rawDate || 0));
             return {
               ...c,
-              messages: [...newBatch, ...c.messages],
+              messages: combined,
             };
           }
           return c;
@@ -550,6 +552,25 @@ export const App: React.FC = () => {
       setChats((prev) => [newChat, ...prev]);
     }
     handleSelectChat(dialog.id);
+  };
+
+  const handleOpenDirectChat = (userId: string, userName: string, userAvatar?: string, userThumbUrl?: string) => {
+    const existing = chats.find((c) => c.id === userId);
+    if (!existing) {
+      const newDirectChat: Chat = {
+        id: userId,
+        name: userName || 'Telegram User',
+        avatar: userAvatar || '',
+        thumbUrl: userThumbUrl,
+        avatarColor: getAvatarColor(userName || userId),
+        type: 'direct',
+        messages: [],
+        unreadCount: 0,
+        online: false,
+      };
+      setChats((prev) => [newDirectChat, ...prev]);
+    }
+    handleSelectChat(userId);
   };
 
   const handleChatJoined = (chatId: string) => {
@@ -947,6 +968,7 @@ export const App: React.FC = () => {
           isLoadingOlderMessages={isLoadingOlderMessages}
           hasMoreOlderMessages={activeChatId ? hasMoreOlderMessages[activeChatId] : undefined}
           onSelectChat={handleSelectChat}
+          onOpenDirectChat={handleOpenDirectChat}
         />
       </div>
 

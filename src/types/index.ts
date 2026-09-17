@@ -36,14 +36,18 @@ export interface Reaction {
 }
 
 export interface Attachment {
-  type: 'image' | 'video' | 'audio' | 'file';
+  type: 'image' | 'video' | 'audio' | 'file' | 'sticker' | 'gif' | 'videoNote';
   url: string;
   name?: string;
   size?: string;
-  duration?: string; // e.g. "0:24" for audio
+  duration?: string; // e.g. "0:24" for audio/video
   thumbUrl?: string;
   chatId?: string;
   messageId?: string;
+  isRound?: boolean;
+  isSticker?: boolean;
+  isGif?: boolean;
+  mimeType?: string;
 }
 
 export interface Message {
@@ -67,6 +71,14 @@ export interface Message {
     text: string;
   };
   pinned?: boolean;
+  isService?: boolean;
+  forwardFrom?: {
+    id?: string;
+    name: string;
+    avatar?: string;
+    thumbUrl?: string;
+    isChannel?: boolean;
+  };
 }
 
 export interface Chat {

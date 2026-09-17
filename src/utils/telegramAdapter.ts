@@ -97,9 +97,15 @@ export function mapTelegramMessage(
 ): Message {
   let attachment = undefined;
   if (m.hasMedia && m.mediaType) {
-    let attType: 'image' | 'video' | 'audio' | 'file' = 'file';
+    let attType: 'image' | 'video' | 'audio' | 'file' | 'sticker' | 'gif' | 'videoNote' = 'file';
     if (m.mediaType === 'photo') {
       attType = 'image';
+    } else if (m.mediaType === 'videoNote' || m.isRound) {
+      attType = 'videoNote';
+    } else if (m.mediaType === 'gif' || m.isGif) {
+      attType = 'gif';
+    } else if (m.mediaType === 'sticker' || m.isSticker) {
+      attType = 'sticker';
     } else if (m.mediaType === 'video') {
       attType = 'video';
     } else if (m.mediaType === 'voice' || m.mediaType === 'audio') {
@@ -111,6 +117,9 @@ export function mapTelegramMessage(
 
     let defaultName = 'File';
     if (m.mediaType === 'photo') defaultName = 'Photo';
+    else if (m.mediaType === 'videoNote' || m.isRound) defaultName = 'Video Message';
+    else if (m.mediaType === 'gif' || m.isGif) defaultName = 'GIF';
+    else if (m.mediaType === 'sticker' || m.isSticker) defaultName = m.stickerEmoji ? `Sticker ${m.stickerEmoji}` : 'Sticker';
     else if (m.mediaType === 'video') defaultName = 'Video';
     else if (m.mediaType === 'voice') defaultName = 'Voice Message';
     else if (m.mediaType === 'audio') defaultName = 'Audio Message';
@@ -122,6 +131,9 @@ export function mapTelegramMessage(
       name: m.fileName || defaultName,
       size: m.fileSize || undefined,
       duration: m.mediaType === 'voice' ? '0:18' : undefined,
+      isRound: Boolean(m.isRound || m.mediaType === 'videoNote'),
+      isSticker: Boolean(m.isSticker || m.mediaType === 'sticker'),
+      isGif: Boolean(m.isGif || m.mediaType === 'gif'),
     };
   }
 
@@ -162,6 +174,8 @@ export function mapTelegramMessage(
     status: 'read',
     attachment,
     reactions: m.reactions,
+    isService: Boolean(m.actionText),
+    forwardFrom: m.forwardFrom,
     replyTo: m.replyToMsgId
       ? {
           id: String(m.replyToMsgId),

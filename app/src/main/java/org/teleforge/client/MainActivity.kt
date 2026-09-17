@@ -430,7 +430,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 fullscreenContainer.visibility = View.VISIBLE
-                webView.visibility = View.GONE
 
                 WindowCompat.getInsetsController(window, window.decorView).apply {
                     hide(WindowInsetsCompat.Type.systemBars())
@@ -442,7 +441,6 @@ class MainActivity : ComponentActivity() {
                 if (customView == null) return
                 fullscreenContainer.removeView(customView)
                 fullscreenContainer.visibility = View.GONE
-                webView.visibility = View.VISIBLE
                 customViewCallback?.onCustomViewHidden()
                 customView = null
                 customViewCallback = null
@@ -646,6 +644,23 @@ class MainActivity : ComponentActivity() {
         fun hasLocalMedia(id: String): Boolean {
             val file = java.io.File(activity.cacheDir, "media/$id.mp4")
             return file.exists() && file.length() > 0L
+        }
+
+        @android.webkit.JavascriptInterface
+        fun setFullscreen(enabled: Boolean) {
+            activity.runOnUiThread {
+                try {
+                    val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+                    if (enabled) {
+                        controller.hide(WindowInsetsCompat.Type.systemBars())
+                        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    } else {
+                        controller.show(WindowInsetsCompat.Type.systemBars())
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("TeleForgeBridge", "setFullscreen error: ${e.message}")
+                }
+            }
         }
     }
 }

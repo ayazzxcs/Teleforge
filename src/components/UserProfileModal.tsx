@@ -34,7 +34,7 @@ interface UserProfileModalProps {
   user: UserProfileDetails | null;
   isOpen: boolean;
   onClose: () => void;
-  onOpenDirectChat?: (userId: string, userName: string) => void;
+  onOpenDirectChat?: (userId: string, userName: string, userAvatar?: string, userThumbUrl?: string) => void;
   onOpenMediaModal?: (attachment: { type: 'image'; url: string; thumbUrl?: string; name: string }) => void;
 }
 
@@ -109,7 +109,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   const handleSendMessage = () => {
     onClose();
     if (onOpenDirectChat) {
-      onOpenDirectChat(user.id, user.name);
+      onOpenDirectChat(user.id, user.name, user.avatar, user.thumbUrl);
     }
   };
 

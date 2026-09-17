@@ -374,6 +374,251 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   );
 };
 
+// Dedicated circular video note component (Telegram-style round message)
+const ChatMediaVideoNote: React.FC<{
+  attachment: Attachment;
+  chatId: string;
+  messageId: string;
+}> = ({ attachment, chatId, messageId }) => {
+  const [videoUrl, setVideoUrl] = useState<string>(() => {
+    return mediaService.get(chatId, messageId, { fullVideo: true }) || '';
+  });
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoUrl) return;
+    const unsub = mediaService.subscribe(
+      chatId,
+      messageId,
+      (url) => {
+        if (url) {
+          setVideoUrl(url);
+          setIsLoading(false);
+        }
+      },
+      { fullVideo: true }
+    );
+    return unsub;
+  }, [chatId, messageId, videoUrl]);
+
+  const handleTogglePlay = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!videoUrl) {
+      setIsLoading(true);
+      mediaService.loadMedia(chatId, messageId, { fullVideo: true }).then((url) => {
+        setIsLoading(false);
+        if (url) {
+          setVideoUrl(url);
+          setIsPlaying(true);
+        }
+      }).catch(() => setIsLoading(false));
+      return;
+    }
+
+    if (videoRef.current) {
+      if (videoRef.current.paused) {
+        videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+      } else {
+        videoRef.current.pause();
+        setIsPlaying(false);
+      }
+    }
+  };
+
+  return (
+    <div
+      onClick={handleTogglePlay}
+      className="relative w-52 h-52 sm:w-60 sm:h-60 rounded-full overflow-hidden aspect-square border-2 border-white/25 shadow-xl bg-black cursor-pointer group select-none my-1.5 flex items-center justify-center shrink-0"
+      title="Tap to play / pause video message"
+    >
+      {videoUrl ? (
+        <video
+          ref={videoRef}
+          src={videoUrl}
+          playsInline
+          loop
+          muted={isMuted}
+          className="w-full h-full object-cover rounded-full pointer-events-none"
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+        />
+      ) : attachment.thumbUrl ? (
+        <img
+          src={attachment.thumbUrl}
+          alt="Video Note"
+          className="w-full h-full object-cover rounded-full filter blur-[1px]"
+        />
+      ) : (
+        <div className="w-full h-full bg-slate-900 rounded-full flex items-center justify-center">
+          <Video size={36} className="text-white/40" />
+        </div>
+      )}
+
+      {/* Play/Loading Center Overlay */}
+      {!isPlaying && (
+        <div className="absolute inset-0 bg-black/35 flex items-center justify-center rounded-full transition-opacity group-hover:bg-black/50">
+          <div className="w-12 h-12 rounded-full bg-black/65 text-white flex items-center justify-center shadow-lg border border-white/30 group-hover:scale-110 transition-transform">
+            {isLoading ? (
+              <Loader2 size={22} className="animate-spin text-teleforge-primary" />
+            ) : (
+              <Play size={20} className="fill-white ml-0.5" />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Sound Mute Toggle */}
+      {isPlaying && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (videoRef.current) {
+              videoRef.current.muted = !isMuted;
+              setIsMuted(!isMuted);
+            }
+          }}
+          className="absolute bottom-3 right-3 p-2 rounded-full bg-black/70 text-white hover:bg-black/90 shadow-md border border-white/20 z-10"
+          title={isMuted ? 'Unmute' : 'Mute'}
+        >
+          {isMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+        </button>
+      )}
+
+      {/* Duration Badge */}
+      {attachment.duration && !isPlaying && (
+        <span className="absolute bottom-3 px-2 py-0.5 rounded-full bg-black/75 text-[10px] font-bold text-white shadow-xs">
+          {attachment.duration}
+        </span>
+      )}
+    </div>
+  );
+};
+
+// Component for Telegram-style Stickers
+const ChatMediaSticker: React.FC<{
+  attachment: Attachment;
+  chatId: string;
+  messageId: string;
+}> = ({ attachment, chatId, messageId }) => {
+  const [src, setSrc] = useState<string>(() => {
+    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
+      return attachment.url;
+    }
+    return mediaService.get(chatId, messageId) || attachment.thumbUrl || '';
+  });
+
+  useEffect(() => {
+    let mounted = true;
+    const unsub = mediaService.subscribe(chatId, messageId, (url) => {
+      if (url && mounted) setSrc(url);
+    });
+
+    if (!src || src === attachment.thumbUrl) {
+      mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
+        if (url && mounted) setSrc(url);
+      }).catch(() => {});
+    }
+
+    return () => {
+      mounted = false;
+      unsub();
+    };
+  }, [chatId, messageId, attachment.thumbUrl, src]);
+
+  return (
+    <div className="my-1 cursor-pointer transition-transform hover:scale-105 active:scale-95 select-none">
+      {src ? (
+        <img
+          src={src}
+          alt={attachment.name || 'Sticker'}
+          className="w-36 h-36 sm:w-44 sm:h-44 object-contain filter drop-shadow-md"
+        />
+      ) : (
+        <div className="w-36 h-36 rounded-2xl bg-white/10 flex items-center justify-center text-4xl animate-pulse">
+          {attachment.name?.replace('Sticker', '').trim() || '⭐️'}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Component for Telegram GIFs
+const ChatMediaGif: React.FC<{
+  attachment: Attachment;
+  chatId: string;
+  messageId: string;
+  onOpenMediaModal: (att: Attachment) => void;
+}> = ({ attachment, chatId, messageId, onOpenMediaModal }) => {
+  const [url, setUrl] = useState<string>(() => {
+    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
+      return attachment.url;
+    }
+    return mediaService.get(chatId, messageId, { fullVideo: true }) || attachment.url || '';
+  });
+
+  useEffect(() => {
+    if (url && !url.includes('/api/telegram/media')) return;
+    const unsub = mediaService.subscribe(
+      chatId,
+      messageId,
+      (newUrl) => {
+        if (newUrl) setUrl(newUrl);
+      },
+      { fullVideo: true }
+    );
+    mediaService.loadMedia(chatId, messageId, { fullVideo: true }).then((u) => {
+      if (u) setUrl(u);
+    }).catch(() => {});
+    return unsub;
+  }, [chatId, messageId, url]);
+
+  return (
+    <div
+      onClick={() => onOpenMediaModal({ ...attachment, url, chatId, messageId })}
+      className="relative my-1 max-w-sm rounded-2xl overflow-hidden shadow-md cursor-pointer group bg-black/30"
+    >
+      {url.endsWith('.gif') || url.startsWith('data:image/gif') ? (
+        <img src={url} alt={attachment.name || 'GIF'} className="w-full max-h-72 object-cover" />
+      ) : (
+        <video
+          src={url}
+          playsInline
+          autoPlay
+          loop
+          muted
+          className="w-full max-h-72 object-cover pointer-events-none"
+        />
+      )}
+      <span className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded-md bg-black/70 text-[10px] font-extrabold text-white uppercase tracking-wider backdrop-blur-xs">
+        GIF
+      </span>
+    </div>
+  );
+};
+
+const CURATED_STICKERS = [
+  { id: 'stk-duck-hi', name: 'Duck Hello', emoji: '👋', preview: '👋', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/duck_hello.png' },
+  { id: 'stk-duck-cool', name: 'Duck Cool', emoji: '😎', preview: '😎', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/duck_cool.png' },
+  { id: 'stk-duck-love', name: 'Duck Love', emoji: '❤️', preview: '❤️', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/duck_love.png' },
+  { id: 'stk-doge-party', name: 'Doge Party', emoji: '🐕', preview: '🐕', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/doge_party.png' },
+  { id: 'stk-cat-happy', name: 'Happy Cat', emoji: '😺', preview: '😺', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/cat_happy.png' },
+  { id: 'stk-thumbs-up', name: 'Thumbs Up', emoji: '👍', preview: '👍', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/thumbs_up.png' },
+  { id: 'stk-fire-flame', name: 'Fire Flame', emoji: '🔥', preview: '🔥', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/fire_flame.png' },
+  { id: 'stk-rocket-launch', name: 'Rocket Spark', emoji: '🚀', preview: '🚀', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/rocket_launch.png' },
+];
+
+const CURATED_GIFS = [
+  { id: 'gif-vibing-cat', name: 'Vibing Cat', preview: '🐱', url: 'https://media.tenor.com/71o0XhC3wY4AAAAC/cat-vibing.gif' },
+  { id: 'gif-celebrate', name: 'Celebration', preview: '🎉', url: 'https://media.tenor.com/2RoDYrJ633wAAAAC/confetti-celebrate.gif' },
+  { id: 'gif-thumbs-up', name: 'Thumbs Up', preview: '👍', url: 'https://media.tenor.com/k6lP0nQ6GqYAAAAC/thumbs-up.gif' },
+  { id: 'gif-laughing', name: 'Laughing', preview: '😂', url: 'https://media.tenor.com/z0nS_t2Z3k8AAAAC/laughing.gif' },
+  { id: 'gif-mind-blown', name: 'Mind Blown', preview: '🤯', url: 'https://media.tenor.com/w2Q4y2n8k8AAAAAC/mind-blown.gif' },
+  { id: 'gif-dancing', name: 'Dancing', preview: '💃', url: 'https://media.tenor.com/u3K4GfXmD0UAAAAC/dancing.gif' },
+];
+
 interface ChatViewProps {
   chat: Chat | null;
   onSendMessage: (text: string, replyTo?: Message, attachment?: Attachment) => void;
@@ -394,6 +639,7 @@ interface ChatViewProps {
   isLoadingOlderMessages?: boolean;
   hasMoreOlderMessages?: boolean;
   onSelectChat?: (chatId: string) => void;
+  onOpenDirectChat?: (userId: string, userName: string, userAvatar?: string, userThumbUrl?: string) => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -416,11 +662,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
   isLoadingOlderMessages = false,
   hasMoreOlderMessages,
   onSelectChat,
+  onOpenDirectChat,
 }) => {
   const [inputText, setInputText] = useState('');
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [emojiPickerTab, setEmojiPickerTab] = useState<'emoji' | 'stickers' | 'gifs'>('emoji');
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const [activeReactionPickerId, setActiveReactionPickerId] = useState<string | null>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -1070,7 +1318,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
             ? chatConfig.bubbleOutTextColor || 'var(--tf-bubble-out-text)'
             : chatConfig.bubbleInTextColor || 'var(--tf-bubble-in-text)';
 
+          if (message.isService) {
+            return (
+              <div key={message.id} className="flex justify-center my-2 select-none w-full">
+                <span className="px-3.5 py-1 rounded-full bg-black/40 dark:bg-white/10 text-white text-xs font-medium backdrop-blur-xs shadow-xs text-center max-w-[85%]">
+                  {message.text}
+                </span>
+              </div>
+            );
+          }
+
           const cornerClass = getCornerRadiusClass(chatConfig.cornerRounding, isOut);
+          const isSticker = message.attachment?.type === 'sticker' || message.attachment?.isSticker;
+          const isVideoNote = message.attachment?.type === 'videoNote' || message.attachment?.isRound;
 
           return (
             <div
@@ -1117,17 +1377,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               {/* Message Bubble Container */}
               <div
-                className={`max-w-[85%] md:max-w-[70%] ${
-                  isCompact ? 'py-1.5 px-2.5' : 'p-3'
-                } shadow-xs relative transition-all group ${cornerClass} border`}
-                style={{
-                  backgroundColor: bubbleBg,
-                  color: bubbleColor,
-                  borderColor: 'var(--tf-border)',
-                }}
+                className={`max-w-[85%] md:max-w-[70%] relative transition-all group ${
+                  isSticker
+                    ? 'bg-transparent border-transparent shadow-none p-0'
+                    : isVideoNote
+                    ? 'p-0 bg-transparent border-transparent shadow-none'
+                    : `${isCompact ? 'py-1.5 px-2.5' : 'p-3'} shadow-xs ${cornerClass} border`
+                }`}
+                style={
+                  isSticker || isVideoNote
+                    ? {}
+                    : {
+                        backgroundColor: bubbleBg,
+                        color: bubbleColor,
+                        borderColor: 'var(--tf-border)',
+                      }
+                }
               >
                 {/* Sender Name in Groups (Only on first message of cluster) */}
-                {isGroupChat && !isOut && isFirstInGroup && (
+                {isGroupChat && !isOut && isFirstInGroup && !isSticker && (
                   <div
                     style={{ color: chatConfig.chatAccent || senderColor }}
                     className="text-xs font-semibold mb-1 cursor-pointer hover:underline"
@@ -1145,6 +1413,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     title={`View ${senderDisplayName}'s Profile`}
                   >
                     {senderDisplayName}
+                  </div>
+                )}
+
+                {/* Forwarded Header */}
+                {message.forwardFrom && !isSticker && (
+                  <div
+                    className="mb-1.5 text-xs font-semibold flex items-center gap-1.5 opacity-90 cursor-pointer"
+                    style={{ color: chatConfig.chatAccent || 'var(--tf-primary)' }}
+                    onClick={(e) => {
+                      if (message.forwardFrom?.id) {
+                        e.stopPropagation();
+                        setUserProfileModalData({
+                          id: message.forwardFrom.id,
+                          name: message.forwardFrom.name,
+                          avatar: message.forwardFrom.avatar,
+                          thumbUrl: message.forwardFrom.thumbUrl,
+                          online: false,
+                          isBot: false,
+                        });
+                      }
+                    }}
+                  >
+                    <span>↪ Forwarded from</span>
+                    <span className="font-bold underline">{message.forwardFrom.name}</span>
                   </div>
                 )}
 
@@ -1184,6 +1476,34 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   />
                 )}
 
+                {/* Attachment: Video Note (Telegram Round Video) */}
+                {isVideoNote && message.attachment && (
+                  <ChatMediaVideoNote
+                    attachment={message.attachment}
+                    chatId={chat.id}
+                    messageId={message.id}
+                  />
+                )}
+
+                {/* Attachment: GIF */}
+                {(message.attachment?.type === 'gif' || message.attachment?.isGif) && message.attachment && (
+                  <ChatMediaGif
+                    attachment={message.attachment}
+                    chatId={chat.id}
+                    messageId={message.id}
+                    onOpenMediaModal={onOpenMediaModal}
+                  />
+                )}
+
+                {/* Attachment: Sticker */}
+                {isSticker && message.attachment && (
+                  <ChatMediaSticker
+                    attachment={message.attachment}
+                    chatId={chat.id}
+                    messageId={message.id}
+                  />
+                )}
+
                 {/* Attachment: Voice Audio */}
                 {message.attachment?.type === 'audio' && (
                   <div className="mb-1">
@@ -1212,9 +1532,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
 
                 {/* Message Text */}
-                <div className={`whitespace-pre-wrap break-words leading-relaxed ${fontSizeClass}`}>
-                  {message.text}
-                </div>
+                {(!isSticker || (message.text && !message.text.startsWith('⭐️') && !message.text.startsWith('Duck') && !message.text.startsWith('[Sticker]'))) && message.text && (
+                  <div className={`whitespace-pre-wrap break-words leading-relaxed ${fontSizeClass}`}>
+                    {message.text}
+                  </div>
+                )}
 
                 {/* Inline Translation Display */}
                 {translatedMessages[message.id] && (
@@ -1224,14 +1546,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
 
                 {/* Footer: Timestamp & Checkmarks */}
-                <div className="flex items-center justify-end gap-1 mt-1 text-[11px] opacity-70 select-none">
+                <div
+                  className={`flex items-center justify-end gap-1 mt-1 text-[11px] select-none ${
+                    isSticker
+                      ? 'bg-black/40 text-white px-1.5 py-0.5 rounded-full w-fit ml-auto'
+                      : 'opacity-70'
+                  }`}
+                >
                   <span>{formatTime(message.timestamp, message.rawDate)}</span>
                   {isOut && (
                     <span>
                       {message.status === 'read' ? (
                         <CheckCheck
                           size={14}
-                          style={{ color: chatConfig.chatAccent || 'var(--tf-primary)' }}
+                          style={{ color: isSticker ? '#fff' : chatConfig.chatAccent || 'var(--tf-primary)' }}
                         />
                       ) : (
                         <Check size={14} />
@@ -1489,28 +1817,137 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </>
         )}
 
-        {/* Emoji picker popover */}
+        {/* Emoji / Stickers / GIFs Popover */}
         {showEmojiPicker && (
           <>
             <div className="fixed inset-0 z-20" onClick={() => setShowEmojiPicker(false)} />
-            <div className="absolute bottom-16 left-12 bg-white dark:bg-[#1f2d3d] border border-gray-200 dark:border-gray-700 rounded-2xl shadow-xl p-3 z-30 w-72 animate-in fade-in slide-in-from-bottom-2 duration-150">
-              <div className="text-xs font-bold text-gray-400 uppercase mb-2">Emojis & Reactions</div>
-              <div className="grid grid-cols-6 gap-2 text-xl">
-                {[
-                  '😀', '😂', '🔥', '❤️', '👍', '👏', '🎉', '⚡', '🚀', '✨', '😍', '🤔',
-                  '🙌', '💯', '👌', '😎', '🥳', '💡', '💎', '🌟', '💪', '🎯', '👑', '🌈',
-                ].map((emoji) => (
-                  <button
-                    key={emoji}
-                    onClick={() => {
-                      setInputText((prev) => prev + emoji);
-                    }}
-                    className="hover:scale-125 transition-transform p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 text-center"
-                  >
-                    {emoji}
-                  </button>
-                ))}
+            <div className="absolute bottom-16 left-2 sm:left-12 bg-white dark:bg-[#1f2d3d] border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl p-3 z-30 w-80 max-w-[calc(100vw-24px)] animate-in fade-in slide-in-from-bottom-2 duration-150">
+              {/* Tab Selector */}
+              <div className="flex items-center gap-1 mb-2.5 p-1 bg-gray-100 dark:bg-gray-800/80 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setEmojiPickerTab('emoji')}
+                  className={`flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                    emojiPickerTab === 'emoji'
+                      ? 'bg-white dark:bg-teleforge-surface text-teleforge-primary dark:text-teleforge-cream shadow-xs'
+                      : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                  }`}
+                >
+                  Emoji
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEmojiPickerTab('stickers')}
+                  className={`flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                    emojiPickerTab === 'stickers'
+                      ? 'bg-white dark:bg-teleforge-surface text-teleforge-primary dark:text-teleforge-cream shadow-xs'
+                      : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                  }`}
+                >
+                  Stickers
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEmojiPickerTab('gifs')}
+                  className={`flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                    emojiPickerTab === 'gifs'
+                      ? 'bg-white dark:bg-teleforge-surface text-teleforge-primary dark:text-teleforge-cream shadow-xs'
+                      : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                  }`}
+                >
+                  GIFs
+                </button>
               </div>
+
+              {/* Emoji Content */}
+              {emojiPickerTab === 'emoji' && (
+                <div className="grid grid-cols-6 gap-2 text-xl max-h-56 overflow-y-auto pr-1">
+                  {[
+                    '😀', '😂', '🔥', '❤️', '👍', '👏', '🎉', '⚡', '🚀', '✨', '😍', '🤔',
+                    '🙌', '💯', '👌', '😎', '🥳', '💡', '💎', '🌟', '💪', '🎯', '👑', '🌈',
+                    '😭', '👀', '🤝', '🙏', '🫡', '🤤', '😴', '👋', '💀', '💖', '⭐', '☕',
+                  ].map((emoji, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setInputText((prev) => prev + emoji);
+                      }}
+                      className="hover:scale-125 transition-transform p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 text-center cursor-pointer"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Stickers Content */}
+              {emojiPickerTab === 'stickers' && (
+                <div className="grid grid-cols-4 gap-2 max-h-60 overflow-y-auto p-1">
+                  {CURATED_STICKERS.map((stk) => (
+                    <button
+                      key={stk.id}
+                      type="button"
+                      onClick={() => {
+                        onSendMessage('', replyingTo || undefined, {
+                          type: 'sticker',
+                          url: stk.url,
+                          name: stk.name,
+                          isSticker: true,
+                        });
+                        setReplyingTo(null);
+                        setShowEmojiPicker(false);
+                      }}
+                      className="group flex flex-col items-center justify-center p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-all hover:scale-105 active:scale-95 cursor-pointer"
+                      title={stk.name}
+                    >
+                      <img
+                        src={stk.url}
+                        alt={stk.name}
+                        className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
+                        loading="lazy"
+                      />
+                      <span className="text-[10px] text-gray-500 truncate w-full text-center mt-1">
+                        {stk.name}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* GIFs Content */}
+              {emojiPickerTab === 'gifs' && (
+                <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto p-1">
+                  {CURATED_GIFS.map((gif) => (
+                    <button
+                      key={gif.id}
+                      type="button"
+                      onClick={() => {
+                        onSendMessage('', replyingTo || undefined, {
+                          type: 'gif',
+                          url: gif.url,
+                          name: gif.name,
+                          isGif: true,
+                        });
+                        setReplyingTo(null);
+                        setShowEmojiPicker(false);
+                      }}
+                      className="relative rounded-xl overflow-hidden hover:opacity-90 active:scale-98 transition-all group cursor-pointer bg-black/10 aspect-4/3"
+                      title={gif.name}
+                    >
+                      <img
+                        src={gif.url}
+                        alt={gif.name}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                        loading="lazy"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
+                        <span className="text-[11px] text-white font-medium truncate">{gif.name}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -1626,9 +2063,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
           isOpen={Boolean(userProfileModalData)}
           onClose={() => setUserProfileModalData(null)}
           user={userProfileModalData}
-          onOpenDirectChat={(userId) => {
+          onOpenDirectChat={(userId, userName, userAvatar, userThumbUrl) => {
             setUserProfileModalData(null);
-            onSelectChat?.(userId);
+            if (onOpenDirectChat) {
+              onOpenDirectChat(userId, userName, userAvatar, userThumbUrl);
+            } else {
+              onSelectChat?.(userId);
+            }
           }}
           onOpenMediaModal={onOpenMediaModal}
         />

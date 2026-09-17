@@ -292,25 +292,25 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
     setShowSpeedMenu(false);
   };
 
-  // Toggle Fullscreen (Native WebKit video element fullscreen on Android + Simulated Portal Overlay)
+  // Toggle Fullscreen (Native Android Immersive Bridge + Portal Overlay)
   const toggleFullscreen = () => {
-    const video = videoRef.current;
     if (!isFullscreen) {
-      if ((video as any)?.webkitRequestFullscreen) {
-        try {
-          (video as any).webkitRequestFullscreen();
-        } catch (e) {}
-      } else if ((video as any)?.webkitEnterFullscreen) {
-        try {
-          (video as any).webkitEnterFullscreen();
-        } catch (e) {}
-      } else if (video?.requestFullscreen) {
-        try {
-          video.requestFullscreen().catch(() => {});
-        } catch (e) {}
-      }
+      try {
+        (window as any).TeleForgeBridge?.setFullscreen?.(true);
+      } catch (e) {}
+
+      try {
+        if (containerRef.current?.requestFullscreen) {
+          containerRef.current.requestFullscreen().catch(() => {});
+        }
+      } catch (e) {}
+
       setIsFullscreen(true);
     } else {
+      try {
+        (window as any).TeleForgeBridge?.setFullscreen?.(false);
+      } catch (e) {}
+
       if (document.fullscreenElement) {
         document.exitFullscreen?.().catch(() => {});
       } else if ((document as any).webkitFullscreenElement) {
@@ -324,6 +324,9 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
   useEffect(() => {
     const handleFsChange = () => {
       if (!document.fullscreenElement && isFullscreen) {
+        try {
+          (window as any).TeleForgeBridge?.setFullscreen?.(false);
+        } catch (e) {}
         setIsFullscreen(false);
       }
     };

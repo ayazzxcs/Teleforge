@@ -59,12 +59,20 @@ export interface TelegramMessage {
   senderAvatar?: string;
   senderThumbUrl?: string;
   hasMedia?: boolean;
-  mediaType?: 'photo' | 'video' | 'voice' | 'audio' | 'document' | null;
+  mediaType?: 'photo' | 'video' | 'voice' | 'audio' | 'document' | 'sticker' | 'gif' | 'videoNote' | null;
   mediaThumb?: string;
   fileName?: string;
   fileSize?: string;
   replyToMsgId?: number;
   reactions?: { emoji: string; count: number; userReacted?: boolean }[];
+  isRound?: boolean;
+  isSticker?: boolean;
+  isGif?: boolean;
+  stickerEmoji?: string;
+  actionText?: string;
+  webPage?: { title?: string; description?: string; url?: string; siteName?: string };
+  poll?: { question: string; totalVoters?: number; closed?: boolean };
+  forwardFrom?: { id?: string; name: string; avatar?: string; thumbUrl?: string; isChannel?: boolean };
 }
 
 export interface AuthStatusResponse {

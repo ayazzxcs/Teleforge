@@ -129,7 +129,7 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
   const senderThumbUrl = !m.out && senderIdStr ? thumbCache.get(senderIdStr) : undefined;
 
   let hasMedia = Boolean(m.media);
-  let mediaType: 'photo' | 'video' | 'voice' | 'audio' | 'document' | null = null;
+  let mediaType: 'photo' | 'video' | 'voice' | 'audio' | 'document' | 'sticker' | 'gif' | 'videoNote' | null = null;
   let mediaThumb: string | undefined = undefined;
   let fileName: string | undefined = undefined;
   let fileSize: string | undefined = undefined;
@@ -167,12 +167,17 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
       }
     } else if (cls.includes('Document')) {
       const attrs = m.media.document?.attributes || [];
-      const isVideoAttr = attrs.some((a: any) =>
-        a._ === 'documentAttributeVideo' ||
-        a.className === 'DocumentAttributeVideo' ||
-        a._ === 'documentAttributeAnimated' ||
-        a.className === 'DocumentAttributeAnimated'
+      const stickerAttr = attrs.find((a: any) =>
+        a._ === 'documentAttributeSticker' || a.className === 'DocumentAttributeSticker'
       );
+      const isSticker = Boolean(stickerAttr);
+      const isGifAttr = attrs.some((a: any) =>
+        a._ === 'documentAttributeAnimated' || a.className === 'DocumentAttributeAnimated'
+      );
+      const videoAttr = attrs.find((a: any) =>
+        a._ === 'documentAttributeVideo' || a.className === 'DocumentAttributeVideo'
+      );
+      const isRound = Boolean(videoAttr?.roundMessage);
       const isVoice = attrs.some((a: any) =>
         (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio') && a.voice
       );
@@ -185,7 +190,13 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
 
       const mime = (m.media.document?.mimeType || '').toLowerCase();
 
-      if (isVideoAttr || mime.startsWith('video/')) {
+      if (isSticker || mime === 'image/webp' || mime === 'application/x-tgsticker') {
+        mediaType = 'sticker';
+      } else if (isRound) {
+        mediaType = 'videoNote';
+      } else if (isGifAttr) {
+        mediaType = 'gif';
+      } else if (videoAttr || mime.startsWith('video/')) {
         mediaType = 'video';
       } else if (isVoice) {
         mediaType = 'voice';
@@ -211,7 +222,60 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
 
       if (filenameAttr) fileName = filenameAttr.fileName;
       fileSize = m.media.document?.size ? formatBytes(Number(m.media.document.size)) : undefined;
+    } else if (cls.includes('Poll')) {
+      const pollQuestion = m.media.poll?.question?.text || m.media.poll?.question || 'Poll';
+      if (!m.message) m.message = `📊 ${pollQuestion}`;
+    } else if (cls.includes('Contact')) {
+      if (!m.message) {
+        m.message = `👤 Contact: ${[m.media.firstName, m.media.lastName].filter(Boolean).join(' ')} (${m.media.phoneNumber || ''})`;
+      }
+    } else if (cls.includes('Geo')) {
+      if (!m.message) {
+        m.message = `📍 Location: ${m.media.geo?.lat}, ${m.media.geo?.long}`;
+      }
+    } else if (cls.includes('Dice')) {
+      if (!m.message) {
+        m.message = m.media.emoticon || '🎲';
+      }
     }
+  }
+
+  let actionText: string | undefined = undefined;
+  if (m.action) {
+    const actCls = m.action.className || m.action._ || '';
+    if (actCls.includes('ChatAddUser') || actCls.includes('ChatJoinedByLink')) {
+      actionText = 'joined the group';
+    } else if (actCls.includes('ChatDeleteUser')) {
+      actionText = 'left the group';
+    } else if (actCls.includes('PinMessage')) {
+      actionText = 'pinned a message';
+    } else if (actCls.includes('ChatEditPhoto')) {
+      actionText = 'changed group photo';
+    } else if (actCls.includes('ChatEditTitle')) {
+      actionText = `changed group name to "${m.action.title || ''}"`;
+    } else if (actCls.includes('ChannelCreate')) {
+      actionText = 'Channel created';
+    } else if (actCls.includes('ChatCreate')) {
+      actionText = 'Group created';
+    } else if (actCls.includes('PhoneCall')) {
+      actionText = 'Phone call';
+    } else {
+      actionText = 'Notification update';
+    }
+  }
+
+  let forwardFrom: { id?: string; name: string; isChannel?: boolean } | undefined = undefined;
+  if (m.fwdFrom) {
+    const fromPeerId = m.fwdFrom.fromId ? extractPeerId(m.fwdFrom.fromId) : null;
+    const fwdEntity = fromPeerId ? peerEntityCache.get(fromPeerId) : null;
+    const fwdName = m.fwdFrom.fromName ||
+      (fwdEntity ? (fwdEntity.title || fwdEntity.firstName) : null) ||
+      'Forwarded message';
+    forwardFrom = {
+      id: fromPeerId || undefined,
+      name: fwdName,
+      isChannel: Boolean(m.fwdFrom.channelPost),
+    };
   }
 
   let reactions: { emoji: string; count: number; userReacted?: boolean }[] = [];
@@ -227,9 +291,18 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
     });
   }
 
+  const isRound = mediaType === 'videoNote';
+  const isSticker = mediaType === 'sticker';
+  const isGif = mediaType === 'gif';
+
+  let rawMessage = m.message || '';
+  if (!rawMessage && actionText) {
+    rawMessage = `${senderName ? `${senderName} ` : ''}${actionText}`;
+  }
+
   return {
     id: m.id,
-    text: m.message || '',
+    text: rawMessage,
     date: m.date ? m.date * 1000 : Date.now(),
     out: Boolean(m.out),
     senderId: senderIdStr || undefined,
@@ -243,6 +316,11 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
     fileSize,
     replyToMsgId: m.replyTo?.replyToMsgId,
     reactions,
+    isRound,
+    isSticker,
+    isGif,
+    actionText,
+    forwardFrom,
   };
 }
 
