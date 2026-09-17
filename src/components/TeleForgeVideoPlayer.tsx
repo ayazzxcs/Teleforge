@@ -137,7 +137,16 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
 
   useEffect(() => {
     setHasError(false);
-  }, [src]);
+    if (autoPlay && videoRef.current) {
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {
+        if (videoRef.current) {
+          videoRef.current.muted = true;
+          setIsMuted(true);
+          videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+        }
+      });
+    }
+  }, [src, autoPlay]);
 
   // Audio track switching state
   const [audioTracks, setAudioTracks] = useState<AudioTrackItem[]>([]);

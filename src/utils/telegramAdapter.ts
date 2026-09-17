@@ -124,6 +124,10 @@ export function mapTelegramMessage(
     else if (m.mediaType === 'voice') defaultName = 'Voice Message';
     else if (m.mediaType === 'audio') defaultName = 'Audio Message';
 
+    if (m.mediaThumb) {
+      mediaService.set(chatId, m.id, m.mediaThumb);
+    }
+
     attachment = {
       type: attType,
       url: mediaUrl,

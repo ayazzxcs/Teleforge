@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.JsResult
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -334,6 +335,25 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // Intercept stickers and animated GIFs from app web assets
+                    if (uri.host == "appassets.androidplatform.net") {
+                        val path = uri.path ?: ""
+                        if (path.startsWith("/stickers/") || path.startsWith("/gifs/")) {
+                            try {
+                                val assetPath = "web" + path
+                                val stream = assets.open(assetPath)
+                                val mime = if (path.endsWith(".svg")) "image/svg+xml" else if (path.endsWith(".webp")) "image/webp" else "image/png"
+                                val headers = mapOf(
+                                    "Access-Control-Allow-Origin" to "*",
+                                    "Cache-Control" to "public, max-age=31536000"
+                                )
+                                return WebResourceResponse(mime, "UTF-8", 200, "OK", headers, stream)
+                            } catch (e: Exception) {
+                                android.util.Log.w("TeleForge", "Asset open error for $path: ${e.message}")
+                            }
+                        }
+                    }
+
                     val response = assetLoader.shouldInterceptRequest(uri)
                     if (response != null) return response
                 }
@@ -448,6 +468,17 @@ class MainActivity : ComponentActivity() {
                 WindowCompat.getInsetsController(window, window.decorView).apply {
                     show(WindowInsetsCompat.Type.systemBars())
                 }
+            }
+
+            override fun onJsAlert(
+                view: WebView?,
+                url: String?,
+                message: String?,
+                result: JsResult?
+            ): Boolean {
+                android.util.Log.w("TeleForge", "Suppressed JS Alert: $message")
+                result?.confirm()
+                return true
             }
         }
     }

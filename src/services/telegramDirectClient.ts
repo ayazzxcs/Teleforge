@@ -1840,19 +1840,57 @@ export const telegramDirectClient = {
           a._ === 'documentAttributeSticker' || a.className === 'DocumentAttributeSticker'
         ) || mimeType === 'image/webp' || mimeType === 'application/x-tgsticker';
 
+        // 1. FAST-PATH THUMBNAIL: If requesting thumbnail for video or sticker, check embedded thumbs first!
+        if (!options?.fullVideo) {
+          const thumbs = mediaObj.document?.thumbs || [];
+          const stripped = thumbs.find((t: any) =>
+            t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
+          );
+          if (stripped?.bytes) {
+            try {
+              const thumbBuf = strippedPhotoToJpg(stripped.bytes);
+              if (thumbBuf && thumbBuf.length > 0) {
+                const dataUrl = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+                return { dataUrl, mimeType: 'image/jpeg' };
+              }
+            } catch (e) {}
+          }
+
+          const cached = thumbs.find((t: any) =>
+            (t._ === 'photoCachedSize' || t.className === 'PhotoCachedSize') && t.bytes
+          );
+          if (cached?.bytes) {
+            const dataUrl = `data:image/jpeg;base64,${Buffer.from(cached.bytes).toString('base64')}`;
+            return { dataUrl, mimeType: 'image/jpeg' };
+          }
+        }
+
         if (isVideo) {
           mimeType = mimeType.startsWith('video/') ? mimeType : 'video/mp4';
-          // If not playing full video, download the video thumbnail (fast ~25KB), NEVER the full video!
+          // If downloading thumbnail for video, use a valid thumbnail type - NEVER thumb = -1!
           if (!options?.fullVideo) {
-            downloadParams.thumb = -1; // highest quality thumbnail
-            mimeType = 'image/jpeg';
+            const normalThumbs = (mediaObj.document?.thumbs || []).filter((t: any) =>
+              t._ === 'photoSize' || t.className === 'PhotoSize' ||
+              t._ === 'photoSizeProgressive' || t.className === 'PhotoSizeProgressive'
+            );
+            if (normalThumbs.length > 0) {
+              const best = normalThumbs[normalThumbs.length - 1];
+              downloadParams.thumb = best.type || (normalThumbs.length - 1);
+              mimeType = 'image/jpeg';
+            } else {
+              return null; // Don't download full video when thumbnail requested
+            }
           }
         } else if (isStickerDoc) {
-          // Telegram stickers: animated TGS stickers cannot be rendered by <img>.
-          // Download the rendered visual thumbnail!
           if (mimeType === 'application/x-tgsticker' || !options?.fullRes) {
-            downloadParams.thumb = -1;
-            mimeType = 'image/jpeg';
+            const normalThumbs = (mediaObj.document?.thumbs || []).filter((t: any) =>
+              t._ === 'photoSize' || t.className === 'PhotoSize'
+            );
+            if (normalThumbs.length > 0) {
+              const best = normalThumbs[normalThumbs.length - 1];
+              downloadParams.thumb = best.type || (normalThumbs.length - 1);
+              mimeType = 'image/jpeg';
+            }
           }
         }
       }
@@ -1884,12 +1922,18 @@ export const telegramDirectClient = {
           };
         }
 
-        // Pass targetMsg if available so GramJS has inputChat and message ID for automatic file reference renewal
-        await client.downloadMedia(targetMsg || mediaObj, downloadParams);
+        try {
+          if (targetMsg && !targetMsg.inputChat) {
+            targetMsg.inputChat = await resolveInputPeer(client, chatId);
+          }
+          await client.downloadMedia(targetMsg || mediaObj, downloadParams);
+        } catch (dlErr: any) {
+          console.warn('[MTProto-Direct] fullVideo download error:', dlErr?.message || dlErr);
+        }
 
         if (chunks.length === 0) return null;
 
-        const blob = new Blob(chunks as any[], { type: mimeType.startsWith('video/') ? mimeType : 'video/mp4' });
+        const blob = new Blob(chunks as any[], { type: 'video/mp4' });
         const blobUrl = URL.createObjectURL(blob);
         options?.onProgress?.(100, totalDownloaded, totalDownloaded);
         return { dataUrl: blobUrl, mimeType: 'video/mp4', blob, size: totalDownloaded };
@@ -1903,7 +1947,7 @@ export const telegramDirectClient = {
         console.warn('[MTProto-Direct] initial downloadMedia failed:', e?.message || e);
       }
 
-      if ((!buffer || buffer.length === 0) && downloadParams.thumb !== undefined) {
+      if ((!buffer || buffer.length === 0) && downloadParams.thumb !== undefined && !isDocument) {
         try {
           const fallbackParams = { ...downloadParams };
           delete fallbackParams.thumb;

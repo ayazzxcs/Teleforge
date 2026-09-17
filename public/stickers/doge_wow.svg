@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+  <circle cx="80" cy="80" r="72" fill="#E5B869" stroke="#C49746" stroke-width="4"/>
+  <circle cx="56" cy="68" r="14" fill="#FFF"/>
+  <circle cx="104" cy="68" r="14" fill="#FFF"/>
+  <circle cx="56" cy="68" r="7" fill="#222"/>
+  <circle cx="104" cy="68" r="7" fill="#222"/>
+  <ellipse cx="80" cy="98" rx="12" ry="8" fill="#332211"/>
+  <ellipse cx="80" cy="116" rx="12" ry="12" fill="#FF5555" stroke="#CC0000" stroke-width="2"/>
+  <text x="16" y="40" font-family="Arial" font-size="16" font-weight="bold" fill="#EC4899">much wow</text>
+  <text x="96" y="140" font-family="Arial" font-size="14" font-weight="bold" fill="#3B82F6">so amaze</text>
+</svg>

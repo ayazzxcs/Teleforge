@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+  <circle cx="80" cy="80" r="72" fill="#FFE066" stroke="#D4A017" stroke-width="4"/>
+  <text x="48" y="76" font-family="Arial" font-size="28" font-weight="bold" fill="#16A34A">$</text>
+  <text x="88" y="76" font-family="Arial" font-size="28" font-weight="bold" fill="#16A34A">$</text>
+  <ellipse cx="80" cy="102" rx="22" ry="12" fill="#FF9900" stroke="#CC6600" stroke-width="3"/>
+  <path d="M 70 108 Q 80 120 90 108" fill="#FF4444" stroke="#CC0000" stroke-width="2"/>
+</svg>

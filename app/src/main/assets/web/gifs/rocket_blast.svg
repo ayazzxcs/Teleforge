@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+  <rect width="160" height="160" rx="16" fill="#0C1017"/>
+  <g transform="translate(80, 85)">
+    <animateTransform attributeName="transform" type="translate" values="80,88; 80,72; 80,88" dur="0.4s" repeatCount="indefinite"/>
+    <text x="-30" y="15" font-size="54">🚀</text>
+  </g>
+  <text x="80" y="145" text-anchor="middle" font-family="Arial" font-size="13" font-weight="bold" fill="#FDE047">TO THE MOON</text>
+</svg>

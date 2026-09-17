@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { initialChats, currentUser } from './data/mockData';
 import { Chat, Message, UserProfile, Attachment, TeleForgeDialogFilter } from './types';
 import { Sidebar } from './components/Sidebar';
@@ -85,6 +85,7 @@ export const App: React.FC = () => {
   const [mobileShowChat, setMobileShowChat] = useState(false);
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState<Record<string, boolean>>({});
+  const directChatsRef = useRef<Map<string, Chat>>(new Map());
 
   // TeleForge Power Tools State
   const [powerToolsSettings, setPowerToolsSettings] = useState<TeleForgePowerToolsSettings>(() =>
@@ -147,8 +148,12 @@ export const App: React.FC = () => {
       // Preserve existing messages when refreshing — prevents race condition
       // where loadTelegramDialogs overwrites messages loaded by loadMessagesForChat
       setChats((prev) => {
-        if (prev.length === 0) return finalChats;
-        return finalChats.map((newChat) => {
+        const finalChatIds = new Set(finalChats.map((c) => c.id));
+        // Preserve client-created direct chats, active chat, or chats with messages
+        const preservedChats = prev.filter(
+          (c) => !finalChatIds.has(c.id) && (c.id === activeChatId || directChatsRef.current.has(c.id) || c.messages.length > 0)
+        );
+        const updatedFinalChats = finalChats.map((newChat) => {
           const existing = prev.find((c) => c.id === newChat.id);
           if (existing && existing.messages.length > 0) {
             return {
@@ -162,6 +167,7 @@ export const App: React.FC = () => {
           }
           return newChat;
         });
+        return [...preservedChats, ...updatedFinalChats];
       });
       try {
         localStorage.setItem('teleforge_cached_chats', JSON.stringify(finalChats.slice(0, 30)));
@@ -555,9 +561,9 @@ export const App: React.FC = () => {
   };
 
   const handleOpenDirectChat = (userId: string, userName: string, userAvatar?: string, userThumbUrl?: string) => {
-    const existing = chats.find((c) => c.id === userId);
-    if (!existing) {
-      const newDirectChat: Chat = {
+    let target = chats.find((c) => c.id === userId) || directChatsRef.current.get(userId);
+    if (!target) {
+      target = {
         id: userId,
         name: userName || 'Telegram User',
         avatar: userAvatar || '',
@@ -568,8 +574,12 @@ export const App: React.FC = () => {
         unreadCount: 0,
         online: false,
       };
-      setChats((prev) => [newDirectChat, ...prev]);
     }
+    directChatsRef.current.set(userId, target);
+    setChats((prev) => {
+      const exists = prev.some((c) => c.id === userId);
+      return exists ? prev : [target!, ...prev];
+    });
     handleSelectChat(userId);
   };
 
@@ -881,7 +891,7 @@ export const App: React.FC = () => {
     return new Set(contactsList.map((c) => c.id));
   }, [contactsList]);
 
-  const activeChat = chats.find((c) => c.id === activeChatId) || null;
+  const activeChat = chats.find((c) => c.id === activeChatId) || (activeChatId ? directChatsRef.current.get(activeChatId) : null) || null;
 
   // Loading screen while verifying initial MTProto connection
   if (isLoadingAuth) {

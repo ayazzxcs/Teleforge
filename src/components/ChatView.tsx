@@ -430,6 +430,12 @@ const ChatMediaVideoNote: React.FC<{
     return unsub;
   }, [chatId, messageId, videoUrl]);
 
+  useEffect(() => {
+    if (videoUrl && isPlaying && videoRef.current) {
+      videoRef.current.play().catch(() => {});
+    }
+  }, [videoUrl, isPlaying]);
+
   const handleTogglePlay = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!videoUrl) {
@@ -562,11 +568,13 @@ const ChatMediaSticker: React.FC<{
     };
   }, [chatId, messageId, attachment.thumbUrl, src]);
 
+  const normalizedSrc = (src.startsWith('/stickers/') || src.startsWith('/gifs/')) ? '.' + src : src;
+
   return (
     <div className="my-1 cursor-pointer transition-transform hover:scale-105 active:scale-95 select-none">
-      {src && !hasError ? (
+      {normalizedSrc && !hasError ? (
         <img
-          src={src}
+          src={normalizedSrc}
           alt={attachment.name || 'Sticker'}
           onError={() => setHasError(true)}
           className="w-36 h-36 sm:w-44 sm:h-44 object-contain filter drop-shadow-md"
@@ -610,16 +618,18 @@ const ChatMediaGif: React.FC<{
     return unsub;
   }, [chatId, messageId, url]);
 
+  const normalizedUrl = (url.startsWith('/stickers/') || url.startsWith('/gifs/')) ? '.' + url : url;
+
   return (
     <div
-      onClick={() => onOpenMediaModal({ ...attachment, url, chatId, messageId })}
+      onClick={() => onOpenMediaModal({ ...attachment, url: normalizedUrl, chatId, messageId })}
       className="relative my-1 max-w-sm rounded-2xl overflow-hidden shadow-md cursor-pointer group bg-black/30"
     >
-      {url.endsWith('.gif') || url.startsWith('data:image/gif') ? (
-        <img src={url} alt={attachment.name || 'GIF'} className="w-full max-h-72 object-cover" />
+      {normalizedUrl.endsWith('.gif') || normalizedUrl.startsWith('data:image/gif') ? (
+        <img src={normalizedUrl} alt={attachment.name || 'GIF'} className="w-full max-h-72 object-cover" />
       ) : (
         <video
-          src={url}
+          src={normalizedUrl}
           playsInline
           autoPlay
           loop
@@ -634,24 +644,81 @@ const ChatMediaGif: React.FC<{
   );
 };
 
-const CURATED_STICKERS = [
-  { id: 'stk-duck-hi', name: 'Duck Hello', emoji: '👋', preview: '👋', url: '/stickers/duck_hello.svg' },
-  { id: 'stk-duck-cool', name: 'Duck Cool', emoji: '😎', preview: '😎', url: '/stickers/duck_cool.svg' },
-  { id: 'stk-duck-love', name: 'Duck Love', emoji: '❤️', preview: '❤️', url: '/stickers/duck_love.svg' },
-  { id: 'stk-doge-party', name: 'Doge Party', emoji: '🐕', preview: '🐕', url: '/stickers/doge_party.svg' },
-  { id: 'stk-cat-happy', name: 'Happy Cat', emoji: '😺', preview: '😺', url: '/stickers/cat_happy.svg' },
-  { id: 'stk-thumbs-up', name: 'Thumbs Up', emoji: '👍', preview: '👍', url: '/stickers/thumbs_up.svg' },
-  { id: 'stk-fire-flame', name: 'Fire Flame', emoji: '🔥', preview: '🔥', url: '/stickers/fire_flame.svg' },
-  { id: 'stk-rocket-launch', name: 'Rocket Spark', emoji: '🚀', preview: '🚀', url: '/stickers/rocket_launch.svg' },
+export interface CuratedSticker {
+  id: string;
+  name: string;
+  emoji: string;
+  category: 'all' | 'duck' | 'doge' | 'cat' | 'reactions' | 'fun';
+  tags: string[];
+  url: string;
+}
+
+export interface CuratedGif {
+  id: string;
+  name: string;
+  category: 'all' | 'trending' | 'dance' | 'reactions' | 'party' | 'love';
+  tags: string[];
+  url: string;
+}
+
+const CURATED_STICKERS: CuratedSticker[] = [
+  // Duck Pack
+  { id: 'stk-duck-hi', name: 'Duck Hello', emoji: '👋', category: 'duck', tags: ['duck', 'hello', 'hi', 'wave', 'greet'], url: './stickers/duck_hello.svg' },
+  { id: 'stk-duck-cool', name: 'Duck Cool', emoji: '😎', category: 'duck', tags: ['duck', 'cool', 'sunglasses', 'chill'], url: './stickers/duck_cool.svg' },
+  { id: 'stk-duck-love', name: 'Duck Love', emoji: '❤️', category: 'duck', tags: ['duck', 'love', 'heart', 'kiss', 'cute'], url: './stickers/duck_love.svg' },
+  { id: 'stk-duck-shock', name: 'Duck Shocked', emoji: '😱', category: 'duck', tags: ['duck', 'shocked', 'surprised', 'omg', 'what'], url: './stickers/duck_shocked.svg' },
+  { id: 'stk-duck-sleepy', name: 'Duck Sleepy', emoji: '😴', category: 'duck', tags: ['duck', 'sleep', 'tired', 'zzz', 'night'], url: './stickers/duck_sleepy.svg' },
+  { id: 'stk-duck-angry', name: 'Duck Angry', emoji: '😡', category: 'duck', tags: ['duck', 'angry', 'mad', 'rage', 'furious'], url: './stickers/duck_angry.svg' },
+  { id: 'stk-duck-rich', name: 'Duck Rich', emoji: '🤑', category: 'duck', tags: ['duck', 'money', 'rich', 'dollar', 'crypto', 'ton'], url: './stickers/duck_rich.svg' },
+
+  // Doge Pack
+  { id: 'stk-doge-party', name: 'Doge Party', emoji: '🐕', category: 'doge', tags: ['doge', 'dog', 'party', 'celebrate', 'fun'], url: './stickers/doge_party.svg' },
+  { id: 'stk-doge-cool', name: 'Doge Cool', emoji: '🕶️', category: 'doge', tags: ['doge', 'dog', 'cool', 'sunglasses', 'swag'], url: './stickers/doge_cool.svg' },
+  { id: 'stk-doge-wow', name: 'Doge Wow', emoji: '✨', category: 'doge', tags: ['doge', 'wow', 'amaze', 'much wow', 'dog'], url: './stickers/doge_wow.svg' },
+  { id: 'stk-doge-cry', name: 'Doge Cry', emoji: '😭', category: 'doge', tags: ['doge', 'cry', 'tears', 'sad', 'pain'], url: './stickers/doge_cry.svg' },
+
+  // Cat Pack
+  { id: 'stk-cat-happy', name: 'Happy Cat', emoji: '😺', category: 'cat', tags: ['cat', 'happy', 'kitty', 'smile', 'joy'], url: './stickers/cat_happy.svg' },
+  { id: 'stk-cat-love', name: 'Cat Love', emoji: '😻', category: 'cat', tags: ['cat', 'love', 'heart eyes', 'crush'], url: './stickers/cat_love.svg' },
+  { id: 'stk-cat-vibing', name: 'Cat Vibing', emoji: '🎧', category: 'cat', tags: ['cat', 'music', 'headphones', 'vibe', 'beats'], url: './stickers/cat_vibing.svg' },
+
+  // Reactions & Expressive
+  { id: 'stk-thumbs-up', name: 'Thumbs Up', emoji: '👍', category: 'reactions', tags: ['thumbs up', 'yes', 'agree', 'ok', 'good', 'approved'], url: './stickers/thumbs_up.svg' },
+  { id: 'stk-crying-laugh', name: 'Crying Laugh', emoji: '😂', category: 'reactions', tags: ['laugh', 'lol', 'rofl', 'funny', 'haha'], url: './stickers/crying_laugh.svg' },
+  { id: 'stk-star-struck', name: 'Star Struck', emoji: '🤩', category: 'reactions', tags: ['star', 'struck', 'amazed', 'wow', 'gorgeous'], url: './stickers/star_struck.svg' },
+  { id: 'stk-cool-shades', name: 'Cool Shades', emoji: '😎', category: 'reactions', tags: ['cool', 'boss', 'shades', 'swagger'], url: './stickers/cool_sunglasses.svg' },
+  { id: 'stk-peace', name: 'Peace Sign', emoji: '✌️', category: 'reactions', tags: ['peace', 'victory', 'chill', 'zen'], url: './stickers/peace_sign.svg' },
+  { id: 'stk-trophy', name: 'Winner Trophy', emoji: '🏆', category: 'reactions', tags: ['trophy', 'winner', 'number 1', 'gold', 'champion'], url: './stickers/trophy_winner.svg' },
+
+  // Fun & Celebrations
+  { id: 'stk-fire-flame', name: 'Fire Flame', emoji: '🔥', category: 'fun', tags: ['fire', 'flame', 'lit', 'hot', 'epic'], url: './stickers/fire_flame.svg' },
+  { id: 'stk-party-popper', name: 'Party Popper', emoji: '🎉', category: 'fun', tags: ['party', 'popper', 'confetti', 'celebrate'], url: './stickers/party_popper.svg' },
+  { id: 'stk-heart-sparkle', name: 'Sparkle Heart', emoji: '💖', category: 'fun', tags: ['heart', 'love', 'sparkle', 'precious'], url: './stickers/heart_sparkle.svg' },
+  { id: 'stk-rocket-launch', name: 'Rocket Spark', emoji: '🚀', category: 'fun', tags: ['rocket', 'launch', 'moon', 'fast', 'blast'], url: './stickers/rocket_launch.svg' },
+  { id: 'stk-coffee', name: 'Morning Coffee', emoji: '☕', category: 'fun', tags: ['coffee', 'tea', 'morning', 'energy', 'cafe'], url: './stickers/coffee_morning.svg' },
+  { id: 'stk-gem-diamond', name: 'Diamond Gem', emoji: '💎', category: 'fun', tags: ['diamond', 'gem', 'crystal', 'valuable', 'rare'], url: './stickers/gem_diamond.svg' },
 ];
 
-const CURATED_GIFS = [
-  { id: 'gif-vibing-cat', name: 'Vibing Cat', preview: '🐱', url: '/gifs/vibing_cat.svg' },
-  { id: 'gif-celebrate', name: 'Celebration', preview: '🎉', url: '/gifs/celebrate.svg' },
-  { id: 'gif-thumbs-up', name: 'Thumbs Up', preview: '👍', url: '/gifs/thumbs_up.svg' },
-  { id: 'gif-laughing', name: 'Laughing', preview: '😂', url: '/gifs/laughing.svg' },
-  { id: 'gif-mind-blown', name: 'Mind Blown', preview: '🤯', url: '/gifs/mind_blown.svg' },
-  { id: 'gif-dancing', name: 'Dancing', preview: '💃', url: '/gifs/dancing.svg' },
+const CURATED_GIFS: CuratedGif[] = [
+  // Trending & Dance
+  { id: 'gif-vibing-cat', name: 'Vibing Cat', category: 'trending', tags: ['cat', 'vibing', 'headbob', 'groove', 'music', 'jam'], url: './gifs/vibing_cat.svg' },
+  { id: 'gif-celebrate', name: 'Celebration', category: 'party', tags: ['celebrate', 'party', 'woohoo', 'confetti', 'yay'], url: './gifs/celebrate.svg' },
+  { id: 'gif-dancing', name: 'Dancing', category: 'dance', tags: ['dance', 'groove', 'disco', 'party', 'moves'], url: './gifs/dancing.svg' },
+  { id: 'gif-party-dance', name: 'Disco Party', category: 'party', tags: ['disco', 'party', 'dance', 'fun', 'rave'], url: './gifs/party_dance.svg' },
+  { id: 'gif-dog-spin', name: 'Spinning Doge', category: 'trending', tags: ['dog', 'doge', 'spin', 'cute', 'dizzy'], url: './gifs/dog_spinning.svg' },
+
+  // Reactions & Fun
+  { id: 'gif-thumbs-up', name: 'Thumbs Up', category: 'reactions', tags: ['thumbs up', 'yes', 'great', 'approved', 'like'], url: './gifs/thumbs_up.svg' },
+  { id: 'gif-applause', name: 'Applause', category: 'reactions', tags: ['applause', 'clap', 'clapping', 'bravo', 'congrats'], url: './gifs/applause.svg' },
+  { id: 'gif-laughing', name: 'Laughing', category: 'reactions', tags: ['laugh', 'lol', 'haha', 'funny', 'hilarious'], url: './gifs/laughing.svg' },
+  { id: 'gif-mind-blown', name: 'Mind Blown', category: 'reactions', tags: ['mind blown', 'shocked', 'explosion', 'wow', 'insane'], url: './gifs/mind_blown.svg' },
+  { id: 'gif-facepalm', name: 'Facepalm', category: 'reactions', tags: ['facepalm', 'smh', 'oh no', 'why', 'disappointed'], url: './gifs/facepalm.svg' },
+  { id: 'gif-crying-tears', name: 'Crying Tears', category: 'reactions', tags: ['cry', 'crying', 'tears', 'sad', 'unhappy'], url: './gifs/crying_tears.svg' },
+
+  // Love & Hype
+  { id: 'gif-love-hearts', name: 'Love Hearts', category: 'love', tags: ['love', 'heart', 'hearts', 'romance', 'kiss'], url: './gifs/love_hearts.svg' },
+  { id: 'gif-fire-burning', name: 'Fire Burning', category: 'trending', tags: ['fire', 'flame', 'lit', 'hot', 'hype'], url: './gifs/fire_burning.svg' },
+  { id: 'gif-rocket-blast', name: 'To The Moon', category: 'trending', tags: ['rocket', 'blast', 'moon', 'space', 'crypto'], url: './gifs/rocket_blast.svg' },
 ];
 
 interface ChatViewProps {
@@ -704,6 +771,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiPickerTab, setEmojiPickerTab] = useState<'emoji' | 'stickers' | 'gifs'>('emoji');
+  const [stickerSearch, setStickerSearch] = useState('');
+  const [stickerCategory, setStickerCategory] = useState<string>('all');
+  const [gifSearch, setGifSearch] = useState('');
+  const [gifCategory, setGifCategory] = useState<string>('all');
+
+  const filteredStickers = useMemo(() => {
+    return CURATED_STICKERS.filter((stk) => {
+      const matchesCategory = stickerCategory === 'all' || stk.category === stickerCategory;
+      const q = stickerSearch.toLowerCase().trim();
+      if (!q) return matchesCategory;
+      const matchesQuery =
+        stk.name.toLowerCase().includes(q) ||
+        stk.emoji.includes(q) ||
+        stk.tags.some((t) => t.toLowerCase().includes(q));
+      return matchesCategory && matchesQuery;
+    });
+  }, [stickerSearch, stickerCategory]);
+
+  const filteredGifs = useMemo(() => {
+    return CURATED_GIFS.filter((gif) => {
+      const matchesCategory = gifCategory === 'all' || gif.category === gifCategory;
+      const q = gifSearch.toLowerCase().trim();
+      if (!q) return matchesCategory;
+      const matchesQuery =
+        gif.name.toLowerCase().includes(q) ||
+        gif.tags.some((t) => t.toLowerCase().includes(q));
+      return matchesCategory && matchesQuery;
+    });
+  }, [gifSearch, gifCategory]);
+
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const [activeReactionPickerId, setActiveReactionPickerId] = useState<string | null>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -1918,69 +2015,177 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               {/* Stickers Content */}
               {emojiPickerTab === 'stickers' && (
-                <div className="grid grid-cols-4 gap-2 max-h-60 overflow-y-auto p-1">
-                  {CURATED_STICKERS.map((stk) => (
-                    <button
-                      key={stk.id}
-                      type="button"
-                      onClick={() => {
-                        onSendMessage('', replyingTo || undefined, {
-                          type: 'sticker',
-                          url: stk.url,
-                          name: stk.name,
-                          isSticker: true,
-                        });
-                        setReplyingTo(null);
-                        setShowEmojiPicker(false);
-                      }}
-                      className="group flex flex-col items-center justify-center p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-all hover:scale-105 active:scale-95 cursor-pointer"
-                      title={stk.name}
-                    >
-                      <img
-                        src={stk.url}
-                        alt={stk.name}
-                        className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
-                        loading="lazy"
-                      />
-                      <span className="text-[10px] text-gray-500 truncate w-full text-center mt-1">
-                        {stk.name}
-                      </span>
-                    </button>
-                  ))}
+                <div className="flex flex-col gap-2">
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      placeholder="Search stickers (e.g. duck, love, doge)..."
+                      value={stickerSearch}
+                      onChange={(e) => setStickerSearch(e.target.value)}
+                      className="w-full pl-8 pr-7 py-1.5 text-xs bg-gray-100 dark:bg-gray-800/90 text-gray-900 dark:text-gray-100 placeholder-gray-400 border border-transparent focus:border-teleforge-primary rounded-xl outline-none transition-colors"
+                    />
+                    {stickerSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setStickerSearch('')}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Category Filter Chips */}
+                  <div className="flex items-center gap-1 overflow-x-auto pb-1 no-scrollbar text-[11px]">
+                    {[
+                      { id: 'all', label: 'All' },
+                      { id: 'duck', label: '🦆 Duck' },
+                      { id: 'doge', label: '🐕 Doge' },
+                      { id: 'cat', label: '😺 Cat' },
+                      { id: 'reactions', label: '👍 Reactions' },
+                      { id: 'fun', label: '🎉 Fun' },
+                    ].map((cat) => (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setStickerCategory(cat.id)}
+                        className={`px-2.5 py-0.5 rounded-full whitespace-nowrap transition-colors font-medium ${
+                          stickerCategory === cat.id
+                            ? 'bg-teleforge-primary text-white'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {cat.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Stickers Grid */}
+                  <div className="grid grid-cols-4 gap-2 max-h-56 overflow-y-auto p-1">
+                    {filteredStickers.map((stk) => (
+                      <button
+                        key={stk.id}
+                        type="button"
+                        onClick={() => {
+                          onSendMessage('', replyingTo || undefined, {
+                            type: 'sticker',
+                            url: stk.url,
+                            name: stk.name,
+                            isSticker: true,
+                          });
+                          setReplyingTo(null);
+                          setShowEmojiPicker(false);
+                        }}
+                        className="group flex flex-col items-center justify-center p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-all hover:scale-105 active:scale-95 cursor-pointer"
+                        title={stk.name}
+                      >
+                        <img
+                          src={stk.url}
+                          alt={stk.name}
+                          className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
+                          loading="lazy"
+                        />
+                        <span className="text-[10px] text-gray-500 truncate w-full text-center mt-1">
+                          {stk.name}
+                        </span>
+                      </button>
+                    ))}
+                    {filteredStickers.length === 0 && (
+                      <div className="col-span-4 py-8 text-center text-xs text-gray-400">
+                        No stickers found for &ldquo;{stickerSearch}&rdquo;
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
               {/* GIFs Content */}
               {emojiPickerTab === 'gifs' && (
-                <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto p-1">
-                  {CURATED_GIFS.map((gif) => (
-                    <button
-                      key={gif.id}
-                      type="button"
-                      onClick={() => {
-                        onSendMessage('', replyingTo || undefined, {
-                          type: 'gif',
-                          url: gif.url,
-                          name: gif.name,
-                          isGif: true,
-                        });
-                        setReplyingTo(null);
-                        setShowEmojiPicker(false);
-                      }}
-                      className="relative rounded-xl overflow-hidden hover:opacity-90 active:scale-98 transition-all group cursor-pointer bg-black/10 aspect-4/3"
-                      title={gif.name}
-                    >
-                      <img
-                        src={gif.url}
-                        alt={gif.name}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                        loading="lazy"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
-                        <span className="text-[11px] text-white font-medium truncate">{gif.name}</span>
+                <div className="flex flex-col gap-2">
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      placeholder="Search GIFs (e.g. party, dance, cat)..."
+                      value={gifSearch}
+                      onChange={(e) => setGifSearch(e.target.value)}
+                      className="w-full pl-8 pr-7 py-1.5 text-xs bg-gray-100 dark:bg-gray-800/90 text-gray-900 dark:text-gray-100 placeholder-gray-400 border border-transparent focus:border-teleforge-primary rounded-xl outline-none transition-colors"
+                    />
+                    {gifSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setGifSearch('')}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Category Filter Chips */}
+                  <div className="flex items-center gap-1 overflow-x-auto pb-1 no-scrollbar text-[11px]">
+                    {[
+                      { id: 'all', label: 'All' },
+                      { id: 'trending', label: '🔥 Trending' },
+                      { id: 'dance', label: '💃 Dance' },
+                      { id: 'party', label: '🎉 Party' },
+                      { id: 'reactions', label: '😂 Reactions' },
+                      { id: 'love', label: '❤️ Love' },
+                    ].map((cat) => (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setGifCategory(cat.id)}
+                        className={`px-2.5 py-0.5 rounded-full whitespace-nowrap transition-colors font-medium ${
+                          gifCategory === cat.id
+                            ? 'bg-teleforge-primary text-white'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {cat.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* GIFs Grid */}
+                  <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto p-1">
+                    {filteredGifs.map((gif) => (
+                      <button
+                        key={gif.id}
+                        type="button"
+                        onClick={() => {
+                          onSendMessage('', replyingTo || undefined, {
+                            type: 'gif',
+                            url: gif.url,
+                            name: gif.name,
+                            isGif: true,
+                          });
+                          setReplyingTo(null);
+                          setShowEmojiPicker(false);
+                        }}
+                        className="relative rounded-xl overflow-hidden hover:opacity-90 active:scale-98 transition-all group cursor-pointer bg-black/10 aspect-4/3"
+                        title={gif.name}
+                      >
+                        <img
+                          src={gif.url}
+                          alt={gif.name}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                          loading="lazy"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
+                          <span className="text-[11px] text-white font-medium truncate">{gif.name}</span>
+                        </div>
+                      </button>
+                    ))}
+                    {filteredGifs.length === 0 && (
+                      <div className="col-span-2 py-8 text-center text-xs text-gray-400">
+                        No GIFs found for &ldquo;{gifSearch}&rdquo;
                       </div>
-                    </button>
-                  ))}
+                    )}
+                  </div>
                 </div>
               )}
             </div>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+  <circle cx="80" cy="80" r="72" fill="#FFE066" stroke="#D4A017" stroke-width="4"/>
+  <path d="M 46 72 Q 60 84 72 72" stroke="#4A3B00" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <path d="M 88 72 Q 100 84 114 72" stroke="#4A3B00" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <ellipse cx="80" cy="98" rx="20" ry="10" fill="#FF9900" stroke="#CC6600" stroke-width="3"/>
+  <text x="110" y="50" font-family="Arial" font-size="22" font-weight="bold" fill="#3B82F6">Z</text>
+  <text x="125" y="38" font-family="Arial" font-size="16" font-weight="bold" fill="#60A5FA">z</text>
+</svg>
