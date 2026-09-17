@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import {
   Play,
   Pause,
@@ -292,18 +291,24 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
     setShowSpeedMenu(false);
   };
 
-  // Toggle Fullscreen (Native Android Immersive Bridge + Portal Overlay)
+  // Toggle Fullscreen (Native Android Immersive Bridge + HTML5 Video Fullscreen)
   const toggleFullscreen = () => {
     if (!isFullscreen) {
       try {
         (window as any).TeleForgeBridge?.setFullscreen?.(true);
       } catch (e) {}
 
-      try {
-        if (containerRef.current?.requestFullscreen) {
-          containerRef.current.requestFullscreen().catch(() => {});
+      // Attempt native HTML5 video element fullscreen (triggers Android WebChromeClient.onShowCustomView)
+      const video = videoRef.current;
+      if (video) {
+        if (typeof (video as any).webkitEnterFullscreen === 'function') {
+          try { (video as any).webkitEnterFullscreen(); } catch (e) {}
+        } else if (typeof video.requestFullscreen === 'function') {
+          video.requestFullscreen().catch(() => {});
+        } else if (typeof (video as any).webkitRequestFullscreen === 'function') {
+          try { (video as any).webkitRequestFullscreen(); } catch (e) {}
         }
-      } catch (e) {}
+      }
 
       setIsFullscreen(true);
     } else {
@@ -311,10 +316,13 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
         (window as any).TeleForgeBridge?.setFullscreen?.(false);
       } catch (e) {}
 
-      if (document.fullscreenElement) {
+      const video = videoRef.current;
+      if (video && typeof (video as any).webkitExitFullscreen === 'function') {
+        try { (video as any).webkitExitFullscreen(); } catch (e) {}
+      } else if (document.fullscreenElement) {
         document.exitFullscreen?.().catch(() => {});
       } else if ((document as any).webkitFullscreenElement) {
-        (document as any).webkitExitFullscreen?.();
+        try { (document as any).webkitExitFullscreen?.(); } catch (e) {}
       }
       setIsFullscreen(false);
     }
@@ -323,7 +331,8 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
   // Handle Fullscreen change listener
   useEffect(() => {
     const handleFsChange = () => {
-      if (!document.fullscreenElement && isFullscreen) {
+      const isNativeFs = Boolean(document.fullscreenElement || (document as any).webkitFullscreenElement);
+      if (!isNativeFs && isFullscreen) {
         try {
           (window as any).TeleForgeBridge?.setFullscreen?.(false);
         } catch (e) {}
@@ -331,7 +340,11 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
       }
     };
     document.addEventListener('fullscreenchange', handleFsChange);
-    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+    document.addEventListener('webkitfullscreenchange', handleFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
+      document.removeEventListener('webkitfullscreenchange', handleFsChange);
+    };
   }, [isFullscreen]);
 
   // Auto-hide controls timer
@@ -693,9 +706,10 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
     </div>
   );
 
-  if (isFullscreen && typeof document !== 'undefined') {
-    return createPortal(playerContent, document.body);
-  }
-
-  return playerContent;
+  return (
+    <>
+      {isFullscreen && <div className={`w-full bg-black/40 rounded-2xl ${maxHeightClass || 'h-64'}`} />}
+      {playerContent}
+    </>
+  );
 };

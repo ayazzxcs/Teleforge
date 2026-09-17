@@ -130,7 +130,7 @@ export function mapTelegramMessage(
       thumbUrl: m.mediaThumb,
       name: m.fileName || defaultName,
       size: m.fileSize || undefined,
-      duration: m.mediaType === 'voice' ? '0:18' : undefined,
+      duration: m.duration || (m.mediaType === 'voice' ? '0:18' : undefined),
       isRound: Boolean(m.isRound || m.mediaType === 'videoNote'),
       isSticker: Boolean(m.isSticker || m.mediaType === 'sticker'),
       isGif: Boolean(m.isGif || m.mediaType === 'gif'),

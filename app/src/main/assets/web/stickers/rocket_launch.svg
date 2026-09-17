@@ -1,0 +1,24 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 128 128 width=128 height=128>
+  <defs>
+    <linearGradient id=rocketBody x1=0 y1=0 x2=1 y2=1>
+      <stop offset=0% stop-color=#ECEFF1/><stop offset=100% stop-color=#B0BEC5/>
+    </linearGradient>
+    <filter id=shadow x=-10% y=-10% width=120% height=120%>
+      <feDropShadow dx=0 dy=4 stdDeviation=4 flood-color=#000 flood-opacity=0.3/>
+    </filter>
+  </defs>
+  <g filter=url(#shadow)>
+    <!-- Exhaust fire -->
+    <polygon points=40,88 64,124 88,88 64,96 fill=#FF5722/>
+    <polygon points=48,88 64,112 80,88 64,94 fill=#FFEB3B/>
+    <!-- Fins -->
+    <polygon points=34,68 18,92 46,86 fill=#D32F2F/>
+    <polygon points=94,68 110,92 82,86 fill=#D32F2F/>
+    <!-- Fuselage -->
+    <path d=M 64 12 C 48 32 42 64 42 86 L 86 86 C 86 64 80 32 64 12 Z fill=url(#rocketBody)/>
+    <!-- Tip -->
+    <path d=M 64 12 C 54 26 50 38 50 44 L 78 44 C 78 38 74 26 64 12 Z fill=#D32F2F/>
+    <!-- Porthole -->
+    <circle cx=64 cy=56 r=10 fill=#0288D1 stroke=#FFF stroke-width=3/>
+  </g>
+</svg>

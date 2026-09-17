@@ -1,0 +1,26 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 128 128 width=128 height=128>
+  <defs>
+    <radialGradient id=duckGrad cx=40% cy=35% r=65%>
+      <stop offset=0% stop-color=#FFF176/><stop offset=70% stop-color=#FDD835/><stop offset=100% stop-color=#FBC02D/>
+    </radialGradient>
+    <radialGradient id=heartGrad cx=30% cy=30% r=70%>
+      <stop offset=0% stop-color=#FF5252/><stop offset=100% stop-color=#D50000/>
+    </radialGradient>
+    <filter id=shadow x=-10% y=-10% width=120% height=120%>
+      <feDropShadow dx=0 dy=4 stdDeviation=4 flood-color=#000 flood-opacity=0.25/>
+    </filter>
+  </defs>
+  <g filter=url(#shadow)>
+    <ellipse cx=64 cy=76 rx=42 ry=38 fill=url(#duckGrad)/>
+    <circle cx=64 cy=42 r=30 fill=url(#duckGrad)/>
+    <!-- Cheeks -->
+    <circle cx=42 cy=50 r=8 fill=#FF8A80 opacity=0.6/>
+    <circle cx=86 cy=50 r=8 fill=#FF8A80 opacity=0.6/>
+    <!-- Heart Eyes -->
+    <path d=M 50 34 C 44 26 34 32 34 40 C 34 48 50 56 50 56 C 50 56 66 48 66 40 C 66 32 56 26 50 34 Z transform=translate(-2, -6) scale(0.6) fill=url(#heartGrad)/>
+    <path d=M 50 34 C 44 26 34 32 34 40 C 34 48 50 56 50 56 C 50 56 66 48 66 40 C 66 32 56 26 50 34 Z transform=translate(46, -6) scale(0.6) fill=url(#heartGrad)/>
+    <!-- Beak open -->
+    <path d=M 52 46 Q 64 42 76 46 Q 64 64 52 46 Z fill=#FF9800/>
+    <path d=M 56 50 Q 64 60 72 50 Q 64 55 56 50 Z fill=#D32F2F/>
+  </g>
+</svg>

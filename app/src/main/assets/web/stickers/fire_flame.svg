@@ -1,0 +1,17 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 128 128 width=128 height=128>
+  <defs>
+    <radialGradient id=fireOuter cx=50% cy=60% r=50%>
+      <stop offset=0% stop-color=#FF9100/><stop offset=70% stop-color=#FF3D00/><stop offset=100% stop-color=#D50000/>
+    </radialGradient>
+    <radialGradient id=fireInner cx=50% cy=70% r=40%>
+      <stop offset=0% stop-color=#FFFF00/><stop offset=60% stop-color=#FFAB00/><stop offset=100% stop-color=#FF6D00/>
+    </radialGradient>
+    <filter id=shadow x=-10% y=-10% width=120% height=120%>
+      <feDropShadow dx=0 dy=4 stdDeviation=4 flood-color=#000 flood-opacity=0.3/>
+    </filter>
+  </defs>
+  <g filter=url(#shadow)>
+    <path d=M 64 12 C 72 32 94 48 94 76 C 94 98 78 116 64 116 C 50 116 34 98 34 76 C 34 54 48 38 52 26 C 54 36 60 46 64 12 Z fill=url(#fireOuter)/>
+    <path d=M 64 50 C 70 64 80 74 80 88 C 80 102 72 110 64 110 C 56 110 48 102 48 88 C 48 76 56 68 58 60 C 60 66 62 70 64 50 Z fill=url(#fireInner)/>
+  </g>
+</svg>

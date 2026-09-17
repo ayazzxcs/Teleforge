@@ -1,0 +1,30 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 128 128 width=128 height=128>
+  <defs>
+    <radialGradient id=dogeGrad cx=40% cy=35% r=65%>
+      <stop offset=0% stop-color=#FFE0B2/><stop offset=70% stop-color=#FFB74D/><stop offset=100% stop-color=#F57C00/>
+    </radialGradient>
+    <filter id=shadow x=-10% y=-10% width=120% height=120%>
+      <feDropShadow dx=0 dy=4 stdDeviation=4 flood-color=#000 flood-opacity=0.25/>
+    </filter>
+  </defs>
+  <g filter=url(#shadow)>
+    <!-- Ears -->
+    <polygon points=36,18 20,48 50,40 fill=#E65100/>
+    <polygon points=92,18 78,40 108,48 fill=#E65100/>
+    <!-- Head -->
+    <circle cx=64 cy=56 r=38 fill=url(#dogeGrad)/>
+    <!-- Snout -->
+    <ellipse cx=64 cy=66 rx=18 ry=14 fill=#FFF3E0/>
+    <ellipse cx=64 cy=60 rx=7 ry=5 fill=#212121/>
+    <!-- Eyes -->
+    <circle cx=48 cy=48 r=5 fill=#212121/><circle cx=46 cy=46 r=2 fill=#FFF/>
+    <circle cx=80 cy=48 r=5 fill=#212121/><circle cx=78 cy=46 r=2 fill=#FFF/>
+    <!-- Eyebrows -->
+    <ellipse cx=48 cy=40 rx=4 ry=2 fill=#FFF3E0/>
+    <ellipse cx=80 cy=40 rx=4 ry=2 fill=#FFF3E0/>
+    <!-- Party Hat -->
+    <polygon points=64,4 48,34 80,34 fill=#E91E63/>
+    <circle cx=64 cy=4 r=5 fill=#FFEB3B/>
+    <path d=M 52 24 L 76 24 stroke=#00E676 stroke-width=3/>
+  </g>
+</svg>

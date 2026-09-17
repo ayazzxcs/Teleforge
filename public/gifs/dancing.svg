@@ -1,0 +1,18 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 128 128 width=128 height=128>
+  <rect width=128 height=128 rx=20 fill=#4A044E/>
+  <g transform-origin=64 70>
+    <animateTransform attributeName=transform type=rotate values=-15; 15; -15 dur=0.6s repeatCount=indefinite/>
+    <!-- Head -->
+    <circle cx=64 cy=36 r=16 fill=#F472B6/>
+    <!-- Sunglasses -->
+    <rect x=52 y=32 width=24 height=7 rx=3 fill=#18181B/>
+    <!-- Body -->
+    <polygon points=56,52 72,52 82,90 46,90 fill=#E879F9/>
+    <!-- Arms raised in rhythm -->
+    <path d=M 56 56 L 36 38 stroke=#F472B6 stroke-width=6 stroke-linecap=round/>
+    <path d=M 72 56 L 92 38 stroke=#F472B6 stroke-width=6 stroke-linecap=round/>
+    <!-- Legs -->
+    <line x1=52 y1=90 x2=44 y2=114 stroke=#F472B6 stroke-width=6 stroke-linecap=round/>
+    <line x1=76 y1=90 x2=84 y2=114 stroke=#F472B6 stroke-width=6 stroke-linecap=round/>
+  </g>
+</svg>

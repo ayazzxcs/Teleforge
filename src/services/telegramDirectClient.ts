@@ -133,6 +133,7 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
   let mediaThumb: string | undefined = undefined;
   let fileName: string | undefined = undefined;
   let fileSize: string | undefined = undefined;
+  let durationStr: string | undefined = undefined;
 
   if (m.media) {
     messageMediaMap.set(`${chatId}_${m.id}`, m.media);
@@ -208,6 +209,14 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
         mediaType = 'document';
       }
 
+      const rawDuration = videoAttr?.duration ?? (isVoice || isAudio ? attrs.find((a: any) => (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio'))?.duration : undefined);
+      if (rawDuration != null) {
+        const totalSecs = Math.round(Number(rawDuration));
+        const mins = Math.floor(totalSecs / 60);
+        const secs = totalSecs % 60;
+        durationStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      }
+
       if (m.media.document?.thumbs) {
         const stripped = m.media.document.thumbs.find((t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize');
         if (stripped?.bytes) {
@@ -217,6 +226,12 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
               mediaThumb = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
             }
           } catch (e) {}
+        }
+        if (!mediaThumb) {
+          const cached = m.media.document.thumbs.find((t: any) => (t._ === 'photoCachedSize' || t.className === 'PhotoCachedSize') && t.bytes);
+          if (cached?.bytes) {
+            mediaThumb = `data:image/jpeg;base64,${Buffer.from(cached.bytes).toString('base64')}`;
+          }
         }
       }
 
@@ -314,6 +329,7 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
     mediaThumb,
     fileName,
     fileSize,
+    duration: durationStr,
     replyToMsgId: m.replyTo?.replyToMsgId,
     reactions,
     isRound,
@@ -1820,6 +1836,10 @@ export const telegramDirectClient = {
           a._ === 'documentAttributeAnimated' || a.className === 'DocumentAttributeAnimated'
         );
 
+        const isStickerDoc = (mediaObj.document?.attributes || []).some((a: any) =>
+          a._ === 'documentAttributeSticker' || a.className === 'DocumentAttributeSticker'
+        ) || mimeType === 'image/webp' || mimeType === 'application/x-tgsticker';
+
         if (isVideo) {
           mimeType = mimeType.startsWith('video/') ? mimeType : 'video/mp4';
           // If not playing full video, download the video thumbnail (fast ~25KB), NEVER the full video!
@@ -1827,50 +1847,26 @@ export const telegramDirectClient = {
             downloadParams.thumb = -1; // highest quality thumbnail
             mimeType = 'image/jpeg';
           }
+        } else if (isStickerDoc) {
+          // Telegram stickers: animated TGS stickers cannot be rendered by <img>.
+          // Download the rendered visual thumbnail!
+          if (mimeType === 'application/x-tgsticker' || !options?.fullRes) {
+            downloadParams.thumb = -1;
+            mimeType = 'image/jpeg';
+          }
         }
       }
 
-      // If downloading full video/large file, stream chunks into Android local cache or Blob parts
+      // If downloading full video/large file, stream chunks into in-memory Blob URL for direct hardware decoding
       if (options?.fullVideo) {
-        const isAndroid = typeof window !== 'undefined' && Boolean((window as any).TeleForgeBridge?.writeMediaChunk);
-        if (isAndroid && (window as any).TeleForgeBridge?.hasLocalMedia?.(mediaKey)) {
-          const localUrl = (window as any).TeleForgeBridge.getLocalMediaUrl(mediaKey);
-          if (localUrl) {
-            options?.onProgress?.(100, 1, 1);
-            return { dataUrl: localUrl, mimeType: 'video/mp4', size: 1 };
-          }
-        }
-
         const chunks: Uint8Array[] = [];
         let totalDownloaded = 0;
-        let chunkIndex = 0;
 
         const customWriter = {
           write: (chunk: any) => {
             if (chunk && chunk.length > 0) {
               totalDownloaded += chunk.length;
-              if (isAndroid) {
-                try {
-                  let b64: string;
-                  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(chunk)) {
-                    b64 = chunk.toString('base64');
-                  } else {
-                    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-                    let binary = '';
-                    const len = bytes.byteLength;
-                    for (let i = 0; i < len; i++) {
-                      binary += String.fromCharCode(bytes[i]);
-                    }
-                    b64 = btoa(binary);
-                  }
-                  (window as any).TeleForgeBridge.writeMediaChunk(mediaKey, b64, chunkIndex > 0);
-                  chunkIndex++;
-                } catch (bErr) {
-                  chunks.push(chunk);
-                }
-              } else {
-                chunks.push(chunk);
-              }
+              chunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
             }
           },
           close: () => {},
@@ -1891,17 +1887,9 @@ export const telegramDirectClient = {
         // Pass targetMsg if available so GramJS has inputChat and message ID for automatic file reference renewal
         await client.downloadMedia(targetMsg || mediaObj, downloadParams);
 
-        if (isAndroid) {
-          const localUrl = (window as any).TeleForgeBridge?.getLocalMediaUrl?.(mediaKey);
-          if (localUrl) {
-            options?.onProgress?.(100, totalDownloaded, totalDownloaded);
-            return { dataUrl: localUrl, mimeType: 'video/mp4', size: totalDownloaded };
-          }
-        }
-
         if (chunks.length === 0) return null;
 
-        const blob = new Blob(chunks as any[], { type: 'video/mp4' });
+        const blob = new Blob(chunks as any[], { type: mimeType.startsWith('video/') ? mimeType : 'video/mp4' });
         const blobUrl = URL.createObjectURL(blob);
         options?.onProgress?.(100, totalDownloaded, totalDownloaded);
         return { dataUrl: blobUrl, mimeType: 'video/mp4', blob, size: totalDownloaded };

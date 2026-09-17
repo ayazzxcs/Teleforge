@@ -63,6 +63,7 @@ export interface TelegramMessage {
   mediaThumb?: string;
   fileName?: string;
   fileSize?: string;
+  duration?: string;
   replyToMsgId?: number;
   reactions?: { emoji: string; count: number; userReacted?: boolean }[];
   isRound?: boolean;

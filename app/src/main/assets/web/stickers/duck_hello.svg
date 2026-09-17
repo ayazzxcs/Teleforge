@@ -1,0 +1,40 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 128 128 width=128 height=128>
+  <defs>
+    <radialGradient id=duckGrad cx=40% cy=35% r=65%>
+      <stop offset=0% stop-color=#FFF176/>
+      <stop offset=70% stop-color=#FDD835/>
+      <stop offset=100% stop-color=#FBC02D/>
+    </radialGradient>
+    <radialGradient id=beakGrad cx=30% cy=30% r=70%>
+      <stop offset=0% stop-color=#FFA726/>
+      <stop offset=100% stop-color=#F57C00/>
+    </radialGradient>
+    <filter id=shadow x=-10% y=-10% width=120% height=120%>
+      <feDropShadow dx=0 dy=4 stdDeviation=4 flood-color=#000 flood-opacity=0.25/>
+    </filter>
+  </defs>
+  <g filter=url(#shadow)>
+    <!-- Body -->
+    <ellipse cx=64 cy=74 rx=42 ry=38 fill=url(#duckGrad)/>
+    <!-- Head -->
+    <circle cx=64 cy=42 r=30 fill=url(#duckGrad)/>
+    <!-- Cheeks -->
+    <circle cx=44 cy=48 r=7 fill=#FF8A80 opacity=0.5/>
+    <circle cx=84 cy=48 r=7 fill=#FF8A80 opacity=0.5/>
+    <!-- Eyes -->
+    <ellipse cx=50 cy=38 rx=4.5 ry=6 fill=#212121/>
+    <circle cx=48.5 cy=36 r=2 fill=#FFFFFF/>
+    <ellipse cx=78 cy=38 rx=4.5 ry=6 fill=#212121/>
+    <circle cx=76.5 cy=36 r=2 fill=#FFFFFF/>
+    <!-- Beak -->
+    <path d=M 52 46 Q 64 42 76 46 Q 64 62 52 46 Z fill=url(#beakGrad)/>
+    <!-- Waving Wing -->
+    <g transform=rotate(-25 90 60)>
+      <path d=M 88 56 C 112 40 120 65 96 76 C 90 79 84 72 88 56 Z fill=url(#duckGrad)/>
+    </g>
+    <!-- Left Wing -->
+    <path d=M 40 56 C 16 64 24 88 48 76 Z fill=url(#duckGrad)/>
+    <!-- Hello Sparkle -->
+    <path d=M 110 30 Q 112 36 118 38 Q 112 40 110 46 Q 108 40 102 38 Q 108 36 110 30 Z fill=#FFA000/>
+  </g>
+</svg>

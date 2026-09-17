@@ -202,9 +202,22 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   const [videoUrl, setVideoUrl] = useState<string>(() => {
     return mediaService.get(chatId, messageId, { fullVideo: true }) || '';
   });
+  const [thumbUrl, setThumbUrl] = useState<string>(() => {
+    return attachment.thumbUrl || mediaService.get(chatId, messageId) || '';
+  });
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{ pct: number; dl: number; tot: number } | null>(null);
+
+  // Background thumbnail loader for instant Telegram-style preview
+  useEffect(() => {
+    if (thumbUrl) return;
+    let mounted = true;
+    mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
+      if (url && mounted) setThumbUrl(url);
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, [chatId, messageId, thumbUrl]);
 
   useEffect(() => {
     if (videoUrl) return;
@@ -260,6 +273,7 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       chatId,
       messageId,
       url: videoUrl || '',
+      thumbUrl: thumbUrl || attachment.thumbUrl,
     });
   };
 
@@ -286,7 +300,7 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       <div className="mb-2 rounded-xl overflow-hidden shadow-xs relative bg-black max-h-80" onClick={(e) => e.stopPropagation()}>
         <TeleForgeVideoPlayer
           src={videoUrl}
-          poster={attachment.thumbUrl}
+          poster={thumbUrl || attachment.thumbUrl}
           title={attachment.name}
           autoPlay={true}
           maxHeightClass="max-h-80"
@@ -301,9 +315,9 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/20 min-h-[160px] max-h-80 flex items-center justify-center select-none"
     >
       {/* Video Thumbnail */}
-      {attachment.thumbUrl ? (
+      {thumbUrl ? (
         <img
-          src={attachment.thumbUrl}
+          src={thumbUrl}
           alt={attachment.name || 'Video thumbnail'}
           className="absolute inset-0 w-full h-full object-cover"
         />
@@ -383,10 +397,22 @@ const ChatMediaVideoNote: React.FC<{
   const [videoUrl, setVideoUrl] = useState<string>(() => {
     return mediaService.get(chatId, messageId, { fullVideo: true }) || '';
   });
+  const [thumbUrl, setThumbUrl] = useState<string>(() => {
+    return attachment.thumbUrl || mediaService.get(chatId, messageId) || '';
+  });
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (thumbUrl) return;
+    let mounted = true;
+    mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
+      if (url && mounted) setThumbUrl(url);
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, [chatId, messageId, thumbUrl]);
 
   useEffect(() => {
     if (videoUrl) return;
@@ -431,13 +457,14 @@ const ChatMediaVideoNote: React.FC<{
   return (
     <div
       onClick={handleTogglePlay}
-      className="relative w-52 h-52 sm:w-60 sm:h-60 rounded-full overflow-hidden aspect-square border-2 border-white/25 shadow-xl bg-black cursor-pointer group select-none my-1.5 flex items-center justify-center shrink-0"
+      className="relative w-48 h-48 sm:w-56 sm:h-56 min-w-[192px] min-h-[192px] max-w-[192px] max-h-[192px] sm:min-w-[224px] sm:min-h-[224px] sm:max-w-[224px] sm:max-h-[224px] rounded-full overflow-hidden aspect-square border-2 border-white/25 shadow-xl bg-black cursor-pointer group select-none my-1.5 flex items-center justify-center shrink-0"
       title="Tap to play / pause video message"
     >
       {videoUrl ? (
         <video
           ref={videoRef}
           src={videoUrl}
+          poster={thumbUrl}
           playsInline
           loop
           muted={isMuted}
@@ -445,11 +472,11 @@ const ChatMediaVideoNote: React.FC<{
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
         />
-      ) : attachment.thumbUrl ? (
+      ) : thumbUrl ? (
         <img
-          src={attachment.thumbUrl}
+          src={thumbUrl}
           alt="Video Note"
-          className="w-full h-full object-cover rounded-full filter blur-[1px]"
+          className="w-full h-full object-cover rounded-full filter blur-[0.5px]"
         />
       ) : (
         <div className="w-full h-full bg-slate-900 rounded-full flex items-center justify-center">
@@ -509,16 +536,23 @@ const ChatMediaSticker: React.FC<{
     }
     return mediaService.get(chatId, messageId) || attachment.thumbUrl || '';
   });
+  const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     const unsub = mediaService.subscribe(chatId, messageId, (url) => {
-      if (url && mounted) setSrc(url);
+      if (url && mounted) {
+        setSrc(url);
+        setHasError(false);
+      }
     });
 
     if (!src || src === attachment.thumbUrl) {
       mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
-        if (url && mounted) setSrc(url);
+        if (url && mounted) {
+          setSrc(url);
+          setHasError(false);
+        }
       }).catch(() => {});
     }
 
@@ -530,15 +564,16 @@ const ChatMediaSticker: React.FC<{
 
   return (
     <div className="my-1 cursor-pointer transition-transform hover:scale-105 active:scale-95 select-none">
-      {src ? (
+      {src && !hasError ? (
         <img
           src={src}
           alt={attachment.name || 'Sticker'}
+          onError={() => setHasError(true)}
           className="w-36 h-36 sm:w-44 sm:h-44 object-contain filter drop-shadow-md"
         />
       ) : (
-        <div className="w-36 h-36 rounded-2xl bg-white/10 flex items-center justify-center text-4xl animate-pulse">
-          {attachment.name?.replace('Sticker', '').trim() || '⭐️'}
+        <div className="w-32 h-32 rounded-2xl bg-black/10 dark:bg-white/10 flex flex-col items-center justify-center p-2 text-center select-none shadow-xs">
+          <span className="text-4xl">{attachment.name?.replace('Sticker', '').trim() || '⭐️'}</span>
         </div>
       )}
     </div>
@@ -600,23 +635,23 @@ const ChatMediaGif: React.FC<{
 };
 
 const CURATED_STICKERS = [
-  { id: 'stk-duck-hi', name: 'Duck Hello', emoji: '👋', preview: '👋', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/duck_hello.png' },
-  { id: 'stk-duck-cool', name: 'Duck Cool', emoji: '😎', preview: '😎', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/duck_cool.png' },
-  { id: 'stk-duck-love', name: 'Duck Love', emoji: '❤️', preview: '❤️', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/duck_love.png' },
-  { id: 'stk-doge-party', name: 'Doge Party', emoji: '🐕', preview: '🐕', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/doge_party.png' },
-  { id: 'stk-cat-happy', name: 'Happy Cat', emoji: '😺', preview: '😺', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/cat_happy.png' },
-  { id: 'stk-thumbs-up', name: 'Thumbs Up', emoji: '👍', preview: '👍', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/thumbs_up.png' },
-  { id: 'stk-fire-flame', name: 'Fire Flame', emoji: '🔥', preview: '🔥', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/fire_flame.png' },
-  { id: 'stk-rocket-launch', name: 'Rocket Spark', emoji: '🚀', preview: '🚀', url: 'https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/master/submodules/StickerPack/Sources/Resources/rocket_launch.png' },
+  { id: 'stk-duck-hi', name: 'Duck Hello', emoji: '👋', preview: '👋', url: '/stickers/duck_hello.svg' },
+  { id: 'stk-duck-cool', name: 'Duck Cool', emoji: '😎', preview: '😎', url: '/stickers/duck_cool.svg' },
+  { id: 'stk-duck-love', name: 'Duck Love', emoji: '❤️', preview: '❤️', url: '/stickers/duck_love.svg' },
+  { id: 'stk-doge-party', name: 'Doge Party', emoji: '🐕', preview: '🐕', url: '/stickers/doge_party.svg' },
+  { id: 'stk-cat-happy', name: 'Happy Cat', emoji: '😺', preview: '😺', url: '/stickers/cat_happy.svg' },
+  { id: 'stk-thumbs-up', name: 'Thumbs Up', emoji: '👍', preview: '👍', url: '/stickers/thumbs_up.svg' },
+  { id: 'stk-fire-flame', name: 'Fire Flame', emoji: '🔥', preview: '🔥', url: '/stickers/fire_flame.svg' },
+  { id: 'stk-rocket-launch', name: 'Rocket Spark', emoji: '🚀', preview: '🚀', url: '/stickers/rocket_launch.svg' },
 ];
 
 const CURATED_GIFS = [
-  { id: 'gif-vibing-cat', name: 'Vibing Cat', preview: '🐱', url: 'https://media.tenor.com/71o0XhC3wY4AAAAC/cat-vibing.gif' },
-  { id: 'gif-celebrate', name: 'Celebration', preview: '🎉', url: 'https://media.tenor.com/2RoDYrJ633wAAAAC/confetti-celebrate.gif' },
-  { id: 'gif-thumbs-up', name: 'Thumbs Up', preview: '👍', url: 'https://media.tenor.com/k6lP0nQ6GqYAAAAC/thumbs-up.gif' },
-  { id: 'gif-laughing', name: 'Laughing', preview: '😂', url: 'https://media.tenor.com/z0nS_t2Z3k8AAAAC/laughing.gif' },
-  { id: 'gif-mind-blown', name: 'Mind Blown', preview: '🤯', url: 'https://media.tenor.com/w2Q4y2n8k8AAAAAC/mind-blown.gif' },
-  { id: 'gif-dancing', name: 'Dancing', preview: '💃', url: 'https://media.tenor.com/u3K4GfXmD0UAAAAC/dancing.gif' },
+  { id: 'gif-vibing-cat', name: 'Vibing Cat', preview: '🐱', url: '/gifs/vibing_cat.svg' },
+  { id: 'gif-celebrate', name: 'Celebration', preview: '🎉', url: '/gifs/celebrate.svg' },
+  { id: 'gif-thumbs-up', name: 'Thumbs Up', preview: '👍', url: '/gifs/thumbs_up.svg' },
+  { id: 'gif-laughing', name: 'Laughing', preview: '😂', url: '/gifs/laughing.svg' },
+  { id: 'gif-mind-blown', name: 'Mind Blown', preview: '🤯', url: '/gifs/mind_blown.svg' },
+  { id: 'gif-dancing', name: 'Dancing', preview: '💃', url: '/gifs/dancing.svg' },
 ];
 
 interface ChatViewProps {

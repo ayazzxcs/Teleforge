@@ -1,0 +1,33 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 128 128 width=128 height=128>
+  <defs>
+    <radialGradient id=catGrad cx=40% cy=35% r=65%>
+      <stop offset=0% stop-color=#ECEFF1/><stop offset=80% stop-color=#CFD8DC/><stop offset=100% stop-color=#B0BEC5/>
+    </radialGradient>
+    <filter id=shadow x=-10% y=-10% width=120% height=120%>
+      <feDropShadow dx=0 dy=4 stdDeviation=4 flood-color=#000 flood-opacity=0.25/>
+    </filter>
+  </defs>
+  <g filter=url(#shadow)>
+    <!-- Ears -->
+    <polygon points=32,20 18,52 48,46 fill=#78909C/>
+    <polygon points=32,24 24,48 44,44 fill=#FF8A80/>
+    <polygon points=96,20 80,46 110,52 fill=#78909C/>
+    <polygon points=96,24 84,44 104,48 fill=#FF8A80/>
+    <!-- Head -->
+    <circle cx=64 cy=62 r=38 fill=url(#catGrad)/>
+    <!-- Cheeks -->
+    <circle cx=38 cy=68 r=7 fill=#FF8A80 opacity=0.5/>
+    <circle cx=90 cy=68 r=7 fill=#FF8A80 opacity=0.5/>
+    <!-- Happy curved eyes -->
+    <path d=M 44 54 Q 50 46 56 54 stroke=#263238 stroke-width=4 fill=none stroke-linecap=round/>
+    <path d=M 72 54 Q 78 46 84 54 stroke=#263238 stroke-width=4 fill=none stroke-linecap=round/>
+    <!-- Nose & Mouth -->
+    <polygon points=64,62 61,65 67,65 fill=#FF5252/>
+    <path d=M 64 65 Q 58 72 54 68 M 64 65 Q 70 72 74 68 stroke=#263238 stroke-width=3 fill=none stroke-linecap=round/>
+    <!-- Whiskers -->
+    <line x1=22 y1=62 x2=36 y2=64 stroke=#78909C stroke-width=2/>
+    <line x1=20 y1=68 x2=35 y2=69 stroke=#78909C stroke-width=2/>
+    <line x1=92 y1=64 x2=106 y2=62 stroke=#78909C stroke-width=2/>
+    <line x1=93 y1=69 x2=108 y2=68 stroke=#78909C stroke-width=2/>
+  </g>
+</svg>
