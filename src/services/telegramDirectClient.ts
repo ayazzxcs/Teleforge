@@ -33,6 +33,7 @@ const peerEntityCache = new Map<string, any>();
 const thumbCache = new Map<string, string>(); // peerId -> base64 data URL
 const avatarBlobUrlCache = new Map<string, string>(); // peerId -> object URL
 const messageMediaMap = new Map<string, any>(); // `${chatId}_${messageId}` -> media object
+const messageObjectMap = new Map<string, any>(); // `${chatId}_${messageId}` -> full Api.Message object
 const pendingLogins = new Map<string, { phoneCodeHash: string; isCodeViaApp: boolean; type?: string }>();
 
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg = 'Operation timed out'): Promise<T> {
@@ -628,6 +629,8 @@ export const telegramDirectClient = {
       if (m.media) {
         messageMediaMap.set(`${chatId}_${m.id}`, m.media);
         messageMediaMap.set(String(m.id), m.media);
+        messageObjectMap.set(`${chatId}_${m.id}`, m);
+        messageObjectMap.set(String(m.id), m);
         const cls = m.media.className || m.media._ || '';
         if (cls.includes('Photo')) {
           mediaType = 'photo';
@@ -1480,19 +1483,31 @@ export const telegramDirectClient = {
    * Optimized: uses cached media object, fast responsive thumbnail for photos,
    * and thumbnail-only for videos until explicit playback is requested.
    */
+  /**
+   * Download message media (photo or video/document) directly via GramJS MTProto
+   * Optimized: uses cached media/message object, fast responsive thumbnail for photos,
+   * and chunked streaming with custom chunk writer for videos/documents to prevent
+   * out-of-memory heap allocation failures on long videos.
+   */
   async downloadMessageMedia(
     chatId: string,
     messageId: string | number,
-    options?: { fullRes?: boolean; fullVideo?: boolean }
-  ): Promise<{ dataUrl: string; mimeType: string } | null> {
+    options?: {
+      fullRes?: boolean;
+      fullVideo?: boolean;
+      onProgress?: (progress: number, downloaded: number, total: number) => void;
+    }
+  ): Promise<{ dataUrl: string; mimeType: string; blob?: Blob; size?: number } | null> {
     if (!chatId || messageId == null) return null;
     const client = await getDirectClient();
     const idNum = typeof messageId === 'number' ? messageId : parseInt(String(messageId), 10);
     const mediaKey = `${chatId}_${idNum}`;
 
     try {
+      let targetMsg = messageObjectMap.get(mediaKey) || messageObjectMap.get(String(idNum));
       let media = messageMediaMap.get(mediaKey) || messageMediaMap.get(String(idNum));
-      if (!media) {
+
+      if (!targetMsg && !media) {
         let targetPeer = peerEntityCache.get(chatId) || chatId;
         if (!peerEntityCache.has(chatId)) {
           try {
@@ -1502,13 +1517,21 @@ export const telegramDirectClient = {
           }
         }
         const messages: any = await client.getMessages(targetPeer, { ids: [idNum] });
-        if (!messages || !messages[0] || !messages[0].media) return null;
-        media = messages[0].media;
-        messageMediaMap.set(mediaKey, media);
+        if (messages && messages[0]) {
+          targetMsg = messages[0];
+          messageObjectMap.set(mediaKey, targetMsg);
+          if (targetMsg.media) {
+            media = targetMsg.media;
+            messageMediaMap.set(mediaKey, media);
+          }
+        }
       }
 
+      const mediaObj = targetMsg?.media || media;
+      if (!mediaObj) return null;
+
       let mimeType = 'application/octet-stream';
-      const cls = media.className || media._ || '';
+      const cls = mediaObj.className || mediaObj._ || '';
       const isPhoto = cls.includes('Photo');
       const isDocument = cls.includes('Document');
 
@@ -1522,14 +1545,14 @@ export const telegramDirectClient = {
           downloadParams.thumb = 'x';
         }
       } else if (isDocument) {
-        mimeType = media.document?.mimeType || 'application/octet-stream';
-        const isVideo = mimeType.startsWith('video/') || (media.document?.attributes || []).some((a: any) =>
+        mimeType = mediaObj.document?.mimeType || 'application/octet-stream';
+        const isVideo = mimeType.startsWith('video/') || (mediaObj.document?.attributes || []).some((a: any) =>
           a._ === 'documentAttributeVideo' || a.className === 'DocumentAttributeVideo' ||
           a._ === 'documentAttributeAnimated' || a.className === 'DocumentAttributeAnimated'
         );
 
         if (isVideo) {
-          // If not playing full video, download the video thumbnail (fast ~25KB), NEVER the full 50MB video!
+          // If not playing full video, download the video thumbnail (fast ~25KB), NEVER the full video!
           if (!options?.fullVideo) {
             downloadParams.thumb = -1; // highest quality thumbnail
             mimeType = 'image/jpeg';
@@ -1537,22 +1560,58 @@ export const telegramDirectClient = {
         }
       }
 
-      const buffer: any = await client.downloadMedia(media, downloadParams);
+      // If downloading full video/large file, stream chunks into an array of Uint8Array parts
+      // This completely avoids GramJS BinaryWriter doing Buffer.concat which runs out of memory on long videos!
+      if (options?.fullVideo) {
+        const chunks: Uint8Array[] = [];
+        let totalDownloaded = 0;
+        const customWriter = {
+          write: (chunk: any) => {
+            if (chunk && chunk.length > 0) {
+              chunks.push(chunk);
+              totalDownloaded += chunk.length;
+            }
+          },
+          close: () => {},
+        };
+
+        downloadParams.outputFile = customWriter;
+        if (options?.onProgress) {
+          downloadParams.progressCallback = (downloaded: any, total: any) => {
+            try {
+              const dl = typeof downloaded?.toJSNumber === 'function' ? downloaded.toJSNumber() : Number(downloaded);
+              const tot = typeof total?.toJSNumber === 'function' ? total.toJSNumber() : Number(total);
+              const pct = tot > 0 ? Math.min(100, Math.round((dl / tot) * 100)) : 0;
+              options.onProgress?.(pct, dl, tot);
+            } catch (pErr) {}
+          };
+        }
+
+        // Pass targetMsg if available so GramJS has inputChat and message ID for automatic file reference renewal
+        await client.downloadMedia(targetMsg || mediaObj, downloadParams);
+
+        if (chunks.length === 0) return null;
+
+        const blob = new Blob(chunks as any[], { type: mimeType });
+        const blobUrl = URL.createObjectURL(blob);
+        options?.onProgress?.(100, totalDownloaded, totalDownloaded);
+        return { dataUrl: blobUrl, mimeType, blob, size: totalDownloaded };
+      }
+
+      // Normal thumbnail / image download
+      const buffer: any = await client.downloadMedia(targetMsg || mediaObj, downloadParams);
       if (!buffer || buffer.length === 0) return null;
 
-      // For full video playback, convert to Blob URL directly for instant hardware decoding and zero base64 overhead
-      if (options?.fullVideo && typeof window !== 'undefined' && window.URL && window.Blob) {
+      if (typeof window !== 'undefined' && window.URL && window.Blob) {
         try {
           const blob = new Blob([buffer], { type: mimeType });
           const blobUrl = URL.createObjectURL(blob);
-          return { dataUrl: blobUrl, mimeType };
-        } catch (e) {
-          // fallback if blob creation fails
-        }
+          return { dataUrl: blobUrl, mimeType, blob, size: buffer.length };
+        } catch (e) {}
       }
 
       const dataUrl = `data:${mimeType};base64,${Buffer.from(buffer).toString('base64')}`;
-      return { dataUrl, mimeType };
+      return { dataUrl, mimeType, size: buffer.length };
     } catch (err: any) {
       console.warn('[MTProto-Direct] downloadMessageMedia error:', err?.message || err);
       return null;
@@ -1652,6 +1711,167 @@ export const telegramDirectClient = {
       console.error('[MTProto-Direct] terminateAllOtherSessions error:', err?.message || err);
       throw new Error(err?.message || 'Failed to terminate other sessions');
     }
+  },
+
+  /**
+   * Check if a Telegram public username is available
+   */
+  async checkUsername(rawUsername: string): Promise<{ available: boolean; error?: string }> {
+    const username = rawUsername.replace(/^@+/, '').trim();
+    if (!username) {
+      return { available: false, error: 'Username cannot be empty' };
+    }
+    if (username.length < 5) {
+      return { available: false, error: 'Username must have at least 5 characters' };
+    }
+    if (username.length > 32) {
+      return { available: false, error: 'Username cannot exceed 32 characters' };
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+      return { available: false, error: 'Username can only contain a-z, 0-9, and underscores' };
+    }
+    if (/^[0-9]/.test(username)) {
+      return { available: false, error: 'Username cannot start with a number' };
+    }
+
+    try {
+      const client = await getDirectClient();
+      try {
+        const res = await client.invoke(
+          new Api.channels.CheckUsername({
+            channel: new Api.InputChannelEmpty(),
+            username,
+          })
+        );
+        return { available: Boolean(res) };
+      } catch (channelErr: any) {
+        const msg = channelErr?.errorMessage || channelErr?.message || '';
+        if (msg.includes('USERNAME_OCCUPIED')) {
+          return { available: false, error: 'Username is already taken' };
+        }
+        if (msg.includes('USERNAME_INVALID')) {
+          return { available: false, error: 'Username is invalid' };
+        }
+        if (msg.includes('USERNAME_PURCHASE_AVAILABLE')) {
+          return { available: false, error: 'Username is a Fragment collectible' };
+        }
+        // Fallback to account.CheckUsername
+        const accRes = await client.invoke(
+          new Api.account.CheckUsername({
+            username,
+          })
+        );
+        return { available: Boolean(accRes) };
+      }
+    } catch (err: any) {
+      const msg = err?.errorMessage || err?.message || '';
+      if (msg.includes('USERNAME_OCCUPIED')) {
+        return { available: false, error: 'Username is already taken' };
+      }
+      if (msg.includes('USERNAME_INVALID')) {
+        return { available: false, error: 'Username is invalid' };
+      }
+      if (msg.includes('FLOOD_WAIT')) {
+        return { available: false, error: 'Too many requests, please wait a moment' };
+      }
+      return { available: false, error: msg || 'Could not verify username' };
+    }
+  },
+
+  /**
+   * Create a new Telegram Channel or Supergroup on Telegram Cloud
+   */
+  async createChannelOrGroup(params: {
+    type: 'channel' | 'group';
+    title: string;
+    about?: string;
+    isPublic: boolean;
+    username?: string;
+  }): Promise<TelegramDialog> {
+    const client = await getDirectClient();
+    const isChannel = params.type === 'channel';
+    const title = params.title.trim();
+    const about = (params.about || '').trim();
+
+    if (!title) {
+      throw new Error('Title is required');
+    }
+
+    // 1. Invoke channels.CreateChannel
+    const updates: any = await client.invoke(
+      new Api.channels.CreateChannel({
+        broadcast: isChannel,
+        megagroup: !isChannel,
+        title,
+        about,
+      })
+    );
+
+    const createdChat = updates?.chats?.[0];
+    if (!createdChat) {
+      throw new Error('Failed to create conversation on Telegram servers');
+    }
+
+    const channelId = createdChat.id.toString();
+    const accessHash = createdChat.accessHash;
+    peerEntityCache.set(channelId, createdChat);
+    peerEntityCache.set(`-100${channelId}`, createdChat);
+
+    let cleanUsername = '';
+    // 2. If public and username provided, assign the public username
+    if (params.isPublic && params.username) {
+      cleanUsername = params.username.replace(/^@+/, '').trim();
+      if (cleanUsername) {
+        try {
+          await client.invoke(
+            new Api.channels.UpdateUsername({
+              channel: new Api.InputChannel({
+                channelId: createdChat.id,
+                accessHash: accessHash,
+              }),
+              username: cleanUsername,
+            })
+          );
+        } catch (uErr: any) {
+          console.warn('[MTProto-Direct] UpdateUsername error:', uErr?.message || uErr);
+          const uMsg = uErr?.errorMessage || uErr?.message || '';
+          if (uMsg.includes('USERNAME_OCCUPIED')) {
+            throw new Error(`Username @${cleanUsername} is already taken.`);
+          }
+          if (uMsg.includes('CHANNELS_ADMIN_PUBLIC_TOO_MUCH')) {
+            throw new Error('You have reached the maximum number of public channels or groups. Revoke an existing public link first.');
+          }
+          if (uMsg.includes('USERNAME_INVALID')) {
+            throw new Error(`Username @${cleanUsername} is invalid.`);
+          }
+          throw new Error(uErr?.errorMessage || uErr?.message || 'Failed to assign public username.');
+        }
+      }
+    }
+
+    const fullPeerId = `-100${channelId}`;
+    const dialog: TelegramDialog = {
+      id: fullPeerId,
+      title,
+      isUser: false,
+      isGroup: !isChannel,
+      isChannel,
+      isVerified: false,
+      unreadCount: 0,
+      unreadMentionsCount: 0,
+      pinned: false,
+      isJoined: true,
+      memberCount: 1,
+      date: Date.now(),
+      username: cleanUsername || undefined,
+      lastMessage: {
+        text: isChannel ? `Channel "${title}" created.` : `Group "${title}" created.`,
+        date: Date.now(),
+        out: true,
+      },
+    };
+
+    return dialog;
   },
 };
 

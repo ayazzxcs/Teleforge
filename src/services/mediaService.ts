@@ -12,6 +12,7 @@ const DB_VERSION = 1;
 const memoryCache = new Map<string, string>(); // `${chatId}_${messageId}` -> base64 data URL
 const inflightPromises = new Map<string, Promise<string>>();
 const subscribers = new Map<string, Set<(url: string) => void>>();
+const progressSubscribers = new Map<string, Set<(pct: number, dl: number, tot: number) => void>>();
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -66,6 +67,17 @@ function notifySubscribers(key: string, url: string): void {
     subs.forEach((cb) => {
       try {
         cb(url);
+      } catch (e) {}
+    });
+  }
+}
+
+function notifyProgressSubscribers(key: string, pct: number, dl: number, tot: number): void {
+  const subs = progressSubscribers.get(key);
+  if (subs) {
+    subs.forEach((cb) => {
+      try {
+        cb(pct, dl, tot);
       } catch (e) {}
     });
   }
@@ -159,12 +171,41 @@ export const mediaService = {
   },
 
   /**
+   * Subscribe to download progress updates (pct: 0-100, downloaded bytes, total bytes)
+   */
+  subscribeProgress(
+    chatId: string,
+    messageId: string | number,
+    callback: (pct: number, dl: number, tot: number) => void,
+    options?: { fullRes?: boolean; fullVideo?: boolean }
+  ): () => void {
+    const suffix = options?.fullVideo ? '_video' : options?.fullRes ? '_fullres' : '';
+    const key = `${chatId}_${messageId}${suffix}`;
+    if (!progressSubscribers.has(key)) {
+      progressSubscribers.set(key, new Set());
+    }
+    progressSubscribers.get(key)!.add(callback);
+
+    return () => {
+      const subs = progressSubscribers.get(key);
+      if (subs) {
+        subs.delete(callback);
+        if (subs.size === 0) progressSubscribers.delete(key);
+      }
+    };
+  },
+
+  /**
    * Load media directly via MTProto
    */
   async loadMedia(
     chatId: string,
     messageId: string | number,
-    options?: { fullRes?: boolean; fullVideo?: boolean }
+    options?: {
+      fullRes?: boolean;
+      fullVideo?: boolean;
+      onProgress?: (pct: number, dl: number, tot: number) => void;
+    }
   ): Promise<string> {
     if (!chatId || messageId == null) return '';
     const suffix = options?.fullVideo ? '_video' : options?.fullRes ? '_fullres' : '';
@@ -191,7 +232,13 @@ export const mediaService = {
       // For full video playback, bypass background queue and download immediately with high priority
       if (options?.fullVideo) {
         try {
-          const res = await telegramDirectClient.downloadMessageMedia(chatId, messageId, options);
+          const res = await telegramDirectClient.downloadMessageMedia(chatId, messageId, {
+            ...options,
+            onProgress: (pct, dl, tot) => {
+              notifyProgressSubscribers(key, pct, dl, tot);
+              options?.onProgress?.(pct, dl, tot);
+            },
+          });
           if (res && res.dataUrl) {
             memoryCache.set(key, res.dataUrl);
             notifySubscribers(key, res.dataUrl);

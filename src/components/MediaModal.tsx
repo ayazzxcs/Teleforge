@@ -17,6 +17,7 @@ import { Attachment } from '../types';
 import { showToast } from './Toast';
 import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
 import { mediaService } from '../services/mediaService';
+import { downloadFileToDevice } from '../utils/fileDownloader';
 
 interface MediaModalProps {
   attachment: Attachment | null;
@@ -29,11 +30,13 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
   const [showInfo, setShowInfo] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string>('');
   const [isVideoLoading, setIsVideoLoading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{ pct: number; dl: number; tot: number } | null>(null);
 
   useEffect(() => {
     setZoom(1);
     setImmersive(false);
     setShowInfo(false);
+    setDownloadProgress(null);
 
     if (attachment?.type !== 'video') {
       setVideoUrl('');
@@ -52,9 +55,29 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
         setIsVideoLoading(false);
       } else {
         setIsVideoLoading(true);
-        mediaService.loadMedia(attachment.chatId, attachment.messageId, { fullVideo: true }).then((url) => {
-          if (url) setVideoUrl(url);
-        }).finally(() => setIsVideoLoading(false));
+        const unsub = mediaService.subscribeProgress(
+          attachment.chatId,
+          attachment.messageId,
+          (pct, dl, tot) => {
+            setDownloadProgress({ pct, dl, tot });
+          },
+          { fullVideo: true }
+        );
+
+        mediaService
+          .loadMedia(attachment.chatId, attachment.messageId, {
+            fullVideo: true,
+            onProgress: (pct, dl, tot) => {
+              setDownloadProgress({ pct, dl, tot });
+            },
+          })
+          .then((url) => {
+            if (url) setVideoUrl(url);
+          })
+          .finally(() => {
+            setIsVideoLoading(false);
+            unsub();
+          });
       }
     } else {
       setVideoUrl(attachment.url || '');
@@ -141,16 +164,22 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
             </button>
 
             {/* Download */}
-            <a
-              href={attachment.url}
-              download={attachment.name || 'teleforge-media.jpg'}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              onClick={async () => {
+                const targetUrl = videoUrl || attachment.url || attachment.thumbUrl;
+                if (!targetUrl) {
+                  showToast('Media is not ready for download', 'error');
+                  return;
+                }
+                const mime = attachment.type === 'video' ? 'video/mp4' : 'image/jpeg';
+                const defaultName = attachment.name || (attachment.type === 'video' ? 'teleforge-video.mp4' : 'teleforge-photo.jpg');
+                await downloadFileToDevice(targetUrl, defaultName, mime);
+              }}
               className="p-1.5 rounded-xl hover:bg-white/20 transition-colors text-white"
-              title="Download"
+              title="Download to device"
             >
               <Download size={16} />
-            </a>
+            </button>
 
             {/* Copy Link */}
             <button
@@ -213,13 +242,27 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
                       className="max-h-[82vh] w-full object-contain filter blur-xs opacity-60"
                     />
                   )}
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-white">
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-white px-6">
                     <div className="w-14 h-14 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center border border-white/20 shadow-xl">
                       <Loader2 size={28} className="animate-spin text-teleforge-primary" />
                     </div>
-                    <span className="text-xs font-semibold tracking-wide drop-shadow-md">
-                      {isVideoLoading ? 'Loading video from Telegram...' : 'Preparing video...'}
+                    <span className="text-xs font-semibold tracking-wide drop-shadow-md text-center">
+                      {downloadProgress && downloadProgress.tot > 0
+                        ? `Downloading video... ${downloadProgress.pct}% (${(downloadProgress.dl / (1024 * 1024)).toFixed(1)} MB / ${(downloadProgress.tot / (1024 * 1024)).toFixed(1)} MB)`
+                        : downloadProgress
+                        ? `Downloading video... ${downloadProgress.pct}%`
+                        : isVideoLoading
+                        ? 'Connecting to Telegram...'
+                        : 'Preparing video...'}
                     </span>
+                    {downloadProgress && (
+                      <div className="w-48 max-w-full h-1.5 bg-white/20 rounded-full overflow-hidden mt-1">
+                        <div
+                          className="h-full bg-teleforge-primary transition-all duration-200 rounded-full"
+                          style={{ width: `${downloadProgress.pct}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

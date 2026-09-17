@@ -679,9 +679,12 @@ export const App: React.FC = () => {
   };
 
   const handleCreateChat = (newChat: Chat) => {
-    setChats((prev) => [newChat, ...prev]);
+    setChats((prev) => [newChat, ...prev.filter((c) => c.id !== newChat.id)]);
     setActiveChatId(newChat.id);
     setMobileShowChat(true);
+    setTimeout(() => {
+      loadTelegramDialogs();
+    }, 1200);
   };
 
   const handleSelectSavedMessages = () => {

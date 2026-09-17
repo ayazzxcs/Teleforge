@@ -37,6 +37,7 @@ import {
   ChevronUp,
   Play,
   Video,
+  Download,
 } from 'lucide-react';
 import { Chat, Message, Reaction, Attachment } from '../types';
 import { AudioPlayer } from './AudioPlayer';
@@ -44,6 +45,7 @@ import { Avatar } from './Avatar';
 import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
 import { UserProfileModal, UserProfileDetails } from './UserProfileModal';
 import { mediaService } from '../services/mediaService';
+import { downloadFileToDevice } from '../utils/fileDownloader';
 import { getAvatarColor } from '../utils/telegramAdapter';
 import {
   ChatCustomizationConfig,
@@ -153,6 +155,7 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   });
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{ pct: number; dl: number; tot: number } | null>(null);
 
   useEffect(() => {
     if (videoUrl) return;
@@ -160,11 +163,25 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       chatId,
       messageId,
       (url) => {
-        if (url) setVideoUrl(url);
+        if (url) {
+          setVideoUrl(url);
+          setIsLoading(false);
+        }
       },
       { fullVideo: true }
     );
-    return unsub;
+    const unsubProg = mediaService.subscribeProgress(
+      chatId,
+      messageId,
+      (pct, dl, tot) => {
+        setDownloadProgress({ pct, dl, tot });
+      },
+      { fullVideo: true }
+    );
+    return () => {
+      unsub();
+      unsubProg();
+    };
   }, [chatId, messageId, videoUrl]);
 
   const handlePlayClick = (e: React.MouseEvent) => {
@@ -173,7 +190,12 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       setIsPlaying(true);
     } else {
       setIsLoading(true);
-      mediaService.loadMedia(chatId, messageId, { fullVideo: true }).then((url) => {
+      mediaService.loadMedia(chatId, messageId, {
+        fullVideo: true,
+        onProgress: (pct, dl, tot) => {
+          setDownloadProgress({ pct, dl, tot });
+        },
+      }).then((url) => {
         setIsLoading(false);
         if (url) {
           setVideoUrl(url);
@@ -190,6 +212,24 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       messageId,
       url: videoUrl || '',
     });
+  };
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    let target = videoUrl;
+    if (!target) {
+      setIsLoading(true);
+      target = await mediaService.loadMedia(chatId, messageId, {
+        fullVideo: true,
+        onProgress: (pct, dl, tot) => setDownloadProgress({ pct, dl, tot }),
+      }) || '';
+      setIsLoading(false);
+    }
+    if (target) {
+      await downloadFileToDevice(target, attachment.name || 'teleforge-video.mp4', 'video/mp4');
+    } else {
+      showToast('Could not download video', 'error');
+    }
   };
 
   if (isPlaying && videoUrl) {
@@ -225,19 +265,43 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       {/* Dim overlay */}
       <div className="absolute inset-0 bg-black/30 group-hover:bg-black/40 transition-colors" />
 
+      {/* Quick Download Button in Top-Right */}
+      <button
+        onClick={handleDownload}
+        className="absolute top-2 right-2 z-20 p-1.5 rounded-full bg-black/60 hover:bg-black/80 text-white backdrop-blur-xs border border-white/20 transition-all hover:scale-105 shadow-md"
+        title="Download video"
+      >
+        <Download size={13} />
+      </button>
+
       {/* Center Play Button */}
       <button
         onClick={handlePlayClick}
         disabled={isLoading}
-        className="relative z-10 w-12 h-12 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-xs transition-transform transform group-hover:scale-110 shadow-lg border border-white/20"
+        className="relative z-10 min-w-12 h-12 px-3 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-xs transition-transform transform group-hover:scale-110 shadow-lg border border-white/20"
         title="Play video"
       >
         {isLoading ? (
-          <Loader2 className="w-6 h-6 animate-spin text-white" />
+          <div className="flex items-center gap-1.5">
+            <Loader2 className="w-5 h-5 animate-spin text-teleforge-primary" />
+            <span className="text-[11px] font-bold text-white">
+              {downloadProgress ? `${downloadProgress.pct}%` : '...'}
+            </span>
+          </div>
         ) : (
           <Play className="w-6 h-6 fill-white ml-0.5" />
         )}
       </button>
+
+      {/* Progress Bar when loading */}
+      {isLoading && downloadProgress && (
+        <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/20 z-20">
+          <div
+            className="h-full bg-teleforge-primary transition-all duration-200"
+            style={{ width: `${downloadProgress.pct}%` }}
+          />
+        </div>
+      )}
 
       {/* Bottom info badge */}
       <div className="absolute bottom-2 left-2 z-10 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-xs text-[10px] font-medium text-white flex items-center gap-1.5">

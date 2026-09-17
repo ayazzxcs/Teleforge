@@ -6,12 +6,14 @@ import {
   VolumeX,
   Maximize,
   Minimize,
+  Download,
   Languages,
   RotateCcw,
   Check,
   ChevronUp,
   Settings,
 } from 'lucide-react';
+import { downloadFileToDevice } from '../utils/fileDownloader';
 
 export interface TeleForgeVideoPlayerProps {
   src: string;
@@ -284,25 +286,41 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
     setShowSpeedMenu(false);
   };
 
-  // Toggle Fullscreen
+  // Toggle Fullscreen (Resilient dual-mode: HTML5 API + simulated overlay)
   const toggleFullscreen = () => {
     const container = containerRef.current;
     if (!container) return;
-    if (!document.fullscreenElement) {
-      container.requestFullscreen?.().then(() => setIsFullscreen(true)).catch(() => {});
+
+    if (!isFullscreen) {
+      if (container.requestFullscreen) {
+        container
+          .requestFullscreen()
+          .then(() => setIsFullscreen(true))
+          .catch(() => {
+            // Simulated fullscreen fallback
+            setIsFullscreen(true);
+          });
+      } else {
+        setIsFullscreen(true);
+      }
     } else {
-      document.exitFullscreen?.().then(() => setIsFullscreen(false)).catch(() => {});
+      if (document.fullscreenElement) {
+        document.exitFullscreen?.().catch(() => {});
+      }
+      setIsFullscreen(false);
     }
   };
 
   // Handle Fullscreen change listener
   useEffect(() => {
     const handleFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      if (!document.fullscreenElement && isFullscreen) {
+        setIsFullscreen(false);
+      }
     };
     document.addEventListener('fullscreenchange', handleFsChange);
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
-  }, []);
+  }, [isFullscreen]);
 
   // Auto-hide controls timer
   const resetControlsTimeout = () => {
@@ -336,7 +354,9 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
       onMouseMove={resetControlsTimeout}
       onTouchStart={resetControlsTimeout}
       className={`relative group bg-black overflow-hidden flex items-center justify-center select-none ${className} ${
-        isFullscreen ? 'w-screen h-screen' : 'w-full rounded-2xl'
+        isFullscreen
+          ? 'fixed inset-0 z-[99999] w-screen h-screen max-w-none max-h-none rounded-none'
+          : 'w-full rounded-2xl'
       }`}
     >
       {/* Native Video Element */}
@@ -581,6 +601,18 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Download Video Button */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                downloadFileToDevice(src, title || 'teleforge-video.mp4', 'video/mp4');
+              }}
+              className="p-1.5 rounded-lg hover:bg-white/20 transition-colors"
+              title="Download Video"
+            >
+              <Download size={18} />
+            </button>
 
             {/* Fullscreen Button */}
             <button

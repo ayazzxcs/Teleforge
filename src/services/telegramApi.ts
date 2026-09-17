@@ -628,4 +628,18 @@ export const telegramApi = {
   async getUserFull(userId: string): Promise<{ bio?: string; phone?: string; username?: string; name?: string }> {
     return telegramDirectClient.getUserFull(userId);
   },
+
+  async checkUsername(username: string): Promise<{ available: boolean; error?: string }> {
+    return telegramDirectClient.checkUsername(username);
+  },
+
+  async createChannelOrGroup(params: {
+    type: 'channel' | 'group';
+    title: string;
+    about?: string;
+    isPublic: boolean;
+    username?: string;
+  }): Promise<TelegramDialog> {
+    return telegramDirectClient.createChannelOrGroup(params);
+  },
 };

@@ -28,6 +28,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewAssetLoader.AssetsPathHandler
 
@@ -47,6 +48,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private lateinit var assetLoader: WebViewAssetLoader
+    private lateinit var fullscreenContainer: FrameLayout
+    private var customView: View? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
     private val fileChooserLauncher: ActivityResultLauncher<Intent> =
@@ -142,7 +146,17 @@ class MainActivity : ComponentActivity() {
             visibility = View.VISIBLE
         }
 
+        fullscreenContainer = FrameLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+        }
+
         rootLayout.addView(webView)
+        rootLayout.addView(fullscreenContainer)
         rootLayout.addView(progressBar)
         setContentView(rootLayout)
 
@@ -183,6 +197,9 @@ class MainActivity : ComponentActivity() {
 
         val defaultUa = settings.userAgentString
         settings.userAgentString = "$defaultUa TeleForgeAndroid/1.0.0"
+
+        // Register TeleForge native bridge for downloads and system actions
+        webView.addJavascriptInterface(TeleForgeBridge(this), "TeleForgeBridge")
     }
 
     private fun setupWebViewClients() {
@@ -305,6 +322,45 @@ class MainActivity : ComponentActivity() {
             override fun onPermissionRequest(request: PermissionRequest?) {
                 request?.grant(request.resources)
             }
+
+            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                if (customView != null) {
+                    onHideCustomView()
+                    return
+                }
+                customView = view
+                customViewCallback = callback
+                if (view != null) {
+                    fullscreenContainer.addView(
+                        view,
+                        FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                }
+                fullscreenContainer.visibility = View.VISIBLE
+                webView.visibility = View.GONE
+
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    hide(WindowInsetsCompat.Type.systemBars())
+                    systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+            }
+
+            override fun onHideCustomView() {
+                if (customView == null) return
+                fullscreenContainer.removeView(customView)
+                fullscreenContainer.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                customViewCallback?.onCustomViewHidden()
+                customView = null
+                customViewCallback = null
+
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
         }
     }
 
@@ -340,6 +396,10 @@ class MainActivity : ComponentActivity() {
     private fun setupBackNavigation() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (customView != null) {
+                    webView.webChromeClient?.onHideCustomView()
+                    return
+                }
                 if (webView.canGoBack()) {
                     webView.goBack()
                 } else {
@@ -398,5 +458,71 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         webView.destroy()
         super.onDestroy()
+    }
+
+    inner class TeleForgeBridge(private val activity: MainActivity) {
+        @android.webkit.JavascriptInterface
+        fun saveFile(base64Data: String, fileName: String, mimeType: String) {
+            activity.runOnUiThread {
+                try {
+                    val rawB64 = if (base64Data.contains(",")) base64Data.substringAfter(",") else base64Data
+                    val bytes = Base64.decode(rawB64, Base64.DEFAULT)
+
+                    val resolver = activity.contentResolver
+                    val contentValues = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            val subDir = when {
+                                mimeType.startsWith("video/") -> android.os.Environment.DIRECTORY_MOVIES
+                                mimeType.startsWith("image/") -> android.os.Environment.DIRECTORY_PICTURES
+                                else -> android.os.Environment.DIRECTORY_DOWNLOADS
+                            }
+                            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "$subDir/TeleForge")
+                            put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                        }
+                    }
+
+                    val collection = when {
+                        mimeType.startsWith("video/") -> {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                android.provider.MediaStore.Video.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                            } else {
+                                android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                            }
+                        }
+                        mimeType.startsWith("image/") -> {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                            } else {
+                                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                            }
+                        }
+                        else -> {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                android.provider.MediaStore.Downloads.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                            } else {
+                                android.provider.MediaStore.Files.getContentUri("external")
+                            }
+                        }
+                    }
+
+                    val itemUri = resolver.insert(collection, contentValues)
+                    if (itemUri != null) {
+                        resolver.openOutputStream(itemUri)?.use { out ->
+                            out.write(bytes)
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            contentValues.clear()
+                            contentValues.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                            resolver.update(itemUri, contentValues, null, null)
+                        }
+                        android.widget.Toast.makeText(activity, "Saved to Downloads: $fileName", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: Exception) {
+                    android.widget.Toast.makeText(activity, "Failed to save file: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 }
