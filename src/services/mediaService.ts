@@ -88,25 +88,38 @@ const downloadQueue: Array<() => Promise<void>> = [];
 let activeWorkers = 0;
 const MAX_CONCURRENT_DOWNLOADS = 4;
 
+function withMediaTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: any;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Media download timed out')), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 function enqueueDownload(fn: () => Promise<void>) {
   downloadQueue.push(fn);
   processQueue();
 }
 
-async function processQueue() {
-  if (activeWorkers >= MAX_CONCURRENT_DOWNLOADS || downloadQueue.length === 0) return;
-  activeWorkers++;
-  const nextFn = downloadQueue.shift();
-  if (nextFn) {
-    try {
-      await nextFn();
-    } catch (e) {
-    } finally {
+function processQueue() {
+  while (activeWorkers < MAX_CONCURRENT_DOWNLOADS && downloadQueue.length > 0) {
+    activeWorkers++;
+    const nextFn = downloadQueue.shift();
+    if (nextFn) {
+      (async () => {
+        try {
+          await withMediaTimeout(nextFn(), 20000);
+        } catch (e) {
+        } finally {
+          activeWorkers--;
+          processQueue();
+        }
+      })();
+    } else {
       activeWorkers--;
-      processQueue();
     }
-  } else {
-    activeWorkers--;
   }
 }
 
@@ -129,7 +142,9 @@ export const mediaService = {
     const suffix = options?.fullVideo ? '_video' : options?.fullRes ? '_fullres' : '';
     const key = `${chatId}_${messageId}${suffix}`;
     memoryCache.set(key, dataUrl);
-    putToIndexedDB(key, dataUrl);
+    if (dataUrl.startsWith('data:')) {
+      putToIndexedDB(key, dataUrl);
+    }
     notifySubscribers(key, dataUrl);
   },
 
@@ -154,7 +169,7 @@ export const mediaService = {
       callback(cached);
     } else {
       getFromIndexedDB(key).then((idbVal) => {
-        if (idbVal) {
+        if (idbVal && idbVal.length > 5) {
           memoryCache.set(key, idbVal);
           callback(idbVal);
         }
@@ -222,7 +237,7 @@ export const mediaService = {
     const promise = (async () => {
       try {
         const idbVal = await getFromIndexedDB(key);
-        if (idbVal && idbVal.length > 100) {
+        if (idbVal && idbVal.length > 5) {
           memoryCache.set(key, idbVal);
           notifySubscribers(key, idbVal);
           return idbVal;
@@ -253,10 +268,15 @@ export const mediaService = {
       return new Promise<string>((resolve) => {
         enqueueDownload(async () => {
           try {
-            const res = await telegramDirectClient.downloadMessageMedia(chatId, messageId, options);
-            if (res && res.dataUrl && res.dataUrl.length > 100) {
+            const res = await withMediaTimeout(
+              telegramDirectClient.downloadMessageMedia(chatId, messageId, options),
+              15000
+            ).catch(() => null);
+            if (res && res.dataUrl && res.dataUrl.length > 5) {
               memoryCache.set(key, res.dataUrl);
-              putToIndexedDB(key, res.dataUrl);
+              if (res.dataUrl.startsWith('data:')) {
+                putToIndexedDB(key, res.dataUrl);
+              }
               notifySubscribers(key, res.dataUrl);
               resolve(res.dataUrl);
             } else {

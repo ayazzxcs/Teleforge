@@ -81,22 +81,48 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
     return mediaService.get(chatId, messageId) || '';
   });
   const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     if (mediaUrl) return;
+    let mounted = true;
     const unsub = mediaService.subscribe(chatId, messageId, (url) => {
-      if (url) setMediaUrl(url);
+      if (url && mounted) {
+        setMediaUrl(url);
+        setFailed(false);
+      }
     });
-    mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
-      if (url) setMediaUrl(url);
-    });
-    return unsub;
-  }, [chatId, messageId, mediaUrl]);
+    mediaService
+      .loadMedia(chatId, messageId, { fullRes: false })
+      .then((url) => {
+        if (!mounted) return;
+        if (url) {
+          setMediaUrl(url);
+          setFailed(false);
+        } else {
+          setFailed(true);
+        }
+      })
+      .catch(() => {
+        if (mounted) setFailed(true);
+      });
+    return () => {
+      mounted = false;
+      unsub();
+    };
+  }, [chatId, messageId, mediaUrl, retryCount]);
 
   const displayUrl = mediaUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '');
   const thumbUrl = attachment.thumbUrl;
 
-  const handleClick = () => {
+  const handleClick = (e: React.MouseEvent) => {
+    if (failed && !displayUrl) {
+      e.stopPropagation();
+      setFailed(false);
+      setRetryCount((c) => c + 1);
+      return;
+    }
     onOpenMediaModal({
       ...attachment,
       url: displayUrl || thumbUrl || '',
@@ -106,19 +132,21 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
   return (
     <div
       onClick={handleClick}
-      className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/10 min-h-[140px] max-h-80 flex items-center justify-center select-none"
+      className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/20 min-h-[140px] max-h-80 flex items-center justify-center select-none"
     >
-      {/* 0ms blurred instant preview if thumbUrl available */}
-      {thumbUrl && !loaded && (
+      {/* 1. Instant blurred preview if thumbUrl is available (0ms) */}
+      {thumbUrl && (
         <img
           src={thumbUrl}
           alt={attachment.name || 'Photo preview'}
-          className="absolute inset-0 w-full h-full object-cover filter blur-[3px] scale-105"
+          className={`absolute inset-0 w-full h-full object-cover filter blur-[2px] scale-105 transition-opacity duration-300 ${
+            loaded ? 'opacity-0' : 'opacity-100'
+          }`}
         />
       )}
 
-      {/* High-res loaded image */}
-      {displayUrl ? (
+      {/* 2. Full-resolution loaded image */}
+      {displayUrl && (
         <img
           src={displayUrl}
           alt={attachment.name || 'Photo'}
@@ -127,10 +155,30 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
             loaded || !thumbUrl ? 'opacity-100' : 'opacity-0'
           }`}
         />
-      ) : (
-        <div className="relative z-10 flex flex-col items-center justify-center p-6 text-white/80">
-          <Loader2 className="w-6 h-6 animate-spin mb-1 text-white/90" />
-          <span className="text-[11px] font-medium">Loading photo...</span>
+      )}
+
+      {/* 3. Non-blocking subtle loading badge (only if no full image loaded yet) */}
+      {!loaded && !displayUrl && !failed && (
+        <div className="relative z-20 flex items-center justify-center w-8 h-8 rounded-full bg-black/50 backdrop-blur-xs text-white/90 shadow-md">
+          <Loader2 className="w-4 h-4 animate-spin" />
+        </div>
+      )}
+
+      {/* 4. Tap to retry overlay if full load failed and not loaded */}
+      {failed && !loaded && !displayUrl && (
+        <div className="relative z-20 flex flex-col items-center justify-center p-2.5 rounded-lg bg-black/60 backdrop-blur-xs text-white text-center shadow-lg">
+          <span className="text-[11px] font-medium mb-1">Failed to load</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setFailed(false);
+              setRetryCount((c) => c + 1);
+            }}
+            className="text-[11px] px-2 py-0.5 bg-white/20 hover:bg-white/30 rounded-md font-semibold transition-colors"
+          >
+            Tap to retry
+          </button>
         </div>
       )}
     </div>

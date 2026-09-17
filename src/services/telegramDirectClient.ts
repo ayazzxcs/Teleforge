@@ -142,13 +142,28 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
     const cls = m.media.className || m.media._ || '';
     if (cls.includes('Photo')) {
       mediaType = 'photo';
-      if (m.media.photo?.strippedThumb) {
+      let strippedBytes = m.media.photo?.strippedThumb;
+      if (!strippedBytes && Array.isArray(m.media.photo?.sizes)) {
+        const strippedObj = m.media.photo.sizes.find((s: any) =>
+          s._ === 'photoStrippedSize' || s.className === 'PhotoStrippedSize' || s.bytes
+        );
+        if (strippedObj?.bytes) strippedBytes = strippedObj.bytes;
+      }
+      if (strippedBytes) {
         try {
-          const thumbBuf = strippedPhotoToJpg(m.media.photo.strippedThumb);
+          const thumbBuf = strippedPhotoToJpg(strippedBytes);
           if (thumbBuf && thumbBuf.length > 0) {
             mediaThumb = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
           }
         } catch (e) {}
+      }
+      if (!mediaThumb && Array.isArray(m.media.photo?.sizes)) {
+        const cachedObj = m.media.photo.sizes.find((s: any) =>
+          s._ === 'photoCachedSize' || s.className === 'PhotoCachedSize'
+        );
+        if (cachedObj?.bytes) {
+          mediaThumb = `data:image/jpeg;base64,${Buffer.from(cachedObj.bytes).toString('base64')}`;
+        }
       }
     } else if (cls.includes('Document')) {
       const attrs = m.media.document?.attributes || [];
@@ -1631,8 +1646,19 @@ export const telegramDirectClient = {
 
       if (isPhoto) {
         mimeType = 'image/jpeg';
-        // Note: Do NOT hardcode thumb = 'x' because photos lacking 'x' return empty buffer in GramJS.
-        // GramJS will download the best available size if thumb is omitted.
+        const photoObj = mediaObj.photo || (cls.includes('Photo') ? mediaObj : null);
+        if (photoObj && Array.isArray(photoObj.sizes) && !options?.fullRes) {
+          const availableTypes = photoObj.sizes
+            .map((s: any) => s.type)
+            .filter((t: any) => typeof t === 'string');
+          if (availableTypes.includes('x')) {
+            downloadParams.thumb = 'x';
+          } else if (availableTypes.includes('m')) {
+            downloadParams.thumb = 'm';
+          } else if (availableTypes.includes('s')) {
+            downloadParams.thumb = 's';
+          }
+        }
       } else if (isDocument) {
         mimeType = mediaObj.document?.mimeType || 'application/octet-stream';
         const isVideo = mimeType.startsWith('video/') || (mediaObj.document?.attributes || []).some((a: any) =>
@@ -1728,23 +1754,80 @@ export const telegramDirectClient = {
       }
 
       // Normal thumbnail / image download with fallback retry if thumb returns empty
-      let buffer: any = await client.downloadMedia(targetMsg || mediaObj, downloadParams);
-      if ((!buffer || buffer.length === 0) && downloadParams.thumb !== undefined) {
-        const fallbackParams = { ...downloadParams };
-        delete fallbackParams.thumb;
-        buffer = await client.downloadMedia(targetMsg || mediaObj, fallbackParams);
+      let buffer: any = null;
+      try {
+        buffer = await client.downloadMedia(targetMsg || mediaObj, downloadParams);
+      } catch (e: any) {
+        console.warn('[MTProto-Direct] initial downloadMedia failed:', e?.message || e);
       }
+
+      if ((!buffer || buffer.length === 0) && downloadParams.thumb !== undefined) {
+        try {
+          const fallbackParams = { ...downloadParams };
+          delete fallbackParams.thumb;
+          buffer = await client.downloadMedia(targetMsg || mediaObj, fallbackParams);
+        } catch (e: any) {
+          console.warn('[MTProto-Direct] fallback downloadMedia failed:', e?.message || e);
+        }
+      }
+
+      // If network download returned empty or threw, fallback to embedded thumbnail
+      if (!buffer || buffer.length === 0) {
+        const photo = mediaObj.photo || (cls.includes('Photo') ? mediaObj : null);
+        if (photo) {
+          let strippedBytes = photo.strippedThumb;
+          if (!strippedBytes && Array.isArray(photo.sizes)) {
+            const strippedObj = photo.sizes.find((s: any) =>
+              s._ === 'photoStrippedSize' || s.className === 'PhotoStrippedSize' || s.bytes
+            );
+            if (strippedObj?.bytes) strippedBytes = strippedObj.bytes;
+          }
+          if (strippedBytes) {
+            try {
+              const thumbBuf = strippedPhotoToJpg(strippedBytes);
+              if (thumbBuf && thumbBuf.length > 0) {
+                buffer = thumbBuf;
+              }
+            } catch (e) {}
+          }
+          if ((!buffer || buffer.length === 0) && Array.isArray(photo.sizes)) {
+            const cachedObj = photo.sizes.find((s: any) =>
+              s._ === 'photoCachedSize' || s.className === 'PhotoCachedSize'
+            );
+            if (cachedObj?.bytes) {
+              buffer = cachedObj.bytes;
+            }
+          }
+        } else if (mediaObj.document?.thumbs) {
+          const stripped = mediaObj.document.thumbs.find((t: any) =>
+            t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
+          );
+          if (stripped?.bytes) {
+            try {
+              const thumbBuf = strippedPhotoToJpg(stripped.bytes);
+              if (thumbBuf && thumbBuf.length > 0) {
+                buffer = thumbBuf;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
       if (!buffer || buffer.length === 0) return null;
 
-      if (typeof window !== 'undefined' && window.URL && window.Blob) {
-        try {
-          const blob = new Blob([buffer], { type: mimeType });
-          const blobUrl = URL.createObjectURL(blob);
-          return { dataUrl: blobUrl, mimeType, blob, size: buffer.length };
-        } catch (e) {}
+      let dataUrl: string;
+      if (typeof Buffer !== 'undefined') {
+        dataUrl = `data:${mimeType};base64,${Buffer.from(buffer).toString('base64')}`;
+      } else {
+        const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+        let binary = '';
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        dataUrl = `data:${mimeType};base64,${btoa(binary)}`;
       }
 
-      const dataUrl = `data:${mimeType};base64,${Buffer.from(buffer).toString('base64')}`;
       return { dataUrl, mimeType, size: buffer.length };
     } catch (err: any) {
       console.warn('[MTProto-Direct] downloadMessageMedia error:', err?.message || err);
