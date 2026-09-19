@@ -43,7 +43,7 @@ export const Avatar: React.FC<AvatarProps> = ({
   // Only treat genuinely high-res sources as directSrc (skips background download)
   const directSrc = (isHighResDataUrl || isHttpUrl) ? src : undefined;
   // Stripped thumbnails are shown immediately as blurry preview while high-res loads
-  const effectivePreviewSrc = previewSrc || (isStrippedThumb ? src : undefined);
+  const effectivePreviewSrc = previewSrc || (isStrippedThumb ? src : undefined) || (effectivePeerId ? avatarService.getThumb(effectivePeerId) : undefined);
 
   const fallbackAvatarUrl = (!isAndroidApp() && effectivePeerId)
     ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(effectivePeerId)}`)
@@ -53,7 +53,7 @@ export const Avatar: React.FC<AvatarProps> = ({
     if (directSrc) return directSrc;
     if (effectivePeerId) {
       const cached = avatarService.get(effectivePeerId);
-      if (cached) return cached;
+      if (cached && cached.length >= 8000) return cached;
     }
     return fallbackAvatarUrl || null;
   });
@@ -77,7 +77,7 @@ export const Avatar: React.FC<AvatarProps> = ({
 
     // 1. Check if avatar is already in memory cache (high-res from previous download)
     const existing = avatarService.get(effectivePeerId);
-    if (existing) {
+    if (existing && existing.length >= 8000) {
       setHighResSrc(existing);
     } else if (fallbackAvatarUrl) {
       setHighResSrc(fallbackAvatarUrl);
@@ -85,16 +85,16 @@ export const Avatar: React.FC<AvatarProps> = ({
 
     // 2. Subscribe to background download updates — when high-res arrives, replace the blurry thumb
     const unsubscribe = avatarService.subscribe(effectivePeerId, (newUrl) => {
-      if (newUrl) {
+      if (newUrl && newUrl.length >= 8000) {
         setHighResSrc(newUrl);
         setHasError(false);
       }
     });
 
     // 3. Trigger high-res MTProto download if not already loaded
-    if (!existing) {
+    if (!existing || existing.length < 8000) {
       avatarService.loadAvatar(effectivePeerId, size === 'xl' || size === 'lg').then((url) => {
-        if (url) {
+        if (url && url.length >= 8000) {
           setHighResSrc(url);
           setHasError(false);
         }
@@ -107,7 +107,8 @@ export const Avatar: React.FC<AvatarProps> = ({
   }, [effectivePeerId, directSrc, size, fallbackAvatarUrl]);
 
   // Active high-resolution source
-  const activeSrc = highResSrc || directSrc || (effectivePeerId ? avatarService.get(effectivePeerId) : undefined) || fallbackAvatarUrl;
+  const cachedHighRes = effectivePeerId ? avatarService.get(effectivePeerId) : null;
+  const activeSrc = highResSrc || directSrc || (cachedHighRes && cachedHighRes.length >= 8000 ? cachedHighRes : undefined) || fallbackAvatarUrl;
 
   useEffect(() => {
     setIsLoaded(false);
@@ -160,12 +161,12 @@ export const Avatar: React.FC<AvatarProps> = ({
       <span>{getInitials(name)}</span>
 
       {/* Preview thumbnail (shown while high-res loads or if high-res failed) */}
-      {effectivePreviewSrc && (!isLoaded || hasError) && (
+      {effectivePreviewSrc && (!isLoaded || !activeSrc || hasError) && (
         <img
           src={effectivePreviewSrc}
           alt=""
           aria-hidden="true"
-          className="absolute inset-0 w-full h-full object-cover rounded-full"
+          className="absolute inset-0 w-full h-full object-cover rounded-full filter blur-[0.5px]"
         />
       )}
 

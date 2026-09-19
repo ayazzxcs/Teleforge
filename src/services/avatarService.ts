@@ -9,13 +9,18 @@ const STORE_NAME = 'avatars';
 const DB_VERSION = 1;
 
 // In-memory cache for 0ms lookups
-const memoryCache = new Map<string, string>(); // peerId -> base64/blob data URL
+const memoryCache = new Map<string, string>(); // peerId -> genuine HIGH-RES base64/blob data URL (>= 8KB)
+const thumbCache = new Map<string, string>(); // peerId -> low-res stripped preview thumbnail (< 8KB)
 const negativeCache = new Set<string>(); // peerId -> known missing avatar (avoids infinite re-requesting)
 const inflightPromises = new Map<string, Promise<string>>(); // peerId -> Promise
 const subscribers = new Map<string, Set<(url: string) => void>>(); // peerId -> Set of callbacks
 
-setAvatarListener((peerId, dataUrl) => {
-  avatarService.setAvatar(peerId, dataUrl);
+setAvatarListener((peerId, dataUrl, isHighRes) => {
+  if (isHighRes || (dataUrl && dataUrl.length >= 8000)) {
+    avatarService.setAvatar(peerId, dataUrl);
+  } else {
+    avatarService.setThumb(peerId, dataUrl);
+  }
 });
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -113,19 +118,58 @@ async function processQueue() {
 
 export const avatarService = {
   /**
-   * Synchronous check if avatar is already cached in memory
+   * Synchronous check if genuine HIGH-RES avatar is already cached in memory
    */
   get(peerId?: string | null): string | null {
     if (!peerId) return null;
     const cleanId = String(peerId).trim();
     const direct = memoryCache.get(cleanId);
-    if (direct) return direct;
+    if (direct && direct.length >= 8000) return direct;
     if (cleanId.startsWith('-100')) {
-      return memoryCache.get(cleanId.slice(4)) || memoryCache.get(`-${cleanId.slice(4)}`) || null;
+      const v = memoryCache.get(cleanId.slice(4)) || memoryCache.get(`-${cleanId.slice(4)}`);
+      return (v && v.length >= 8000) ? v : null;
     } else if (cleanId.startsWith('-')) {
-      return memoryCache.get(cleanId.slice(1)) || memoryCache.get(`-100${cleanId.slice(1)}`) || null;
+      const v = memoryCache.get(cleanId.slice(1)) || memoryCache.get(`-100${cleanId.slice(1)}`);
+      return (v && v.length >= 8000) ? v : null;
     } else {
-      return memoryCache.get(`-100${cleanId}`) || memoryCache.get(`-${cleanId}`) || null;
+      const v = memoryCache.get(`-100${cleanId}`) || memoryCache.get(`-${cleanId}`);
+      return (v && v.length >= 8000) ? v : null;
+    }
+  },
+
+  /**
+   * Get instant 0ms preview thumbnail (< 8KB stripped thumbnail)
+   */
+  getThumb(peerId?: string | null): string | null {
+    if (!peerId) return null;
+    const cleanId = String(peerId).trim();
+    const thumb = thumbCache.get(cleanId) || memoryCache.get(cleanId);
+    if (thumb) return thumb;
+    if (cleanId.startsWith('-100')) {
+      return thumbCache.get(cleanId.slice(4)) || thumbCache.get(`-${cleanId.slice(4)}`) || null;
+    } else if (cleanId.startsWith('-')) {
+      return thumbCache.get(cleanId.slice(1)) || thumbCache.get(`-100${cleanId.slice(1)}`) || null;
+    } else {
+      return thumbCache.get(`-100${cleanId}`) || thumbCache.get(`-${cleanId}`) || null;
+    }
+  },
+
+  /**
+   * Store instant preview thumbnail (does NOT satisfy high-res cache)
+   */
+  setThumb(peerId: string, dataUrl: string): void {
+    if (!peerId || !dataUrl) return;
+    const cleanId = String(peerId).trim();
+    thumbCache.set(cleanId, dataUrl);
+    if (cleanId.startsWith('-100')) {
+      thumbCache.set(cleanId.slice(4), dataUrl);
+      thumbCache.set(`-${cleanId.slice(4)}`, dataUrl);
+    } else if (cleanId.startsWith('-')) {
+      thumbCache.set(cleanId.slice(1), dataUrl);
+      thumbCache.set(`-100${cleanId.slice(1)}`, dataUrl);
+    } else {
+      thumbCache.set(`-100${cleanId}`, dataUrl);
+      thumbCache.set(`-${cleanId}`, dataUrl);
     }
   },
 
@@ -136,6 +180,7 @@ export const avatarService = {
     if (!peerId) return;
     const cleanId = String(peerId).trim();
     memoryCache.delete(cleanId);
+    thumbCache.delete(cleanId);
     deleteFromIndexedDB(cleanId);
     notifySubscribers(cleanId, '');
 
@@ -147,6 +192,7 @@ export const avatarService = {
           if (u.id) {
             const idStr = String(u.id);
             memoryCache.delete(idStr);
+            thumbCache.delete(idStr);
             deleteFromIndexedDB(idStr);
             notifySubscribers(idStr, '');
           }
@@ -159,9 +205,11 @@ export const avatarService = {
           const u = JSON.parse(cachedUser);
           if (u.id && String(u.id) === cleanId) {
             memoryCache.delete('me');
+            thumbCache.delete('me');
             deleteFromIndexedDB('me');
             notifySubscribers('me', '');
             memoryCache.delete('user-me');
+            thumbCache.delete('user-me');
             deleteFromIndexedDB('user-me');
             notifySubscribers('user-me', '');
           }
@@ -172,18 +220,20 @@ export const avatarService = {
     if (cleanId.startsWith('-100')) {
       const bare = cleanId.slice(4);
       memoryCache.delete(bare);
+      thumbCache.delete(bare);
       deleteFromIndexedDB(bare);
       notifySubscribers(bare, '');
     } else if (cleanId.startsWith('-')) {
       const bare = cleanId.slice(1);
       memoryCache.delete(bare);
+      thumbCache.delete(bare);
       deleteFromIndexedDB(bare);
       notifySubscribers(bare, '');
     }
   },
 
   /**
-   * Store high-res avatar in memory and IndexedDB, notifying any active UI components
+   * Store genuine high-res avatar in memory and IndexedDB, notifying any active UI components
    */
   setAvatar(peerId: string, dataUrl: string): void {
     if (!peerId) return;
@@ -191,6 +241,12 @@ export const avatarService = {
       this.deleteAvatar(peerId);
       return;
     }
+    // If it's a micro-thumbnail (< 8KB), only store in thumbCache, never as high-res!
+    if (dataUrl.startsWith('data:image/') && dataUrl.length < 8000) {
+      this.setThumb(peerId, dataUrl);
+      return;
+    }
+
     const cleanId = String(peerId).trim();
     memoryCache.set(cleanId, dataUrl);
     putToIndexedDB(cleanId, dataUrl);
@@ -249,14 +305,14 @@ export const avatarService = {
     }
     subscribers.get(cleanId)!.add(callback);
 
-    // If already in memory, invoke callback immediately
+    // If already in memory and genuinely high-res, invoke callback immediately
     const cached = this.get(cleanId);
-    if (cached) {
+    if (cached && cached.length >= 8000) {
       callback(cached);
     } else {
-      // Check IndexedDB asynchronously
+      // Check IndexedDB asynchronously for high-res avatar
       getFromIndexedDB(cleanId).then((idbUrl) => {
-        if (idbUrl) {
+        if (idbUrl && idbUrl.length >= 8000) {
           memoryCache.set(cleanId, idbUrl);
           callback(idbUrl);
         }
@@ -285,9 +341,9 @@ export const avatarService = {
       return '';
     }
 
-    // 1. In-memory cache (0ms)
+    // 1. In-memory cache (0ms) - only if genuinely high-res
     const cached = this.get(cleanId);
-    if (cached) {
+    if (cached && cached.length >= 8000) {
       return cached;
     }
 
@@ -297,7 +353,7 @@ export const avatarService = {
     }
 
     const promise = (async () => {
-      // 3. Persistent IndexedDB check (<5ms)
+      // 3. Persistent IndexedDB check - only if genuinely high-res (>= 8KB)
       try {
         let idbVal = await getFromIndexedDB(cleanId);
         if (!idbVal && cleanId.startsWith('-100')) {
@@ -305,10 +361,13 @@ export const avatarService = {
         } else if (!idbVal && cleanId.startsWith('-')) {
           idbVal = await getFromIndexedDB(cleanId.slice(1));
         }
-        if (idbVal && idbVal.length > 200) {
+        if (idbVal && idbVal.length >= 8000) {
           memoryCache.set(cleanId, idbVal);
           notifySubscribers(cleanId, idbVal);
           return idbVal;
+        } else if (idbVal && idbVal.length < 8000) {
+          // Purge obsolete low-res thumbnail from persistent storage
+          deleteFromIndexedDB(cleanId);
         }
       } catch (e) {}
 
@@ -321,7 +380,7 @@ export const avatarService = {
             } catch (e) {}
 
             // Fallback to backend avatar endpoint on localhost/web or if direct client failed
-            if (!dataUrl && typeof fetch !== 'undefined') {
+            if (!dataUrl && typeof fetch !== 'undefined' && !(typeof window !== 'undefined' && Boolean((window as any).TeleForgeBridge))) {
               try {
                 const res = await fetch(`/api/telegram/avatar?id=${encodeURIComponent(cleanId)}&v=${isBig ? 'big' : '1'}`);
                 if (res.ok) {
@@ -337,10 +396,14 @@ export const avatarService = {
               } catch (e) {}
             }
 
-            if (dataUrl && dataUrl.length > 200) {
+            if (dataUrl && dataUrl.length >= 8000) {
               memoryCache.set(cleanId, dataUrl);
               putToIndexedDB(cleanId, dataUrl);
               notifySubscribers(cleanId, dataUrl);
+              resolve(dataUrl);
+            } else if (dataUrl && dataUrl.length > 200) {
+              // Store as thumbnail fallback
+              thumbCache.set(cleanId, dataUrl);
               resolve(dataUrl);
             } else {
               resolve('');

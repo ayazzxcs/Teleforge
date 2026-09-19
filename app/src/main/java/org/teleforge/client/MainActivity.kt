@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.JsResult
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
@@ -421,6 +422,13 @@ class MainActivity : ComponentActivity() {
         }
 
         webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                if (consoleMessage != null) {
+                    android.util.Log.d("TeleForgeWeb", "[${consoleMessage.messageLevel()}] ${consoleMessage.message()} (${consoleMessage.sourceId()}:${consoleMessage.lineNumber()})")
+                }
+                return true
+            }
+
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 progressBar.progress = newProgress
                 if (newProgress >= 100) {

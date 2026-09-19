@@ -42,7 +42,7 @@ const messageMediaMap = new Map<string, any>(); // `${chatId}_${messageId}` -> m
 const messageObjectMap = new Map<string, any>(); // `${chatId}_${messageId}` -> full Api.Message object
 const pendingLogins = new Map<string, { phoneCodeHash: string; isCodeViaApp: boolean; type?: string }>();
 
-type AvatarListener = (peerId: string, dataUrl: string) => void;
+type AvatarListener = (peerId: string, dataUrl: string, isHighRes?: boolean) => void;
 let avatarListener: AvatarListener | null = null;
 export function setAvatarListener(listener: AvatarListener) {
   avatarListener = listener;
@@ -143,8 +143,8 @@ function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number,
           thumbCache.set(sId, b64);
           if (senderIdStr) thumbCache.set(senderIdStr, b64);
           if (avatarListener) {
-            avatarListener(sId, b64);
-            if (senderIdStr) avatarListener(senderIdStr, b64);
+            avatarListener(sId, b64, false);
+            if (senderIdStr) avatarListener(senderIdStr, b64, false);
           }
         }
       } catch (e) {}
@@ -617,10 +617,12 @@ function serializeUser(u: any): TelegramUser | null {
       if (thumbBuf && thumbBuf.length > 0) {
         const thumbUrl = `data:image/jpeg;base64,${bytesToBase64(thumbBuf)}`;
         thumbCache.set(idStr, thumbUrl);
-        if (avatarListener) avatarListener(idStr, thumbUrl);
+        if (avatarListener) avatarListener(idStr, thumbUrl, false);
       }
     } catch (e) {}
   }
+
+  const cachedHighRes = hasPhoto ? avatarBlobUrlCache.get(idStr) : undefined;
 
   return {
     id: idStr,
@@ -634,7 +636,7 @@ function serializeUser(u: any): TelegramUser | null {
     isVerified: Boolean(u.verified),
     hasAvatar: hasPhoto,
     photoId: photoId || undefined,
-    avatar: hasPhoto ? (thumbCache.get(idStr) || '') : undefined,
+    avatar: cachedHighRes && cachedHighRes.length >= 8000 ? cachedHighRes : undefined,
   };
 }
 
@@ -969,8 +971,8 @@ export const telegramDirectClient = {
               thumbCache.set(peerIdStr, b64);
               if (entity.id) thumbCache.set(entity.id.toString(), b64);
               if (avatarListener) {
-                avatarListener(peerIdStr, b64);
-                if (entity.id) avatarListener(entity.id.toString(), b64);
+                avatarListener(peerIdStr, b64, false);
+                if (entity.id) avatarListener(entity.id.toString(), b64, false);
               }
             }
           } catch (e) {}
@@ -1006,6 +1008,8 @@ export const telegramDirectClient = {
         else if (typeof entity.participants_count === 'number') participantsCount = entity.participants_count;
       }
 
+      const cachedHighRes = hasPhoto ? avatarBlobUrlCache.get(peerIdStr) : undefined;
+
       return {
         id: peerIdStr,
         title,
@@ -1016,7 +1020,7 @@ export const telegramDirectClient = {
         isChannel,
         isVerified,
         hasAvatar: hasPhoto,
-        avatar: (hasPhoto ? avatarBlobUrlCache.get(peerIdStr) : undefined) || thumbUrl,
+        avatar: cachedHighRes && cachedHighRes.length >= 8000 ? cachedHighRes : undefined,
         thumbUrl,
         unreadCount: d.unreadCount || 0,
         unreadMentionsCount: d.unreadMentionsCount || 0,
@@ -1734,7 +1738,8 @@ export const telegramDirectClient = {
     if (!peerId) return '';
     const cleanId = peerId.toString().trim();
     if (avatarBlobUrlCache.has(cleanId)) {
-      return avatarBlobUrlCache.get(cleanId)!;
+      const cached = avatarBlobUrlCache.get(cleanId)!;
+      if (cached && cached.length >= 8000) return cached;
     }
 
     try {
@@ -1763,7 +1768,11 @@ export const telegramDirectClient = {
         try {
           targetPeer = await client.getInputEntity(cleanId);
         } catch (e) {
-          targetPeer = cleanId;
+          try {
+            targetPeer = await resolveInputPeer(client, cleanId);
+          } catch (rErr) {
+            targetPeer = cleanId;
+          }
         }
       }
 
@@ -1782,10 +1791,35 @@ export const telegramDirectClient = {
         } catch (e) {}
       }
 
-      if (buffer && buffer.length > 200) {
+      // Robust fallback: direct InputPeerPhotoFileLocation download via client.downloadFile
+      if (!buffer || buffer.length < 500) {
+        try {
+          const photo = targetPeer?.photo;
+          if (photo && (photo.photoId || photo.id)) {
+            const photoId = photo.photoId || photo.id;
+            const dcId = photo.dcId;
+            let inputPeer: any = null;
+            try {
+              inputPeer = await client.getInputEntity(targetPeer || cleanId);
+            } catch (pErr) {
+              inputPeer = await resolveInputPeer(client, cleanId);
+            }
+            if (inputPeer) {
+              const loc = new Api.InputPeerPhotoFileLocation({
+                peer: inputPeer,
+                photoId: photoId,
+                big: isBig,
+              });
+              buffer = await client.downloadFile(loc, { dcId });
+            }
+          }
+        } catch (fErr) {}
+      }
+
+      if (buffer && buffer.length > 500) {
         const dataUrl = `data:image/jpeg;base64,${bytesToBase64(buffer)}`;
         avatarBlobUrlCache.set(cleanId, dataUrl);
-        if (avatarListener) avatarListener(cleanId, dataUrl);
+        if (avatarListener) avatarListener(cleanId, dataUrl, true);
         return dataUrl;
       }
     } catch (e) {}
