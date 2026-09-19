@@ -1,4 +1,4 @@
-import { TelegramDialog, TelegramMessage, TelegramUser, resolveApiUrl } from '../services/telegramApi';
+import { TelegramDialog, TelegramMessage, TelegramUser, resolveApiUrl, isAndroidApp } from '../services/telegramApi';
 import { avatarService } from '../services/avatarService';
 import { mediaService } from '../services/mediaService';
 import { Chat, Message, UserProfile } from '../types';
@@ -114,7 +114,7 @@ export function mapTelegramMessage(
     }
 
     const cachedUrl = mediaService.get(chatId, m.id);
-    const mediaUrl = cachedUrl || resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${m.id}`);
+    const mediaUrl = cachedUrl || (isAndroidApp() ? '' : resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${m.id}`));
 
     let defaultName = 'File';
     if (m.mediaType === 'photo') defaultName = 'Photo';

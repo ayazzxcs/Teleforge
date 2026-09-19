@@ -20,6 +20,7 @@ import {
   TelegramStickerSet,
   TelegramStickerItem,
   resolveApiUrl,
+  isAndroidApp,
 } from './telegramApi';
 
 // Production Telegram API Credentials
@@ -87,9 +88,11 @@ function bytesToBase64(buffer: Uint8Array | number[] | ArrayBuffer): string {
   }
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer as any);
   let binary = '';
+  const chunkSize = 8192;
   const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < len; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+    binary += String.fromCharCode.apply(null, chunk as any);
   }
   return btoa(binary);
 }
@@ -2767,7 +2770,7 @@ export const telegramDirectClient = {
             }
           } catch (e) {}
         }
-        if (!thumbUrl && dId) {
+        if (!thumbUrl && dId && !isAndroidApp()) {
           thumbUrl = resolveApiUrl(`/api/telegram/document?id=${dId}&thumb=m`);
         }
 
@@ -2778,7 +2781,7 @@ export const telegramDirectClient = {
           fileReference: fileRef,
           emoji: emojiMap.get(dId),
           thumbUrl,
-          url: thumbUrl || resolveApiUrl(`/api/telegram/document?id=${dId}&thumb=m`),
+          url: thumbUrl || (!isAndroidApp() ? resolveApiUrl(`/api/telegram/document?id=${dId}&thumb=m`) : ''),
           rawDoc: doc,
         });
       }

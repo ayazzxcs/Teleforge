@@ -18,7 +18,7 @@ import { showToast } from './Toast';
 import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
 import { mediaService } from '../services/mediaService';
 import { downloadFileToDevice } from '../utils/fileDownloader';
-import { resolveApiUrl } from '../services/telegramApi';
+import { resolveApiUrl, isAndroidApp } from '../services/telegramApi';
 
 interface MediaModalProps {
   attachment: Attachment | null;
@@ -31,6 +31,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
   const [showInfo, setShowInfo] = useState(false);
   const [isModalFullscreen, setIsModalFullscreen] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string>('');
+  const [imageUrl, setImageUrl] = useState<string>('');
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{ pct: number; dl: number; tot: number } | null>(null);
 
@@ -40,22 +41,40 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
     setShowInfo(false);
     setDownloadProgress(null);
 
+    if (attachment?.type === 'image') {
+      const cached = (attachment.chatId && attachment.messageId)
+        ? mediaService.get(attachment.chatId, attachment.messageId, { fullRes: true }) || mediaService.get(attachment.chatId, attachment.messageId)
+        : '';
+      const directUrl = attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '';
+      const initialImg = cached || directUrl || attachment.thumbUrl || '';
+      setImageUrl(initialImg);
+
+      if (attachment.chatId && attachment.messageId) {
+        mediaService.loadMedia(attachment.chatId, attachment.messageId, { fullRes: true }).then((loaded) => {
+          if (loaded) setImageUrl(loaded);
+        }).catch(() => {});
+      }
+      setVideoUrl('');
+      setIsVideoLoading(false);
+      return;
+    }
+
     if (attachment?.type !== 'video') {
       setVideoUrl('');
       setIsVideoLoading(false);
       return;
     }
 
-    const streamUrl = (attachment.chatId && attachment.messageId)
+    const streamUrl = !isAndroidApp() && (attachment.chatId && attachment.messageId)
       ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(attachment.chatId)}&messageId=${attachment.messageId}`)
       : '';
-    const initialUrl = attachment.url || streamUrl;
+    const initialUrl = attachment.url && !attachment.url.includes('/api/telegram/media')
+      ? attachment.url
+      : streamUrl;
     const isValidVideo = initialUrl && (
       initialUrl.startsWith('blob:') ||
-      initialUrl.startsWith('http://') ||
-      initialUrl.startsWith('https://') ||
-      initialUrl.startsWith('/api/') ||
-      initialUrl.startsWith('data:video/')
+      initialUrl.startsWith('data:') ||
+      (!isAndroidApp() && (initialUrl.startsWith('http://') || initialUrl.startsWith('https://') || initialUrl.startsWith('/api/')))
     );
 
     if (isValidVideo) {
@@ -66,7 +85,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
       if (cached) {
         setVideoUrl(cached);
         setIsVideoLoading(false);
-      } else if (streamUrl) {
+      } else if (!isAndroidApp() && streamUrl) {
         setVideoUrl(streamUrl);
         setIsVideoLoading(false);
       } else {
@@ -88,7 +107,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
             },
           })
           .then((url) => {
-            const finalUrl = url || streamUrl;
+            const finalUrl = url || (!isAndroidApp() ? streamUrl : '');
             if (finalUrl) setVideoUrl(finalUrl);
           })
           .finally(() => {
@@ -97,7 +116,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
           });
       }
     } else {
-      setVideoUrl(attachment.url || '');
+      setVideoUrl(initialUrl || '');
       setIsVideoLoading(false);
     }
   }, [attachment]);
@@ -199,7 +218,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
             {/* Download */}
             <button
               onClick={async () => {
-                const targetUrl = videoUrl || attachment.url || attachment.thumbUrl;
+                const targetUrl = videoUrl || imageUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '') || attachment.thumbUrl;
                 if (!targetUrl) {
                   showToast('Media is not ready for download', 'error');
                   return;
@@ -246,7 +265,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
         >
           {attachment.type === 'image' && (
             <img
-              src={attachment.url || attachment.thumbUrl}
+              src={imageUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '') || attachment.thumbUrl}
               alt={attachment.name || 'Preview'}
               style={{ transform: `scale(${zoom})`, transition: 'transform 0.15s ease-out' }}
               className="max-h-[82vh] max-w-[95%] w-auto object-contain rounded-xl shadow-2xl transition-transform"

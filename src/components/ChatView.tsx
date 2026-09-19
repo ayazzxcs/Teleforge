@@ -61,7 +61,7 @@ import {
 import { ChatCustomizationModal } from './ChatCustomizationModal';
 import { ReactionDetailsModal } from './ReactionDetailsModal';
 import { showToast } from './Toast';
-import { telegramApi, resolveApiUrl, OnlineGifItem, TelegramStickerSet, TelegramStickerItem } from '../services/telegramApi';
+import { telegramApi, resolveApiUrl, isAndroidApp, OnlineGifItem, TelegramStickerSet, TelegramStickerItem } from '../services/telegramApi';
 import { stickerService, CustomSticker } from '../services/stickerService';
 
 interface ChatMediaImageProps {
@@ -78,7 +78,10 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
   onOpenMediaModal,
 }) => {
   const [mediaUrl, setMediaUrl] = useState<string>(() => {
-    return mediaService.get(chatId, messageId) || attachment.url || '';
+    const cached = mediaService.get(chatId, messageId);
+    if (cached) return cached;
+    if (attachment.url && !attachment.url.includes('/api/telegram/media')) return attachment.url;
+    return '';
   });
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -113,7 +116,7 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
     };
   }, [chatId, messageId, mediaUrl, retryCount]);
 
-  const displayUrl = mediaUrl || attachment.url || '';
+  const displayUrl = mediaUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '') || '';
   const thumbUrl = attachment.thumbUrl;
 
   const handleClick = (e: React.MouseEvent) => {
@@ -198,19 +201,19 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   messageId,
   onOpenMediaModal,
 }) => {
-  const streamUrl = attachment.url || resolveApiUrl(
-    `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`
-  );
+  const streamUrl = !isAndroidApp()
+    ? (attachment.url || resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`))
+    : '';
   const [videoUrl, setVideoUrl] = useState<string>(() => {
     return mediaService.get(chatId, messageId, { fullVideo: true }) || streamUrl;
   });
   
-  const highResThumbApiUrl = resolveApiUrl(
-    `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}&thumb=1`
-  );
+  const highResThumbApiUrl = !isAndroidApp()
+    ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}&thumb=1`)
+    : '';
   const cachedThumb = mediaService.get(chatId, messageId);
   const [thumbUrl, setThumbUrl] = useState<string>(() => {
-    return cachedThumb && cachedThumb.length > 2000 ? cachedThumb : highResThumbApiUrl;
+    return cachedThumb && cachedThumb.length > 2000 ? cachedThumb : (attachment.thumbUrl || highResThumbApiUrl || '');
   });
   const [highResThumbLoaded, setHighResThumbLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -271,36 +274,42 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
 
   const handlePlayClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const activeUrl = videoUrl || streamUrl;
-    if (activeUrl) {
-      setVideoUrl(activeUrl);
+    const hasPlayableUrl = videoUrl && (
+      videoUrl.startsWith('blob:') ||
+      videoUrl.startsWith('data:') ||
+      (!isAndroidApp() && (videoUrl.startsWith('http') || videoUrl.startsWith('/api/')))
+    );
+
+    if (hasPlayableUrl) {
       setIsPlaying(true);
-    } else {
-      setIsLoading(true);
-      mediaService.loadMedia(chatId, messageId, {
-        fullVideo: true,
-        onProgress: (pct, dl, tot) => {
-          setDownloadProgress({ pct, dl, tot });
-        },
-      }).then((url) => {
-        setIsLoading(false);
-        const playUrl = url || streamUrl;
-        if (playUrl) {
-          setVideoUrl(playUrl);
-          setIsPlaying(true);
-        } else {
-          showToast('Could not load video stream', 'error');
-        }
-      }).catch(() => {
-        setIsLoading(false);
-        if (streamUrl) {
-          setVideoUrl(streamUrl);
-          setIsPlaying(true);
-        } else {
-          showToast('Could not load video stream', 'error');
-        }
-      });
+      return;
     }
+
+    setIsLoading(true);
+    mediaService.loadMedia(chatId, messageId, {
+      fullVideo: true,
+      onProgress: (pct, dl, tot) => {
+        setDownloadProgress({ pct, dl, tot });
+      },
+    }).then((url) => {
+      setIsLoading(false);
+      const playUrl = url || (!isAndroidApp() ? streamUrl : '');
+      if (playUrl) {
+        setVideoUrl(playUrl);
+        setIsPlaying(true);
+      } else {
+        showToast('Could not load video', 'error');
+      }
+    }).catch(() => {
+      setIsLoading(false);
+      const playUrl = !isAndroidApp() ? streamUrl : '';
+      if (playUrl) {
+        setVideoUrl(playUrl);
+        setIsPlaying(true);
+      } else {
+        showToast('Could not load video', 'error');
+      }
+    });
   };
 
   const handleOpenFull = () => {
@@ -308,20 +317,22 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       ...attachment,
       chatId,
       messageId,
-      url: videoUrl || streamUrl || attachment.url || '',
+      url: videoUrl || (!isAndroidApp() ? streamUrl : '') || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : ''),
       thumbUrl: thumbUrl || attachment.thumbUrl,
     });
   };
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    let target = videoUrl || streamUrl;
+    let target = videoUrl && (videoUrl.startsWith('blob:') || videoUrl.startsWith('data:') || (!isAndroidApp() && videoUrl.startsWith('http')))
+      ? videoUrl
+      : '';
     if (!target) {
       setIsLoading(true);
       target = await mediaService.loadMedia(chatId, messageId, {
         fullVideo: true,
         onProgress: (pct, dl, tot) => setDownloadProgress({ pct, dl, tot }),
-      }) || streamUrl;
+      }) || (!isAndroidApp() ? streamUrl : '');
       setIsLoading(false);
     }
     if (target) {
@@ -450,18 +461,18 @@ const ChatMediaVideoNote: React.FC<{
   chatId: string;
   messageId: string;
 }> = ({ attachment, chatId, messageId }) => {
-  const streamUrl = attachment.url || resolveApiUrl(
-    `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`
-  );
+  const streamUrl = !isAndroidApp()
+    ? (attachment.url || resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`))
+    : '';
   const [videoUrl, setVideoUrl] = useState<string>(() => {
     return mediaService.get(chatId, messageId, { fullVideo: true }) || streamUrl;
   });
-  const highResThumbApiUrl = resolveApiUrl(
-    `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}&thumb=1`
-  );
+  const highResThumbApiUrl = !isAndroidApp()
+    ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}&thumb=1`)
+    : '';
   const cachedThumb = mediaService.get(chatId, messageId);
   const [thumbUrl, setThumbUrl] = useState<string>(() => {
-    return cachedThumb && cachedThumb.length > 2000 ? cachedThumb : highResThumbApiUrl;
+    return cachedThumb && cachedThumb.length > 2000 ? cachedThumb : (attachment.thumbUrl || highResThumbApiUrl || '');
   });
   const [thumbLoaded, setThumbLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -501,26 +512,31 @@ const ChatMediaVideoNote: React.FC<{
 
   const handleTogglePlay = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const activeUrl = videoUrl || streamUrl;
-    if (!videoUrl && activeUrl) {
-      setVideoUrl(activeUrl);
-      setIsPlaying(true);
-      return;
-    }
-    if (!videoUrl) {
+    const hasPlayableUrl = videoUrl && (
+      videoUrl.startsWith('blob:') ||
+      videoUrl.startsWith('data:') ||
+      (!isAndroidApp() && (videoUrl.startsWith('http') || videoUrl.startsWith('/api/')))
+    );
+
+    if (!hasPlayableUrl) {
       setIsLoading(true);
       mediaService.loadMedia(chatId, messageId, { fullVideo: true }).then((url) => {
         setIsLoading(false);
-        const playUrl = url || streamUrl;
+        const playUrl = url || (!isAndroidApp() ? streamUrl : '');
         if (playUrl) {
           setVideoUrl(playUrl);
           setIsPlaying(true);
+        } else {
+          showToast('Could not load video note', 'error');
         }
       }).catch(() => {
         setIsLoading(false);
-        if (streamUrl) {
-          setVideoUrl(streamUrl);
+        const playUrl = !isAndroidApp() ? streamUrl : '';
+        if (playUrl) {
+          setVideoUrl(playUrl);
           setIsPlaying(true);
+        } else {
+          showToast('Could not load video note', 'error');
         }
       });
       return;
@@ -629,7 +645,10 @@ const ChatMediaSticker: React.FC<{
   onOpenStickerPreview?: (att: Attachment, cId: string, mId: string) => void;
 }> = ({ attachment, chatId, messageId, onOpenStickerPreview }) => {
   const [src, setSrc] = useState<string>(() => {
-    return mediaService.get(chatId, messageId) || attachment.url || attachment.thumbUrl || '';
+    const cached = mediaService.get(chatId, messageId);
+    if (cached) return cached;
+    if (attachment.url && !attachment.url.includes('/api/telegram/media')) return attachment.url;
+    return attachment.thumbUrl || '';
   });
   const [hasError, setHasError] = useState(false);
   const [isSaved, setIsSaved] = useState(() =>
@@ -656,7 +675,8 @@ const ChatMediaSticker: React.FC<{
       }
     });
 
-    if (!src || src === attachment.thumbUrl) {
+    const isStickerCached = Boolean(mediaService.get(chatId, messageId));
+    if (!isStickerCached) {
       mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
         if (url && mounted) {
           setSrc(url);
@@ -669,11 +689,11 @@ const ChatMediaSticker: React.FC<{
       mounted = false;
       unsub();
     };
-  }, [chatId, messageId, attachment.thumbUrl, src]);
+  }, [chatId, messageId]);
 
   const normalizedSrc = (src.startsWith('/stickers/') || src.startsWith('/gifs/'))
     ? '.' + src
-    : resolveApiUrl(src);
+    : (src.startsWith('data:') || src.startsWith('blob:') || isAndroidApp() ? src : resolveApiUrl(src));
 
   const handleQuickAdd = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -708,18 +728,9 @@ const ChatMediaSticker: React.FC<{
           alt={attachment.name || 'Sticker'}
           onError={() => {
             if (attachment.thumbUrl && src !== attachment.thumbUrl) {
-              setSrc(resolveApiUrl(attachment.thumbUrl));
+              setSrc(attachment.thumbUrl);
             } else {
-              mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((loadedUrl) => {
-                if (loadedUrl) {
-                  setSrc(loadedUrl);
-                  setHasError(false);
-                } else {
-                  setHasError(true);
-                }
-              }).catch(() => {
-                setHasError(true);
-              });
+              setHasError(true);
             }
           }}
           className="w-36 h-36 sm:w-44 sm:h-44 object-contain filter drop-shadow-md"
@@ -1135,12 +1146,17 @@ const TelegramStickerTile: React.FC<{
   sticker: TelegramStickerItem;
   onSelect: () => void;
 }> = ({ sticker, onSelect }) => {
-  const [src, setSrc] = useState<string>(() => resolveApiUrl(sticker.thumbUrl || sticker.url || ''));
+  const getInitialSrc = () => {
+    if (sticker.thumbUrl && !sticker.thumbUrl.includes('/api/telegram/')) return sticker.thumbUrl;
+    if (sticker.url && !sticker.url.includes('/api/telegram/')) return sticker.url;
+    return '';
+  };
+  const [src, setSrc] = useState<string>(getInitialSrc);
   const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
     let active = true;
-    const initial = resolveApiUrl(sticker.thumbUrl || sticker.url || '');
+    const initial = getInitialSrc();
     if (initial) {
       setSrc(initial);
       setHasError(false);

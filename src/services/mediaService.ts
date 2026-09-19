@@ -3,7 +3,7 @@
 // Downloads directly via MTProto client without requiring any backend server.
 
 import { telegramDirectClient } from './telegramDirectClient';
-import { resolveApiUrl } from './telegramApi';
+import { resolveApiUrl, isAndroidApp } from './telegramApi';
 
 const DB_NAME = 'teleforge_media_cache';
 const STORE_NAME = 'media';
@@ -262,11 +262,14 @@ export const mediaService = {
           }
         } catch (err) {}
 
-        // Fallback: Return verified streaming endpoint URL
-        const streamUrl = resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`);
-        memoryCache.set(key, streamUrl);
-        notifySubscribers(key, streamUrl);
-        return streamUrl;
+        // Fallback: Return streaming endpoint URL only on desktop/web where Node server runs
+        if (!isAndroidApp()) {
+          const streamUrl = resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`);
+          memoryCache.set(key, streamUrl);
+          notifySubscribers(key, streamUrl);
+          return streamUrl;
+        }
+        return '';
       }
 
       return new Promise<string>((resolve) => {
@@ -284,8 +287,8 @@ export const mediaService = {
               }
             } catch (e) {}
 
-            // 2. Fallback to backend media endpoint on localhost/web or if direct client returned low-res/empty
-            if ((!dataUrl || dataUrl.length < 2000) && typeof fetch !== 'undefined') {
+            // 2. Fallback to backend media endpoint on localhost/web (never on standalone Android)
+            if (!isAndroidApp() && (!dataUrl || dataUrl.length < 2000) && typeof fetch !== 'undefined') {
               try {
                 const thumbParam = options?.fullRes || options?.fullVideo ? '' : '&thumb=1';
                 const res = await fetch(resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}${thumbParam}`));
