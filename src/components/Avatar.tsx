@@ -34,11 +34,16 @@ export const Avatar: React.FC<AvatarProps> = ({
 }) => {
   const effectivePeerId = peerId || extractPeerIdFromSrc(src) || undefined;
   
-  // Any data URL or web URL is directly usable as directSrc
+  // Small data URLs (< 8KB) are stripped thumbnails from Telegram metadata — blurry previews.
+  // Large data URLs (>= 8KB), blob URLs, and http URLs are real high-res images.
   const isDataUrl = Boolean(src && src.startsWith('data:image/'));
+  const isStrippedThumb = isDataUrl && src!.length < 8000;
+  const isHighResDataUrl = isDataUrl && !isStrippedThumb;
   const isHttpUrl = Boolean(src && (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('blob:')));
-  const directSrc = isDataUrl || isHttpUrl ? src : undefined;
-  const effectivePreviewSrc = previewSrc || (isDataUrl ? src : undefined);
+  // Only treat genuinely high-res sources as directSrc (skips background download)
+  const directSrc = (isHighResDataUrl || isHttpUrl) ? src : undefined;
+  // Stripped thumbnails are shown immediately as blurry preview while high-res loads
+  const effectivePreviewSrc = previewSrc || (isStrippedThumb ? src : undefined);
 
   const fallbackAvatarUrl = (!isAndroidApp() && effectivePeerId)
     ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(effectivePeerId)}`)
@@ -47,17 +52,19 @@ export const Avatar: React.FC<AvatarProps> = ({
   const [highResSrc, setHighResSrc] = useState<string | null>(() => {
     if (directSrc) return directSrc;
     if (effectivePeerId) {
-      return avatarService.get(effectivePeerId) || fallbackAvatarUrl || null;
+      const cached = avatarService.get(effectivePeerId);
+      if (cached) return cached;
     }
-    return null;
+    return fallbackAvatarUrl || null;
   });
 
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
-  // Subscribe to live high-res avatar updates
+  // Subscribe to live high-res avatar updates and trigger background download
   useEffect(() => {
+    // If we already have a genuinely high-res directSrc (large base64 or blob/http), use it directly
     if (directSrc) {
       setHighResSrc(directSrc);
       return;
@@ -68,7 +75,7 @@ export const Avatar: React.FC<AvatarProps> = ({
       return;
     }
 
-    // 1. Check if avatar is already in memory cache
+    // 1. Check if avatar is already in memory cache (high-res from previous download)
     const existing = avatarService.get(effectivePeerId);
     if (existing) {
       setHighResSrc(existing);
@@ -76,7 +83,7 @@ export const Avatar: React.FC<AvatarProps> = ({
       setHighResSrc(fallbackAvatarUrl);
     }
 
-    // 2. Subscribe to background download updates
+    // 2. Subscribe to background download updates — when high-res arrives, replace the blurry thumb
     const unsubscribe = avatarService.subscribe(effectivePeerId, (newUrl) => {
       if (newUrl) {
         setHighResSrc(newUrl);
@@ -84,7 +91,7 @@ export const Avatar: React.FC<AvatarProps> = ({
       }
     });
 
-    // 3. Trigger load if not already loaded
+    // 3. Trigger high-res MTProto download if not already loaded
     if (!existing) {
       avatarService.loadAvatar(effectivePeerId, size === 'xl' || size === 'lg').then((url) => {
         if (url) {

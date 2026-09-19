@@ -87,7 +87,7 @@ function notifySubscribers(peerId: string, url: string): void {
 const downloadQueue: Array<() => Promise<void>> = [];
 let activeWorkers = 0;
 const isMobileClient = typeof window !== 'undefined' && Boolean((window as any).TeleForgeBridge || window.innerWidth < 768);
-const MAX_CONCURRENT_DOWNLOADS = isMobileClient ? 1 : 2;
+const MAX_CONCURRENT_DOWNLOADS = isMobileClient ? 3 : 4;
 
 function enqueueDownload(fn: () => Promise<void>) {
   downloadQueue.push(fn);
