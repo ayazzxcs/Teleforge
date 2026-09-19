@@ -4,6 +4,8 @@ import {
   Moon,
   Sun,
   Bell,
+  BellRing,
+  Volume2,
   Shield,
   Key,
   Sparkles,
@@ -39,9 +41,10 @@ import {
 } from '../services/teleforgeSettingsMigration';
 import { showToast } from './Toast';
 import { TeleForgeLogo } from './TeleForgeLogo';
-import { telegramApi, TelegramSessionInfo } from '../services/telegramApi';
+import { telegramApi, TelegramSessionInfo, isAndroidApp } from '../services/telegramApi';
 import { Avatar } from './Avatar';
 import { avatarService } from '../services/avatarService';
+import { notificationService, NotificationSettings } from '../services/notificationService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -83,6 +86,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isLicensesOpen, setIsLicensesOpen] = useState(false);
   const importFileRef = useRef<HTMLInputElement>(null);
 
+  // Notification settings state with persistence
+  const [notifSettings, setNotifSettings] = useState<NotificationSettings>(() =>
+    notificationService.getSettings()
+  );
+  const [browserPermission, setBrowserPermission] = useState<NotificationPermission>(() =>
+    notificationService.getPermissionStatus()
+  );
+
+  const handleUpdateNotifSetting = (key: keyof NotificationSettings, val: boolean) => {
+    notificationService.updateSettings({ [key]: val });
+    setNotifSettings(notificationService.getSettings());
+  };
+
+  const handleRequestPermission = async () => {
+    const perm = await notificationService.requestPermission();
+    setBrowserPermission(perm);
+    if (perm === 'granted') {
+      showToast('Notifications enabled successfully!', 'success');
+    } else if (perm === 'denied') {
+      showToast('Notification permission was blocked in browser settings', 'error');
+    }
+  };
+
+  const handleTestNotification = () => {
+    notificationService.playNotificationSound();
+    notificationService.showSystemNotification({
+      title: 'TeleForge Notification Test',
+      body: 'Notifications and Telegram audio chimes are working properly! 🔔',
+      chatId: 'saved-messages',
+    });
+    showToast('Chime played & test notification sent!', 'success');
+  };
+
   // Profile photo state with session persistence
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(() => {
     try {
@@ -102,9 +138,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const isUploadingPhotoRef = useRef(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [isDeletingPhoto, setIsDeletingPhoto] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-upload photo data URL to Telegram MTProto and update global user avatar
+  const uploadPhotoDataUrl = async (photoDataUrl: string, fileName = 'profile.jpg') => {
+    if (isUploadingPhotoRef.current) return;
+    isUploadingPhotoRef.current = true;
+    setIsUploadingPhoto(true);
+    setPhotoError(null);
+    setPreviewPhoto(photoDataUrl);
+
+    try {
+      const result = await telegramApi.uploadProfilePhoto({
+        fileBase64: photoDataUrl,
+        filename: fileName,
+      });
+
+      if (result && result.avatarUrl) {
+        const photoSrc = result.dataUrl || photoDataUrl || result.avatarUrl;
+        avatarService.setAvatar('me', photoSrc);
+        if (formData.id) {
+          avatarService.setAvatar(formData.id, photoSrc);
+        }
+        const updatedUser = {
+          ...formData,
+          avatar: result.avatarUrl,
+        };
+        setFormData(updatedUser);
+        try {
+          localStorage.setItem('teleforge_cached_user', JSON.stringify(updatedUser));
+          sessionStorage.removeItem('teleforge_photo_modal_open');
+          sessionStorage.removeItem('teleforge_preview_photo');
+        } catch (e) {}
+        await onUpdateUser(updatedUser);
+        showToast('Profile photo updated on Telegram!', 'success');
+        setIsPhotoModalOpen(false);
+        setPreviewPhoto(null);
+        setSelectedFile(null);
+      } else {
+        throw new Error('No avatar URL returned from Telegram');
+      }
+    } catch (err: any) {
+      console.error('[SettingsModal] Failed to upload photo to Telegram:', err);
+      setPhotoError(err?.message || 'Failed to upload photo to Telegram');
+    } finally {
+      setIsUploadingPhoto(false);
+      isUploadingPhotoRef.current = false;
+    }
+  };
 
   // Sync photo modal state to sessionStorage
   React.useEffect(() => {
@@ -137,11 +221,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setSelectedFile(null);
         setPhotoSourceTab('upload');
         setIsPhotoModalOpen(true);
+        uploadPhotoDataUrl(dataUrl, 'profile.jpg');
       }
     };
     window.addEventListener('teleforge:photoSelected', handleNativePhoto);
     return () => window.removeEventListener('teleforge:photoSelected', handleNativePhoto);
-  }, []);
+  }, [formData]);
 
   // Privacy & Active Sessions state
   const [phoneNumberRule, setPhoneNumberRule] = useState<'everybody' | 'contacts' | 'nobody'>('contacts');
@@ -286,9 +371,50 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      setPreviewPhoto(event.target?.result as string);
+      const rawDataUrl = event.target?.result as string;
+      if (!rawDataUrl) return;
+
+      // Automatically normalize and scale photos to max 1280px JPEG for instant preview and fast Telegram MTProto upload
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxDim = 1280;
+          let width = img.width;
+          let height = img.height;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            const optimized = canvas.toDataURL('image/jpeg', 0.92);
+            setPreviewPhoto(optimized);
+            uploadPhotoDataUrl(optimized, file.name);
+            return;
+          }
+        } catch (e) {}
+        setPreviewPhoto(rawDataUrl);
+        uploadPhotoDataUrl(rawDataUrl, file.name);
+      };
+      img.onerror = () => {
+        setPreviewPhoto(rawDataUrl);
+        uploadPhotoDataUrl(rawDataUrl, file.name);
+      };
+      img.src = rawDataUrl;
     };
     reader.readAsDataURL(file);
+    if (photoFileInputRef.current) {
+      photoFileInputRef.current.value = '';
+    }
   };
 
   const handleUrlChange = (url: string) => {
@@ -303,37 +429,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleSavePhoto = async () => {
     setPhotoError(null);
+    if (photoSourceTab === 'upload') {
+      if (previewPhoto) {
+        await uploadPhotoDataUrl(previewPhoto, selectedFile?.name || 'profile.jpg');
+      } else {
+        setPhotoError('Please select an image file first.');
+      }
+      return;
+    }
+
+    if (!photoUrlInput.trim()) {
+      setPhotoError('Please enter an image URL.');
+      return;
+    }
+
     setIsUploadingPhoto(true);
     try {
-      let result;
-      if (photoSourceTab === 'upload') {
-        if (!selectedFile && !previewPhoto) {
-          throw new Error('Please select an image file first.');
-        }
-        result = await telegramApi.uploadProfilePhoto({
-          file: selectedFile || undefined,
-          fileBase64: previewPhoto || undefined,
-          filename: selectedFile?.name || 'profile.jpg',
-        });
-      } else {
-        if (!photoUrlInput.trim()) {
-          throw new Error('Please enter an image URL.');
-        }
-        result = await telegramApi.uploadProfilePhoto({
-          url: photoUrlInput.trim(),
-        });
-      }
+      const result = await telegramApi.uploadProfilePhoto({
+        url: photoUrlInput.trim(),
+      });
 
-      if (result.avatarUrl) {
-        avatarService.setAvatar('me', result.avatarUrl);
+      if (result && result.avatarUrl) {
+        const photoSrc = result.dataUrl || previewPhoto || result.avatarUrl;
+        avatarService.setAvatar('me', photoSrc);
+        if (formData.id) {
+          avatarService.setAvatar(formData.id, photoSrc);
+        }
         const updatedUser = {
           ...formData,
           avatar: result.avatarUrl,
         };
         setFormData(updatedUser);
+        try {
+          localStorage.setItem('teleforge_cached_user', JSON.stringify(updatedUser));
+          sessionStorage.removeItem('teleforge_photo_modal_open');
+          sessionStorage.removeItem('teleforge_preview_photo');
+        } catch (e) {}
         await onUpdateUser(updatedUser);
         showToast('Profile photo updated on Telegram!', 'success');
         setIsPhotoModalOpen(false);
+        setPreviewPhoto(null);
+        setSelectedFile(null);
+        setPhotoUrlInput('');
       }
     } catch (err: any) {
       setPhotoError(err.message || 'Failed to upload photo to Telegram');
@@ -347,12 +484,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsDeletingPhoto(true);
     try {
       await telegramApi.deleteProfilePhoto();
-      avatarService.setAvatar('me', '');
+      avatarService.deleteAvatar('me');
+      if (formData.id) {
+        avatarService.deleteAvatar(formData.id);
+      }
       const updatedUser = {
         ...formData,
         avatar: '',
       };
       setFormData(updatedUser);
+      try {
+        localStorage.setItem('teleforge_cached_user', JSON.stringify(updatedUser));
+      } catch (e) {}
       await onUpdateUser(updatedUser);
       showToast('Profile photo removed from Telegram', 'success');
     } catch (err: any) {
@@ -419,7 +562,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+    >
       <div
         className="w-full max-w-lg bg-white dark:bg-[#17212b] rounded-2xl shadow-2xl overflow-hidden border border-gray-200 dark:border-gray-800 flex flex-col max-h-[90vh]"
         onClick={(e) => e.stopPropagation()}
@@ -951,36 +1101,125 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeTab === 'notifications' && (
             <div className="space-y-4">
+              {/* Browser Permission Banner (Web mode) */}
+              {!isAndroidApp() && typeof window !== 'undefined' && 'Notification' in window && (
+                <div className={`p-4 rounded-xl border transition-all ${
+                  browserPermission === 'granted'
+                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-800 dark:text-emerald-300'
+                    : 'bg-amber-500/10 border-amber-500/20 text-amber-800 dark:text-amber-300'
+                }`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <BellRing size={18} className="shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold">
+                          {browserPermission === 'granted'
+                            ? 'Desktop Notifications Active'
+                            : 'Desktop Notifications Not Enabled'}
+                        </div>
+                        <div className="text-[11px] opacity-80 truncate">
+                          {browserPermission === 'granted'
+                            ? 'TeleForge can alert you when messages arrive in the background.'
+                            : 'Grant permission to receive desktop alerts and message badges.'}
+                        </div>
+                      </div>
+                    </div>
+                    {browserPermission !== 'granted' && (
+                      <button
+                        onClick={handleRequestPermission}
+                        className="px-3 py-1.5 rounded-lg bg-teleforge-primary text-white text-xs font-medium hover:opacity-90 transition-opacity shrink-0 shadow-sm"
+                      >
+                        Enable
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Master Notification Toggle */}
+              <div className="flex items-center justify-between p-3.5 rounded-xl bg-gray-50 dark:bg-gray-800/60 border border-gray-200/50 dark:border-gray-700/40">
+                <div>
+                  <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">Allow Notifications</div>
+                  <div className="text-xs text-gray-500">Master switch for all incoming message alerts</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={notifSettings.notificationsEnabled}
+                  onChange={(e) => handleUpdateNotifSetting('notificationsEnabled', e.target.checked)}
+                  className="w-4 h-4 accent-teleforge-primary rounded cursor-pointer"
+                />
+              </div>
+
+              {/* Private Chats */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60">
                 <div>
                   <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Private Chats</div>
-                  <div className="text-xs text-gray-500">Show desktop alert badges</div>
+                  <div className="text-xs text-gray-500">Alert on new direct messages</div>
                 </div>
-                <input type="checkbox" defaultChecked className="w-4 h-4 accent-teleforge-primary rounded" />
+                <input
+                  type="checkbox"
+                  checked={notifSettings.privateChats}
+                  onChange={(e) => handleUpdateNotifSetting('privateChats', e.target.checked)}
+                  disabled={!notifSettings.notificationsEnabled}
+                  className="w-4 h-4 accent-teleforge-primary rounded cursor-pointer disabled:opacity-40"
+                />
               </div>
 
+              {/* Groups */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60">
                 <div>
                   <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Groups</div>
                   <div className="text-xs text-gray-500">Alert on new messages & mentions</div>
                 </div>
-                <input type="checkbox" defaultChecked className="w-4 h-4 accent-teleforge-primary rounded" />
+                <input
+                  type="checkbox"
+                  checked={notifSettings.groups}
+                  onChange={(e) => handleUpdateNotifSetting('groups', e.target.checked)}
+                  disabled={!notifSettings.notificationsEnabled}
+                  className="w-4 h-4 accent-teleforge-primary rounded cursor-pointer disabled:opacity-40"
+                />
               </div>
 
+              {/* Channels */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60">
                 <div>
                   <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Channels</div>
                   <div className="text-xs text-gray-500">Broadcast channel posts</div>
                 </div>
-                <input type="checkbox" defaultChecked className="w-4 h-4 accent-teleforge-primary rounded" />
+                <input
+                  type="checkbox"
+                  checked={notifSettings.channels}
+                  onChange={(e) => handleUpdateNotifSetting('channels', e.target.checked)}
+                  disabled={!notifSettings.notificationsEnabled}
+                  className="w-4 h-4 accent-teleforge-primary rounded cursor-pointer disabled:opacity-40"
+                />
               </div>
 
+              {/* Message Sound Chime */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-gray-50 dark:bg-gray-800/60">
                 <div>
                   <div className="text-sm font-medium text-gray-800 dark:text-gray-200">Message Sound</div>
-                  <div className="text-xs text-gray-500">Play notification audio chime</div>
+                  <div className="text-xs text-gray-500">Play Telegram audio marimba chime</div>
                 </div>
-                <input type="checkbox" defaultChecked className="w-4 h-4 accent-teleforge-primary rounded" />
+                <input
+                  type="checkbox"
+                  checked={notifSettings.soundEnabled}
+                  onChange={(e) => handleUpdateNotifSetting('soundEnabled', e.target.checked)}
+                  disabled={!notifSettings.notificationsEnabled}
+                  className="w-4 h-4 accent-teleforge-primary rounded cursor-pointer disabled:opacity-40"
+                />
+              </div>
+
+              {/* Test Notification Button */}
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={handleTestNotification}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-teleforge-primary/30 bg-teleforge-primary/10 text-teleforge-primary hover:bg-teleforge-primary/20 transition-all font-medium text-xs shadow-sm"
+                >
+                  <Volume2 size={16} />
+                  <span>Test Notification & Audio Chime</span>
+                </button>
               </div>
             </div>
           )}
@@ -1198,8 +1437,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           RESET CONFIRMATION MODAL
          ========================================================================= */}
       {isResetConfirmOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
-          <div className="bg-white dark:bg-[#17212b] border border-gray-200 dark:border-gray-700/80 rounded-2xl p-5 max-w-sm w-full shadow-2xl text-gray-800 dark:text-gray-200">
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (e.target === e.currentTarget) {
+              setIsResetConfirmOpen(false);
+            }
+          }}
+        >
+          <div
+            className="bg-white dark:bg-[#17212b] border border-gray-200 dark:border-gray-700/80 rounded-2xl p-5 max-w-sm w-full shadow-2xl text-gray-800 dark:text-gray-200"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:rose-900/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mb-3">
               <AlertTriangle size={24} />
             </div>
@@ -1242,8 +1492,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           SET PROFILE PHOTO MODAL
          ========================================================================= */}
       {isPhotoModalOpen && (
-        <div className="fixed inset-0 z-60 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-white dark:bg-[#17212b] rounded-2xl max-w-md w-full border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden flex flex-col">
+        <div
+          className="fixed inset-0 z-60 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!isUploadingPhoto && e.target === e.currentTarget) {
+              setIsPhotoModalOpen(false);
+            }
+          }}
+        >
+          <div
+            className="bg-white dark:bg-[#17212b] rounded-2xl max-w-md w-full border border-gray-200 dark:border-gray-700 shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
               <h3 className="font-bold text-gray-900 dark:text-white text-base flex items-center gap-2">
@@ -1252,7 +1513,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <button
                 type="button"
                 onClick={() => setIsPhotoModalOpen(false)}
-                className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 cursor-pointer"
+                disabled={isUploadingPhoto}
+                className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <X size={18} />
               </button>
@@ -1262,6 +1524,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="flex border-b border-gray-100 dark:border-gray-800 px-5 pt-2 gap-4">
               <button
                 type="button"
+                disabled={isUploadingPhoto}
                 onClick={() => {
                   setPhotoSourceTab('upload');
                   setPhotoError(null);
@@ -1276,6 +1539,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
               <button
                 type="button"
+                disabled={isUploadingPhoto}
                 onClick={() => {
                   setPhotoSourceTab('url');
                   setPhotoError(null);
@@ -1303,8 +1567,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   />
                   <button
                     type="button"
-                    onClick={() => photoFileInputRef.current?.click()}
-                    className="w-full border-2 border-dashed border-gray-300 dark:border-gray-700 hover:border-teleforge-primary dark:hover:border-teleforge-primary rounded-xl p-6 flex flex-col items-center justify-center gap-2 text-center transition-colors bg-gray-50/50 dark:bg-gray-800/40 cursor-pointer group"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      photoFileInputRef.current?.click();
+                    }}
+                    disabled={isUploadingPhoto}
+                    className="w-full border-2 border-dashed border-gray-300 dark:border-gray-700 hover:border-teleforge-primary dark:hover:border-teleforge-primary rounded-xl p-6 flex flex-col items-center justify-center gap-2 text-center transition-colors bg-gray-50/50 dark:bg-gray-800/40 cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <div className="w-12 h-12 rounded-full bg-teleforge-primary/10 text-teleforge-primary flex items-center justify-center group-hover:scale-110 transition-transform">
                       <Upload size={22} />
@@ -1328,7 +1596,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       value={photoUrlInput}
                       onChange={(e) => handleUrlChange(e.target.value)}
                       placeholder="https://example.com/profile-picture.jpg"
-                      className="w-full px-3 py-2 pl-9 rounded-xl bg-gray-50 dark:bg-gray-800/80 border border-gray-200 dark:border-gray-700 text-sm focus:outline-hidden focus:border-teleforge-primary text-gray-900 dark:text-white"
+                      disabled={isUploadingPhoto}
+                      className="w-full px-3 py-2 pl-9 rounded-xl bg-gray-50 dark:bg-gray-800/80 border border-gray-200 dark:border-gray-700 text-sm focus:outline-hidden focus:border-teleforge-primary text-gray-900 dark:text-white disabled:opacity-50"
                     />
                     <LinkIcon size={15} className="absolute left-3 top-2.5 text-gray-400" />
                   </div>
@@ -1349,10 +1618,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       className="w-full h-full object-cover"
                       onError={() => setPhotoError('Failed to load image preview. Check the URL.')}
                     />
+                    {isUploadingPhoto && (
+                      <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white p-1">
+                        <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin mb-1" />
+                        <span className="text-[10px] font-medium tracking-wide">Uploading...</span>
+                      </div>
+                    )}
                   </div>
                   {selectedFile && (
                     <span className="text-[11px] text-gray-400 mt-1.5">
                       {(selectedFile.size / 1024).toFixed(1)} KB • {selectedFile.name}
+                    </span>
+                  )}
+                  {isUploadingPhoto && (
+                    <span className="text-xs text-teleforge-primary font-medium mt-1 animate-pulse">
+                      Uploading to Telegram MTProto...
                     </span>
                   )}
                 </div>
@@ -1372,7 +1652,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <button
                 type="button"
                 onClick={() => setIsPhotoModalOpen(false)}
-                className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
+                disabled={isUploadingPhoto}
+                className="px-4 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>
@@ -1400,7 +1681,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ACTIVE SESSIONS MODAL
           ========================================================================= */}
       {isActiveSessionsOpen && (
-        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div
+          className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (e.target === e.currentTarget) {
+              setIsActiveSessionsOpen(false);
+            }
+          }}
+        >
           <div
             className="w-full max-w-lg bg-white dark:bg-[#17212b] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-800 overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-150"
             onClick={(e) => e.stopPropagation()}

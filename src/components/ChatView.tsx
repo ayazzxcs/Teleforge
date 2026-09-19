@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import {
   Phone,
   Search,
@@ -61,7 +61,7 @@ import {
 import { ChatCustomizationModal } from './ChatCustomizationModal';
 import { ReactionDetailsModal } from './ReactionDetailsModal';
 import { showToast } from './Toast';
-import { telegramApi, resolveApiUrl, OnlineGifItem, TelegramStickerSet } from '../services/telegramApi';
+import { telegramApi, resolveApiUrl, OnlineGifItem, TelegramStickerSet, TelegramStickerItem } from '../services/telegramApi';
 import { stickerService, CustomSticker } from '../services/stickerService';
 
 interface ChatMediaImageProps {
@@ -78,10 +78,7 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
   onOpenMediaModal,
 }) => {
   const [mediaUrl, setMediaUrl] = useState<string>(() => {
-    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
-      return attachment.url;
-    }
-    return mediaService.get(chatId, messageId) || '';
+    return mediaService.get(chatId, messageId) || attachment.url || '';
   });
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -116,7 +113,7 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
     };
   }, [chatId, messageId, mediaUrl, retryCount]);
 
-  const displayUrl = mediaUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '');
+  const displayUrl = mediaUrl || attachment.url || '';
   const thumbUrl = attachment.thumbUrl;
 
   const handleClick = (e: React.MouseEvent) => {
@@ -201,28 +198,39 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   messageId,
   onOpenMediaModal,
 }) => {
+  const streamUrl = attachment.url || resolveApiUrl(
+    `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`
+  );
   const [videoUrl, setVideoUrl] = useState<string>(() => {
-    return mediaService.get(chatId, messageId, { fullVideo: true }) || '';
+    return mediaService.get(chatId, messageId, { fullVideo: true }) || streamUrl;
   });
+  
+  const highResThumbApiUrl = resolveApiUrl(
+    `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}&thumb=1`
+  );
+  const cachedThumb = mediaService.get(chatId, messageId);
   const [thumbUrl, setThumbUrl] = useState<string>(() => {
-    return attachment.thumbUrl || mediaService.get(chatId, messageId) || '';
+    return cachedThumb && cachedThumb.length > 2000 ? cachedThumb : highResThumbApiUrl;
   });
+  const [highResThumbLoaded, setHighResThumbLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isPlayerFullscreen, setIsPlayerFullscreen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{ pct: number; dl: number; tot: number } | null>(null);
 
-  // Background thumbnail loader for instant Telegram-style preview
+  // Background thumbnail loader for crisp Telegram video preview
   useEffect(() => {
-    if (thumbUrl) return;
     let mounted = true;
     mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
-      if (url && mounted) setThumbUrl(url);
+      if (url && url.length > 2000 && mounted) {
+        setThumbUrl(url);
+      }
     }).catch(() => {});
     return () => { mounted = false; };
-  }, [chatId, messageId, thumbUrl]);
+  }, [chatId, messageId]);
 
   useEffect(() => {
-    if (videoUrl) return;
+    if (videoUrl && !videoUrl.includes('/api/telegram/media')) return;
     const unsub = mediaService.subscribe(
       chatId,
       messageId,
@@ -248,9 +256,24 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
     };
   }, [chatId, messageId, videoUrl]);
 
+  const initialDurSecs = React.useMemo(() => {
+    if (!attachment.duration) return 0;
+    const parts = attachment.duration.split(':').map((p) => parseInt(p, 10));
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+      return parts[0] * 60 + parts[1];
+    }
+    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    const n = Number(attachment.duration);
+    return isNaN(n) ? 0 : n;
+  }, [attachment.duration]);
+
   const handlePlayClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (videoUrl) {
+    const activeUrl = videoUrl || streamUrl;
+    if (activeUrl) {
+      setVideoUrl(activeUrl);
       setIsPlaying(true);
     } else {
       setIsLoading(true);
@@ -261,11 +284,22 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
         },
       }).then((url) => {
         setIsLoading(false);
-        if (url) {
-          setVideoUrl(url);
+        const playUrl = url || streamUrl;
+        if (playUrl) {
+          setVideoUrl(playUrl);
           setIsPlaying(true);
+        } else {
+          showToast('Could not load video stream', 'error');
         }
-      }).catch(() => setIsLoading(false));
+      }).catch(() => {
+        setIsLoading(false);
+        if (streamUrl) {
+          setVideoUrl(streamUrl);
+          setIsPlaying(true);
+        } else {
+          showToast('Could not load video stream', 'error');
+        }
+      });
     }
   };
 
@@ -274,20 +308,20 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       ...attachment,
       chatId,
       messageId,
-      url: videoUrl || '',
+      url: videoUrl || streamUrl || attachment.url || '',
       thumbUrl: thumbUrl || attachment.thumbUrl,
     });
   };
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    let target = videoUrl;
+    let target = videoUrl || streamUrl;
     if (!target) {
       setIsLoading(true);
       target = await mediaService.loadMedia(chatId, messageId, {
         fullVideo: true,
         onProgress: (pct, dl, tot) => setDownloadProgress({ pct, dl, tot }),
-      }) || '';
+      }) || streamUrl;
       setIsLoading(false);
     }
     if (target) {
@@ -299,13 +333,20 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
 
   if (isPlaying && videoUrl) {
     return (
-      <div className="mb-2 rounded-xl overflow-hidden shadow-xs relative bg-black max-h-80" onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`mb-2 rounded-xl relative bg-black ${
+          isPlayerFullscreen ? 'overflow-visible z-50' : 'overflow-hidden shadow-xs max-h-80'
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <TeleForgeVideoPlayer
           src={videoUrl}
           poster={thumbUrl || attachment.thumbUrl}
           title={attachment.name}
           autoPlay={true}
-          maxHeightClass="max-h-80"
+          maxHeightClass={isPlayerFullscreen ? 'max-h-screen' : 'max-h-80'}
+          initialDuration={initialDurSecs}
+          onFullscreenChange={setIsPlayerFullscreen}
         />
       </div>
     );
@@ -316,16 +357,29 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       onClick={handleOpenFull}
       className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/20 min-h-[160px] max-h-80 flex items-center justify-center select-none"
     >
-      {/* Video Thumbnail */}
+      {/* 1. Low-res blurred preview while high-res thumbnail loads */}
+      {attachment.thumbUrl && !highResThumbLoaded && (
+        <img
+          src={attachment.thumbUrl}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 w-full h-full object-cover filter blur-[2px] scale-105"
+        />
+      )}
+
+      {/* 2. High-resolution loaded video thumbnail */}
       {thumbUrl ? (
         <img
           src={thumbUrl}
           alt={attachment.name || 'Video thumbnail'}
-          className="absolute inset-0 w-full h-full object-cover"
+          onLoad={() => setHighResThumbLoaded(true)}
+          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+            highResThumbLoaded || !attachment.thumbUrl ? 'opacity-100' : 'opacity-0'
+          }`}
         />
-      ) : (
+      ) : !attachment.thumbUrl ? (
         <div className="absolute inset-0 bg-slate-900/80" />
-      )}
+      ) : null}
 
       {/* Dim overlay */}
       <div className="absolute inset-0 bg-black/30 group-hover:bg-black/40 transition-colors" />
@@ -396,28 +450,35 @@ const ChatMediaVideoNote: React.FC<{
   chatId: string;
   messageId: string;
 }> = ({ attachment, chatId, messageId }) => {
+  const streamUrl = attachment.url || resolveApiUrl(
+    `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`
+  );
   const [videoUrl, setVideoUrl] = useState<string>(() => {
-    return mediaService.get(chatId, messageId, { fullVideo: true }) || '';
+    return mediaService.get(chatId, messageId, { fullVideo: true }) || streamUrl;
   });
+  const highResThumbApiUrl = resolveApiUrl(
+    `/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}&thumb=1`
+  );
+  const cachedThumb = mediaService.get(chatId, messageId);
   const [thumbUrl, setThumbUrl] = useState<string>(() => {
-    return attachment.thumbUrl || mediaService.get(chatId, messageId) || '';
+    return cachedThumb && cachedThumb.length > 2000 ? cachedThumb : highResThumbApiUrl;
   });
+  const [thumbLoaded, setThumbLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    if (thumbUrl) return;
     let mounted = true;
     mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
-      if (url && mounted) setThumbUrl(url);
+      if (url && url.length > 2000 && mounted) setThumbUrl(url);
     }).catch(() => {});
     return () => { mounted = false; };
-  }, [chatId, messageId, thumbUrl]);
+  }, [chatId, messageId]);
 
   useEffect(() => {
-    if (videoUrl) return;
+    if (videoUrl && !videoUrl.includes('/api/telegram/media')) return;
     const unsub = mediaService.subscribe(
       chatId,
       messageId,
@@ -440,15 +501,28 @@ const ChatMediaVideoNote: React.FC<{
 
   const handleTogglePlay = (e: React.MouseEvent) => {
     e.stopPropagation();
+    const activeUrl = videoUrl || streamUrl;
+    if (!videoUrl && activeUrl) {
+      setVideoUrl(activeUrl);
+      setIsPlaying(true);
+      return;
+    }
     if (!videoUrl) {
       setIsLoading(true);
       mediaService.loadMedia(chatId, messageId, { fullVideo: true }).then((url) => {
         setIsLoading(false);
-        if (url) {
-          setVideoUrl(url);
+        const playUrl = url || streamUrl;
+        if (playUrl) {
+          setVideoUrl(playUrl);
           setIsPlaying(true);
         }
-      }).catch(() => setIsLoading(false));
+      }).catch(() => {
+        setIsLoading(false);
+        if (streamUrl) {
+          setVideoUrl(streamUrl);
+          setIsPlaying(true);
+        }
+      });
       return;
     }
 
@@ -480,16 +554,31 @@ const ChatMediaVideoNote: React.FC<{
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
         />
-      ) : thumbUrl ? (
-        <img
-          src={thumbUrl}
-          alt="Video Note"
-          className="w-full h-full object-cover rounded-full filter blur-[0.5px]"
-        />
       ) : (
-        <div className="w-full h-full bg-slate-900 rounded-full flex items-center justify-center">
-          <Video size={36} className="text-white/40" />
-        </div>
+        <>
+          {attachment.thumbUrl && !thumbLoaded && (
+            <img
+              src={attachment.thumbUrl}
+              alt=""
+              aria-hidden="true"
+              className="absolute inset-0 w-full h-full object-cover rounded-full filter blur-[2px] scale-105"
+            />
+          )}
+          {thumbUrl ? (
+            <img
+              src={thumbUrl}
+              alt="Video Note"
+              onLoad={() => setThumbLoaded(true)}
+              className={`w-full h-full object-cover rounded-full transition-opacity duration-300 ${
+                thumbLoaded || !attachment.thumbUrl ? 'opacity-100' : 'opacity-0'
+              }`}
+            />
+          ) : (
+            <div className="w-full h-full bg-slate-900 rounded-full flex items-center justify-center">
+              <Video size={36} className="text-white/40" />
+            </div>
+          )}
+        </>
       )}
 
       {/* Play/Loading Center Overlay */}
@@ -540,10 +629,7 @@ const ChatMediaSticker: React.FC<{
   onOpenStickerPreview?: (att: Attachment, cId: string, mId: string) => void;
 }> = ({ attachment, chatId, messageId, onOpenStickerPreview }) => {
   const [src, setSrc] = useState<string>(() => {
-    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
-      return attachment.url;
-    }
-    return mediaService.get(chatId, messageId) || attachment.thumbUrl || '';
+    return mediaService.get(chatId, messageId) || attachment.url || attachment.thumbUrl || '';
   });
   const [hasError, setHasError] = useState(false);
   const [isSaved, setIsSaved] = useState(() =>
@@ -585,7 +671,9 @@ const ChatMediaSticker: React.FC<{
     };
   }, [chatId, messageId, attachment.thumbUrl, src]);
 
-  const normalizedSrc = (src.startsWith('/stickers/') || src.startsWith('/gifs/')) ? '.' + src : src;
+  const normalizedSrc = (src.startsWith('/stickers/') || src.startsWith('/gifs/'))
+    ? '.' + src
+    : resolveApiUrl(src);
 
   const handleQuickAdd = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -618,7 +706,22 @@ const ChatMediaSticker: React.FC<{
         <img
           src={normalizedSrc}
           alt={attachment.name || 'Sticker'}
-          onError={() => setHasError(true)}
+          onError={() => {
+            if (attachment.thumbUrl && src !== attachment.thumbUrl) {
+              setSrc(resolveApiUrl(attachment.thumbUrl));
+            } else {
+              mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((loadedUrl) => {
+                if (loadedUrl) {
+                  setSrc(loadedUrl);
+                  setHasError(false);
+                } else {
+                  setHasError(true);
+                }
+              }).catch(() => {
+                setHasError(true);
+              });
+            }
+          }}
           className="w-36 h-36 sm:w-44 sm:h-44 object-contain filter drop-shadow-md"
         />
       ) : (
@@ -774,7 +877,7 @@ const StickerPreviewModal: React.FC<{
   const displaySrc =
     currentAttachment.url.startsWith('/stickers/') || currentAttachment.url.startsWith('/gifs/')
       ? '.' + currentAttachment.url
-      : currentAttachment.url;
+      : resolveApiUrl(currentAttachment.url);
 
   return (
     <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-4 animate-in fade-in duration-150">
@@ -795,7 +898,7 @@ const StickerPreviewModal: React.FC<{
             className="w-full h-full object-contain filter drop-shadow-xl"
             onError={(e) => {
               if (currentAttachment.thumbUrl && e.currentTarget.src !== currentAttachment.thumbUrl) {
-                e.currentTarget.src = currentAttachment.thumbUrl;
+                e.currentTarget.src = resolveApiUrl(currentAttachment.thumbUrl);
               }
             }}
           />
@@ -833,6 +936,7 @@ const StickerPreviewModal: React.FC<{
             <div className="grid grid-cols-5 gap-1.5 max-h-32 overflow-y-auto p-1 custom-scrollbar">
               {(packData?.stickers || []).map((stk) => {
                 const isSelected = stk.documentId === currentAttachment.documentId || stk.id === currentAttachment.documentId;
+                const finalThumb = resolveApiUrl(stk.thumbUrl || stk.url || '');
                 return (
                   <button
                     key={stk.id}
@@ -840,7 +944,7 @@ const StickerPreviewModal: React.FC<{
                     onClick={() => {
                       setCurrentAttachment({
                         type: 'sticker',
-                        url: stk.thumbUrl || stk.url || '',
+                        url: finalThumb,
                         name: stk.emoji ? `Sticker ${stk.emoji}` : 'Telegram Sticker',
                         isSticker: true,
                         documentId: stk.documentId,
@@ -848,7 +952,7 @@ const StickerPreviewModal: React.FC<{
                         fileReference: stk.fileReference,
                         stickerEmoji: stk.emoji,
                         stickerSet: currentAttachment.stickerSet,
-                        thumbUrl: stk.thumbUrl,
+                        thumbUrl: finalThumb,
                       });
                     }}
                     className={`p-1 rounded-xl transition-all flex flex-col items-center justify-center aspect-square cursor-pointer hover:scale-105 active:scale-95 ${
@@ -858,8 +962,8 @@ const StickerPreviewModal: React.FC<{
                     }`}
                     title={stk.emoji || 'Sticker'}
                   >
-                    {stk.thumbUrl ? (
-                      <img src={stk.thumbUrl} alt="" className="w-full h-full object-contain" loading="lazy" />
+                    {finalThumb ? (
+                      <img src={finalThumb} alt="" className="w-full h-full object-contain" loading="lazy" />
                     ) : (
                       <span className="text-xl">{stk.emoji || '⭐️'}</span>
                     )}
@@ -968,7 +1072,10 @@ const OnlineGifTile: React.FC<{
     };
   }, [gif.id, gif.thumbUrl, gif.rawItem]);
 
-  const isVideo = (gif.url && gif.url.endsWith('.mp4')) || (gif.thumbUrl && gif.thumbUrl.endsWith('.mp4'));
+  const isVideo = Boolean(
+    (gif.url && (gif.url.endsWith('.mp4') || gif.url.includes('mimeType=video/mp4') || gif.url.includes('.mp4?'))) ||
+    (gif.thumbUrl && (gif.thumbUrl.endsWith('.mp4') || gif.thumbUrl.includes('mimeType=video/mp4')))
+  );
 
   return (
     <button
@@ -977,6 +1084,16 @@ const OnlineGifTile: React.FC<{
       className="relative rounded-xl overflow-hidden hover:opacity-90 active:scale-98 transition-all group cursor-pointer bg-black/10 dark:bg-white/5 aspect-4/3 flex items-center justify-center"
       title={gif.title}
     >
+      {/* 0ms Blurred preview while high-def video/image streams */}
+      {(gif as any).previewThumb && !isLoaded && (
+        <img
+          src={(gif as any).previewThumb}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 w-full h-full object-cover filter blur-[2px] scale-105 pointer-events-none"
+        />
+      )}
+
       {isVideo ? (
         <video
           src={gif.url || gif.thumbUrl}
@@ -984,7 +1101,11 @@ const OnlineGifTile: React.FC<{
           loop
           muted
           playsInline
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform pointer-events-none"
+          onPlaying={() => setIsLoaded(true)}
+          onLoadedData={() => setIsLoaded(true)}
+          className={`w-full h-full object-cover group-hover:scale-105 transition-all duration-300 pointer-events-none ${
+            isLoaded ? 'opacity-100' : 'opacity-0'
+          }`}
         />
       ) : (
         <img
@@ -1005,6 +1126,68 @@ const OnlineGifTile: React.FC<{
       <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
         <span className="text-[11px] text-white font-medium truncate">{gif.title}</span>
       </div>
+    </button>
+  );
+};
+
+// Component for individual Telegram Pack Sticker Tile
+const TelegramStickerTile: React.FC<{
+  sticker: TelegramStickerItem;
+  onSelect: () => void;
+}> = ({ sticker, onSelect }) => {
+  const [src, setSrc] = useState<string>(() => resolveApiUrl(sticker.thumbUrl || sticker.url || ''));
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const initial = resolveApiUrl(sticker.thumbUrl || sticker.url || '');
+    if (initial) {
+      setSrc(initial);
+      setHasError(false);
+    } else if (sticker.rawDoc) {
+      telegramApi.downloadDocumentThumb(sticker.rawDoc).then((dataUrl) => {
+        if (dataUrl && active) {
+          setSrc(dataUrl);
+          setHasError(false);
+        }
+      }).catch(() => {});
+    }
+    return () => {
+      active = false;
+    };
+  }, [sticker.id, sticker.thumbUrl, sticker.url, sticker.rawDoc]);
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="group flex flex-col items-center justify-center p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-all hover:scale-105 active:scale-95 cursor-pointer"
+      title={sticker.emoji || 'Sticker'}
+    >
+      {src && !hasError ? (
+        <img
+          src={src}
+          alt=""
+          className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
+          loading="lazy"
+          onError={() => {
+            if (sticker.rawDoc) {
+              telegramApi.downloadDocumentThumb(sticker.rawDoc).then((dataUrl) => {
+                if (dataUrl) {
+                  setSrc(dataUrl);
+                  setHasError(false);
+                } else {
+                  setHasError(true);
+                }
+              }).catch(() => setHasError(true));
+            } else {
+              setHasError(true);
+            }
+          }}
+        />
+      ) : (
+        <span className="text-3xl">{sticker.emoji || '⭐️'}</span>
+      )}
     </button>
   );
 };
@@ -1074,14 +1257,6 @@ export interface CuratedSticker {
   url: string;
 }
 
-export interface CuratedGif {
-  id: string;
-  name: string;
-  category: 'all' | 'trending' | 'dance' | 'reactions' | 'party' | 'love';
-  tags: string[];
-  url: string;
-}
-
 const CURATED_STICKERS: CuratedSticker[] = [
   // Duck Pack
   { id: 'stk-duck-hi', name: 'Duck Hello', emoji: '👋', category: 'duck', tags: ['duck', 'hello', 'hi', 'wave', 'greet'], url: './stickers/duck_hello.svg' },
@@ -1120,28 +1295,6 @@ const CURATED_STICKERS: CuratedSticker[] = [
   { id: 'stk-gem-diamond', name: 'Diamond Gem', emoji: '💎', category: 'fun', tags: ['diamond', 'gem', 'crystal', 'valuable', 'rare'], url: './stickers/gem_diamond.svg' },
 ];
 
-const CURATED_GIFS: CuratedGif[] = [
-  // Trending & Dance
-  { id: 'gif-vibing-cat', name: 'Vibing Cat', category: 'trending', tags: ['cat', 'vibing', 'headbob', 'groove', 'music', 'jam'], url: './gifs/vibing_cat.svg' },
-  { id: 'gif-celebrate', name: 'Celebration', category: 'party', tags: ['celebrate', 'party', 'woohoo', 'confetti', 'yay'], url: './gifs/celebrate.svg' },
-  { id: 'gif-dancing', name: 'Dancing', category: 'dance', tags: ['dance', 'groove', 'disco', 'party', 'moves'], url: './gifs/dancing.svg' },
-  { id: 'gif-party-dance', name: 'Disco Party', category: 'party', tags: ['disco', 'party', 'dance', 'fun', 'rave'], url: './gifs/party_dance.svg' },
-  { id: 'gif-dog-spin', name: 'Spinning Doge', category: 'trending', tags: ['dog', 'doge', 'spin', 'cute', 'dizzy'], url: './gifs/dog_spinning.svg' },
-
-  // Reactions & Fun
-  { id: 'gif-thumbs-up', name: 'Thumbs Up', category: 'reactions', tags: ['thumbs up', 'yes', 'great', 'approved', 'like'], url: './gifs/thumbs_up.svg' },
-  { id: 'gif-applause', name: 'Applause', category: 'reactions', tags: ['applause', 'clap', 'clapping', 'bravo', 'congrats'], url: './gifs/applause.svg' },
-  { id: 'gif-laughing', name: 'Laughing', category: 'reactions', tags: ['laugh', 'lol', 'haha', 'funny', 'hilarious'], url: './gifs/laughing.svg' },
-  { id: 'gif-mind-blown', name: 'Mind Blown', category: 'reactions', tags: ['mind blown', 'shocked', 'explosion', 'wow', 'insane'], url: './gifs/mind_blown.svg' },
-  { id: 'gif-facepalm', name: 'Facepalm', category: 'reactions', tags: ['facepalm', 'smh', 'oh no', 'why', 'disappointed'], url: './gifs/facepalm.svg' },
-  { id: 'gif-crying-tears', name: 'Crying Tears', category: 'reactions', tags: ['cry', 'crying', 'tears', 'sad', 'unhappy'], url: './gifs/crying_tears.svg' },
-
-  // Love & Hype
-  { id: 'gif-love-hearts', name: 'Love Hearts', category: 'love', tags: ['love', 'heart', 'hearts', 'romance', 'kiss'], url: './gifs/love_hearts.svg' },
-  { id: 'gif-fire-burning', name: 'Fire Burning', category: 'trending', tags: ['fire', 'flame', 'lit', 'hot', 'hype'], url: './gifs/fire_burning.svg' },
-  { id: 'gif-rocket-blast', name: 'To The Moon', category: 'trending', tags: ['rocket', 'blast', 'moon', 'space', 'crypto'], url: './gifs/rocket_blast.svg' },
-];
-
 interface ChatViewProps {
   chat: Chat | null;
   onSendMessage: (text: string, replyTo?: Message, attachment?: Attachment) => void;
@@ -1163,6 +1316,7 @@ interface ChatViewProps {
   hasMoreOlderMessages?: boolean;
   onSelectChat?: (chatId: string) => void;
   onOpenDirectChat?: (userId: string, userName: string, userAvatar?: string, userThumbUrl?: string) => void;
+  onJumpToMessage?: (chatId: string, messageId: string) => Promise<boolean>;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -1186,6 +1340,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   hasMoreOlderMessages,
   onSelectChat,
   onOpenDirectChat,
+  onJumpToMessage,
 }) => {
   const [inputText, setInputText] = useState('');
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -1297,18 +1452,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
     );
   }, [customStickers, stickerSearch]);
 
-  const filteredGifs = useMemo(() => {
-    return CURATED_GIFS.filter((gif) => {
-      const matchesCategory = gifCategory === 'all' || gif.category === gifCategory;
-      const q = gifSearch.toLowerCase().trim();
-      if (!q) return matchesCategory;
-      const matchesQuery =
-        gif.name.toLowerCase().includes(q) ||
-        gif.tags.some((t) => t.toLowerCase().includes(q));
-      return matchesCategory && matchesQuery;
-    });
-  }, [gifSearch, gifCategory]);
-
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const [activeReactionPickerId, setActiveReactionPickerId] = useState<string | null>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -1342,6 +1485,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchCategory, setSearchCategory] = useState<'all' | 'photo' | 'video' | 'file' | 'audio' | 'link'>('all');
+
+  // Cloud Search State
+  const [cloudSearchResults, setCloudSearchResults] = useState<Array<{ id: string; text: string; senderName?: string }>>([]);
+  const [cloudSearchIndex, setCloudSearchIndex] = useState(0);
+  const [isCloudSearching, setIsCloudSearching] = useState(false);
+  const [isJumpingToMessage, setIsJumpingToMessage] = useState(false);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const searchTimerRef = useRef<any>(null);
 
   // Inline Message Translation State
   const [translatedMessages, setTranslatedMessages] = useState<Record<string, string>>({});
@@ -1393,6 +1544,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setIsSearchOpen(false);
       setSearchQuery('');
       setSearchCategory('all');
+      setCloudSearchResults([]);
+      setCloudSearchIndex(0);
+      setIsCloudSearching(false);
+      setHighlightedMessageId(null);
       setReplyingTo(null);
       setEditingMessage(null);
 
@@ -1479,22 +1634,115 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return () => clearInterval(interval);
   }, [isRecordingVoice]);
 
+  // Debounced cloud search — triggers Telegram API search after 400ms pause
+  useEffect(() => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+
+    if (!isSearchOpen || !searchQuery.trim() || !chat || searchCategory !== 'all') {
+      setCloudSearchResults([]);
+      setCloudSearchIndex(0);
+      setIsCloudSearching(false);
+      return;
+    }
+
+    setIsCloudSearching(true);
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const results = await telegramApi.searchMessages(chat.id, searchQuery.trim(), 30);
+        const mapped = results.map((m) => ({
+          id: String(m.id),
+          text: m.text || '',
+          senderName: m.senderName || undefined,
+        }));
+        setCloudSearchResults(mapped);
+        setCloudSearchIndex(mapped.length > 0 ? 0 : -1);
+      } catch (err) {
+        console.error('[CloudSearch] Error:', err);
+        setCloudSearchResults([]);
+        setCloudSearchIndex(-1);
+      } finally {
+        setIsCloudSearching(false);
+      }
+    }, 400);
+
+    return () => {
+      if (searchTimerRef.current) {
+        clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = null;
+      }
+    };
+  }, [searchQuery, isSearchOpen, chat?.id, searchCategory]);
+
+  // Jump to a specific message — loads surrounding context if needed, scrolls, highlights
+  const jumpToMessage = useCallback(async (targetId: string) => {
+    if (!chat) return;
+    setIsJumpingToMessage(true);
+
+    try {
+      // Check if already in the loaded messages
+      const inMemory = chat.messages.some((m) => m.id === targetId);
+
+      if (!inMemory && onJumpToMessage) {
+        // Load surrounding messages from the API
+        const loaded = await onJumpToMessage(chat.id, targetId);
+        if (!loaded) {
+          showToast('Could not load message', 'error');
+          return;
+        }
+      }
+
+      // Scroll to the message with a robust retry loop to account for React DOM rendering
+      let el = document.getElementById(`message-${targetId}`);
+      if (!el) {
+        for (let i = 0; i < 8; i++) {
+          await new Promise((r) => setTimeout(r, 60));
+          el = document.getElementById(`message-${targetId}`);
+          if (el) break;
+        }
+      }
+
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setHighlightedMessageId(targetId);
+        setTimeout(() => setHighlightedMessageId(null), 2500);
+      }
+    } finally {
+      setIsJumpingToMessage(false);
+    }
+  }, [chat, onJumpToMessage]);
+
+  // Navigate cloud search results with ↑/↓ and auto-jump
+  const navigateSearchResult = useCallback((direction: 'prev' | 'next') => {
+    if (cloudSearchResults.length === 0) return;
+    let newIndex: number;
+    if (direction === 'next') {
+      newIndex = (cloudSearchIndex + 1) % cloudSearchResults.length;
+    } else {
+      newIndex = (cloudSearchIndex - 1 + cloudSearchResults.length) % cloudSearchResults.length;
+    }
+    setCloudSearchIndex(newIndex);
+    const targetId = cloudSearchResults[newIndex]?.id;
+    if (targetId) jumpToMessage(targetId);
+  }, [cloudSearchResults, cloudSearchIndex, jumpToMessage]);
+
+  // Auto-jump to first result when cloud search results change
+  useEffect(() => {
+    if (cloudSearchResults.length > 0 && cloudSearchIndex === 0) {
+      jumpToMessage(cloudSearchResults[0].id);
+    }
+  }, [cloudSearchResults]);
+
   // Filter messages based on in-chat search query & category filter
   const displayedMessages = useMemo(() => {
     if (!chat) return [];
     let msgs = chat.messages;
 
     if (isSearchOpen) {
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        msgs = msgs.filter(
-          (m) =>
-            m.text.toLowerCase().includes(q) ||
-            m.senderName?.toLowerCase().includes(q) ||
-            m.attachment?.name?.toLowerCase().includes(q)
-        );
-      }
-
+      // For text search in 'all' category, cloud search + jump handles navigation
+      // so keep showing all messages. Only filter locally for media category searches.
       if (searchCategory !== 'all') {
         msgs = msgs.filter((m) => {
           if (searchCategory === 'photo') return m.attachment?.type === 'image';
@@ -1837,7 +2085,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search messages, links, media in this chat..."
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && cloudSearchResults.length > 0) {
+                    e.preventDefault();
+                    navigateSearchResult('next');
+                  }
+                }}
+                placeholder="Search messages in this chat..."
                 autoFocus
                 className="w-full pl-9 pr-8 py-1.5 rounded-full bg-gray-100 dark:bg-gray-800/90 text-xs text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-1 focus:ring-teleforge-primary"
               />
@@ -1850,11 +2104,48 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </button>
               )}
             </div>
+
+            {/* Match counter & navigation */}
+            {searchQuery.trim() && searchCategory === 'all' && (
+              <div className="flex items-center gap-1 shrink-0">
+                {isCloudSearching || isJumpingToMessage ? (
+                  <Loader2 size={14} className="animate-spin text-teleforge-primary" />
+                ) : cloudSearchResults.length > 0 ? (
+                  <>
+                    <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400 tabular-nums whitespace-nowrap">
+                      {cloudSearchIndex + 1} of {cloudSearchResults.length}
+                    </span>
+                    <button
+                      onClick={() => navigateSearchResult('prev')}
+                      className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                      title="Previous match"
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      onClick={() => navigateSearchResult('next')}
+                      className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                      title="Next match"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-[11px] font-medium text-gray-400 dark:text-gray-500 whitespace-nowrap">
+                    No results
+                  </span>
+                )}
+              </div>
+            )}
+
             <button
               onClick={() => {
                 setIsSearchOpen(false);
                 setSearchQuery('');
                 setSearchCategory('all');
+                setCloudSearchResults([]);
+                setCloudSearchIndex(0);
+                setHighlightedMessageId(null);
               }}
               className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-white"
             >
@@ -1960,7 +2251,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           if (message.isService) {
             return (
-              <div key={message.id} className="flex justify-center my-2 select-none w-full">
+              <div key={message.id} id={`message-${message.id}`} className="flex justify-center my-2 select-none w-full">
                 <span className="px-3.5 py-1 rounded-full bg-black/40 dark:bg-white/10 text-white text-xs font-medium backdrop-blur-xs shadow-xs text-center max-w-[85%]">
                   {message.text}
                 </span>
@@ -1975,12 +2266,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
           return (
             <div
               key={message.id}
+              id={`message-${message.id}`}
               onMouseEnter={() => setHoveredMessageId(message.id)}
               onMouseLeave={() => {
                 setHoveredMessageId(null);
                 if (activeReactionPickerId === message.id) setActiveReactionPickerId(null);
               }}
-              className={`flex items-end gap-2 relative ${isOut ? 'justify-end' : 'justify-start'}`}
+              className={`flex items-end gap-2 relative ${isOut ? 'justify-end' : 'justify-start'} ${highlightedMessageId === message.id ? 'animate-pulse ring-2 ring-teleforge-primary/50 rounded-xl' : ''}`}
             >
               {/* Incoming Avatar (Left side of incoming message) - Only in Group Chats */}
               {isGroupChat && !isOut && (
@@ -2081,20 +2373,45 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
 
                 {/* Replying Quote Banner */}
-                {message.replyTo && (
-                  <div
-                    className="mb-2 pl-2.5 py-1 border-l-2 text-xs rounded-r-md cursor-pointer bg-black/5 dark:bg-white/10"
-                    style={{ borderColor: chatConfig.chatAccent || 'var(--tf-reply-accent)' }}
-                  >
+                {message.replyTo && (() => {
+                  const targetId = message.replyTo.id;
+                  const resolved = chat.messages.find((m) => m.id === targetId);
+
+                  const sender = resolved
+                    ? (resolved.isOutgoing ? 'You' : (resolved.senderName || chat.name))
+                    : (message.replyTo.senderName && message.replyTo.senderName !== 'Replied Message'
+                        ? message.replyTo.senderName
+                        : 'Replied Message');
+
+                  const text = resolved
+                    ? (resolved.text || (resolved.attachment?.name || 'Attachment'))
+                    : (message.replyTo.text && message.replyTo.text !== 'Original message'
+                        ? message.replyTo.text
+                        : 'Message');
+
+                  return (
                     <div
-                      className="font-semibold text-[11px]"
-                      style={{ color: chatConfig.chatAccent || 'var(--tf-primary)' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (targetId) {
+                          jumpToMessage(targetId);
+                        }
+                      }}
+                      className="mb-2 pl-2.5 py-1 border-l-2 text-xs rounded-r-md cursor-pointer bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 transition-all group/reply select-none active:scale-[0.99]"
+                      style={{ borderColor: chatConfig.chatAccent || 'var(--tf-reply-accent)' }}
+                      title="Click to jump to replied message"
                     >
-                      {message.replyTo.senderName}
+                      <div
+                        className="font-semibold text-[11px] flex items-center gap-1 group-hover/reply:underline"
+                        style={{ color: chatConfig.chatAccent || 'var(--tf-primary)' }}
+                      >
+                        <span className="opacity-70">↪</span>
+                        <span>{sender}</span>
+                      </div>
+                      <div className="truncate opacity-80 text-[11px] max-w-[320px]">{text}</div>
                     </div>
-                    <div className="truncate opacity-80 text-[11px]">{message.replyTo.text}</div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Attachment: Image */}
                 {message.attachment?.type === 'image' && (
@@ -2691,37 +3008,31 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             {/* Active Pack Stickers */}
                             <div className="grid grid-cols-4 gap-2 max-h-48 overflow-y-auto p-1">
                               {(activeStickerSet?.stickers || []).map((stk) => (
-                                <button
+                                <TelegramStickerTile
                                   key={stk.id}
-                                  type="button"
-                                  onClick={() => {
+                                  sticker={stk}
+                                  onSelect={() => {
+                                    const finalUrl = resolveApiUrl(stk.thumbUrl || stk.url || '');
                                     onSendMessage('', replyingTo || undefined, {
                                       type: 'sticker',
-                                      url: stk.thumbUrl || '',
+                                      url: finalUrl,
                                       name: stk.emoji ? `Sticker ${stk.emoji}` : 'Telegram Sticker',
                                       isSticker: true,
                                       documentId: stk.documentId,
                                       accessHash: stk.accessHash,
                                       fileReference: stk.fileReference,
                                       stickerEmoji: stk.emoji,
+                                      stickerSet: activeStickerSet ? {
+                                        id: activeStickerSet.id,
+                                        accessHash: activeStickerSet.accessHash,
+                                        shortName: activeStickerSet.shortName,
+                                        title: activeStickerSet.title,
+                                      } : undefined,
                                     });
                                     setReplyingTo(null);
                                     setShowEmojiPicker(false);
                                   }}
-                                  className="group flex flex-col items-center justify-center p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-all hover:scale-105 active:scale-95 cursor-pointer"
-                                  title={stk.emoji || 'Sticker'}
-                                >
-                                  {stk.thumbUrl ? (
-                                    <img
-                                      src={stk.thumbUrl}
-                                      alt=""
-                                      className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
-                                      loading="lazy"
-                                    />
-                                  ) : (
-                                    <span className="text-3xl">{stk.emoji || '⭐️'}</span>
-                                  )}
-                                </button>
+                                />
                               ))}
                             </div>
                           </>
@@ -2847,36 +3158,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       />
                     ))}
 
-                    {/* 2. Curated Offline GIFs Fallback / Complement */}
-                    {filteredGifs.map((gif) => (
-                      <button
-                        key={gif.id}
-                        type="button"
-                        onClick={() => {
-                          onSendMessage('', replyingTo || undefined, {
-                            type: 'gif',
-                            url: gif.url,
-                            name: gif.name,
-                            isGif: true,
-                          });
-                          setReplyingTo(null);
-                          setShowEmojiPicker(false);
-                        }}
-                        className="relative rounded-xl overflow-hidden hover:opacity-90 active:scale-98 transition-all group cursor-pointer bg-black/10 aspect-4/3"
-                        title={gif.name}
-                      >
-                        <img
-                          src={gif.url}
-                          alt={gif.name}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                          loading="lazy"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
-                          <span className="text-[11px] text-white font-medium truncate">{gif.name}</span>
-                        </div>
-                      </button>
-                    ))}
-
                     {/* Loading indicator for infinite scroll */}
                     {isGifsLoading && (
                       <div className="col-span-2 py-3 flex items-center justify-center gap-2 text-xs text-teleforge-primary font-medium">
@@ -2885,7 +3166,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       </div>
                     )}
 
-                    {!isGifsLoading && onlineGifs.length === 0 && filteredGifs.length === 0 && (
+                    {!isGifsLoading && onlineGifs.length === 0 && (
                       <div className="col-span-2 py-8 text-center text-xs text-gray-400">
                         No GIFs found for &ldquo;{gifSearch}&rdquo;
                       </div>

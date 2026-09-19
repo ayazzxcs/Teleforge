@@ -22,6 +22,11 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.util.Base64
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
@@ -171,6 +176,7 @@ class MainActivity : ComponentActivity() {
         setupWebViewSettings()
         setupWebViewClients()
         setupBackNavigation()
+        createNotificationChannel()
         // Load or restore the TeleForge client
         if (savedInstanceState == null) {
             loadTeleForgeClient()
@@ -562,6 +568,70 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+
+        // Handle direct chat click from status bar notification
+        if (intent.hasExtra("chatId")) {
+            val chatId = intent.getStringExtra("chatId")
+            if (!chatId.isNullOrBlank()) {
+                val escapedChatId = chatId.replace("'", "\\'")
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('teleforge:openChat', { detail: { chatId: '$escapedChatId' } }));",
+                        null
+                    )
+                }
+            }
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val name = "TeleForge Messages"
+            val descriptionText = "Incoming Telegram messages & notifications"
+            val importance = NotificationManager.IMPORTANCE_HIGH
+            val channel = NotificationChannel("teleforge_messages", name, importance).apply {
+                description = descriptionText
+                enableVibration(true)
+            }
+            val notificationManager: NotificationManager? =
+                getSystemService(NotificationManager::class.java)
+            notificationManager?.createNotificationChannel(channel)
+        }
+    }
+
+    fun displayNotification(title: String, body: String, chatId: String) {
+        try {
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("chatId", chatId)
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent: PendingIntent = PendingIntent.getActivity(
+                this,
+                chatId.hashCode(),
+                intent,
+                flags
+            )
+
+            val builder = NotificationCompat.Builder(this, "teleforge_messages")
+                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                NotificationManagerCompat.from(this).notify(chatId.hashCode(), builder.build())
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("TeleForge", "displayNotification error: ${e.message}", e)
+        }
     }
 
     private fun dpToPx(dp: Int): Int {
@@ -691,6 +761,13 @@ class MainActivity : ComponentActivity() {
                 } catch (e: Exception) {
                     android.util.Log.e("TeleForgeBridge", "setFullscreen error: ${e.message}")
                 }
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun showNotification(title: String, body: String, chatId: String) {
+            activity.runOnUiThread {
+                activity.displayNotification(title, body, chatId)
             }
         }
     }

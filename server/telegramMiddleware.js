@@ -16,6 +16,7 @@ import {
   deletePeerMessages,
   pinPeerMessage,
   downloadMessageMedia,
+  downloadDocumentMedia,
   downloadPeerAvatar,
   getContactsList,
   getDialogFiltersList,
@@ -30,6 +31,26 @@ import {
   updateUserProfile,
   uploadProfilePhoto,
   deleteProfilePhoto,
+  getUserFull,
+  getOnlineGifs,
+  getInstalledStickerSets,
+  getStickerSet,
+  installStickerSet,
+  faveSticker,
+  sendStickerDocument,
+  getSessionsList,
+  terminateSessionByHash,
+  terminateAllOtherSessions,
+  getPrivacySetting,
+  setPrivacySetting,
+  getChatSharedMediaList,
+  streamMediaResponse,
+  getMediaAudioTracks,
+  addSseClient,
+  removeSseClient,
+  getClient,
+  searchMessagesInPeer,
+  getMessagesAroundMessage,
 } from './telegramBackend.js';
 
 // Helper to read JSON request body
@@ -201,6 +222,29 @@ export function telegramMiddleware() {
         return sendJson(res, 200, { messages });
       }
 
+      // 9b. GET /api/telegram/messages/search
+      if (req.method === 'GET' && pathname === '/api/telegram/messages/search') {
+        const chatId = parsedUrl.query.chatId;
+        const q = parsedUrl.query.query || parsedUrl.query.q;
+        if (!chatId || !q) {
+          return sendError(res, 400, 'chatId and query are required');
+        }
+        const limit = parsedUrl.query.limit ? parseInt(parsedUrl.query.limit, 10) : 30;
+        const messages = await searchMessagesInPeer(chatId, q, limit);
+        return sendJson(res, 200, { messages });
+      }
+
+      // 9c. GET /api/telegram/messages/around
+      if (req.method === 'GET' && pathname === '/api/telegram/messages/around') {
+        const { chatId, messageId } = parsedUrl.query;
+        if (!chatId || !messageId) {
+          return sendError(res, 400, 'chatId and messageId are required');
+        }
+        const limit = parsedUrl.query.limit ? parseInt(parsedUrl.query.limit, 10) : 50;
+        const messages = await getMessagesAroundMessage(chatId, messageId, limit);
+        return sendJson(res, 200, { messages });
+      }
+
       // 10. POST /api/telegram/messages/send
       if (req.method === 'POST' && pathname === '/api/telegram/messages/send') {
         const body = await readJsonBody(req);
@@ -267,21 +311,77 @@ export function telegramMiddleware() {
         }
       }
 
-      // 11. GET /api/telegram/media
-      if (req.method === 'GET' && pathname === '/api/telegram/media') {
+      // 10f. GET /api/telegram/media/tracks — query probed audio tracks for video
+      if (req.method === 'GET' && pathname === '/api/telegram/media/tracks') {
         const { chatId, messageId } = parsedUrl.query;
         if (!chatId || !messageId) {
           return sendError(res, 400, 'chatId and messageId are required');
         }
-        const media = await downloadMessageMedia(chatId, messageId);
+        try {
+          const result = await getMediaAudioTracks(chatId, messageId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendJson(res, 200, { tracks: [] });
+        }
+      }
+
+      // 11. GET /api/telegram/media
+      if (req.method === 'GET' && pathname === '/api/telegram/media') {
+        const { chatId, messageId, thumb } = parsedUrl.query;
+        if (!chatId || !messageId) {
+          return sendError(res, 400, 'chatId and messageId are required');
+        }
+        if (thumb) {
+          const media = await downloadMessageMedia(chatId, messageId, { thumb: true });
+          if (!media || !media.buffer) {
+            res.statusCode = 404;
+            return res.end('Media not found');
+          }
+          res.statusCode = 200;
+          res.setHeader('Accept-Ranges', 'bytes');
+          res.setHeader('Content-Length', media.buffer.length);
+          res.setHeader('Content-Type', media.mimeType || 'image/jpeg');
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          return res.end(media.buffer);
+        }
+
+        // Full media / video progressive stream
+        return await streamMediaResponse(chatId, messageId, req, res);
+      }
+
+      // 11b. GET /api/telegram/document
+      if (req.method === 'GET' && pathname === '/api/telegram/document') {
+        const { id, thumb, mimeType } = parsedUrl.query;
+        if (!id) {
+          return sendError(res, 400, 'id is required');
+        }
+        const media = await downloadDocumentMedia(id, { thumb, mimeType });
         if (!media || !media.buffer) {
           res.statusCode = 404;
-          return res.end('Media not found');
+          return res.end('Document not found');
         }
-        res.statusCode = 200;
-        res.setHeader('Content-Type', media.mimeType);
-        res.setHeader('Cache-Control', 'public, max-age=86400');
-        return res.end(media.buffer);
+        const total = media.buffer.length;
+        const range = req.headers.range;
+        if (range) {
+          const parts = range.replace(/bytes=/, '').split('-');
+          const start = parseInt(parts[0], 10);
+          const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+          const chunksize = end - start + 1;
+          res.statusCode = 206;
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+          res.setHeader('Accept-Ranges', 'bytes');
+          res.setHeader('Content-Length', chunksize);
+          res.setHeader('Content-Type', media.mimeType || 'application/octet-stream');
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          return res.end(media.buffer.slice(start, end + 1));
+        } else {
+          res.statusCode = 200;
+          res.setHeader('Accept-Ranges', 'bytes');
+          res.setHeader('Content-Length', total);
+          res.setHeader('Content-Type', media.mimeType || 'application/octet-stream');
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          return res.end(media.buffer);
+        }
       }
 
       // 12. GET/HEAD /api/telegram/avatar
@@ -383,6 +483,147 @@ export function telegramMiddleware() {
       if (req.method === 'DELETE' && pathname === '/api/telegram/profile/photo') {
         const result = await deleteProfilePhoto();
         return sendJson(res, 200, result);
+      }
+
+      // 22. GET /api/telegram/user/full
+      if (req.method === 'GET' && pathname === '/api/telegram/user/full') {
+        const id = parsedUrl.query.id;
+        if (!id) return sendError(res, 400, 'id is required');
+        const user = await getUserFull(id);
+        return sendJson(res, 200, { user });
+      }
+
+      // 23. GET /api/telegram/gifs
+      if (req.method === 'GET' && pathname === '/api/telegram/gifs') {
+        const q = parsedUrl.query.q || '';
+        const offset = parsedUrl.query.offset || '';
+        const result = await getOnlineGifs(q, offset);
+        return sendJson(res, 200, result);
+      }
+
+      // 24. GET /api/telegram/stickers/installed
+      if (req.method === 'GET' && pathname === '/api/telegram/stickers/installed') {
+        const sets = await getInstalledStickerSets();
+        return sendJson(res, 200, { sets });
+      }
+
+      // 25. GET /api/telegram/stickers/set
+      if (req.method === 'GET' && pathname === '/api/telegram/stickers/set') {
+        const { id, accessHash, shortName } = parsedUrl.query;
+        const set = await getStickerSet({ id, accessHash, shortName });
+        return sendJson(res, 200, { set });
+      }
+
+      // 26. POST /api/telegram/stickers/install
+      if (req.method === 'POST' && pathname === '/api/telegram/stickers/install') {
+        const body = await readJsonBody(req);
+        const success = await installStickerSet(body.stickerset || body);
+        return sendJson(res, 200, { success });
+      }
+
+      // 27. POST /api/telegram/stickers/fave
+      if (req.method === 'POST' && pathname === '/api/telegram/stickers/fave') {
+        const body = await readJsonBody(req);
+        const success = await faveSticker(body.documentId, body.accessHash, body.fileReference);
+        return sendJson(res, 200, { success });
+      }
+
+      // 28. POST /api/telegram/stickers/send
+      if (req.method === 'POST' && pathname === '/api/telegram/stickers/send') {
+        const body = await readJsonBody(req);
+        const message = await sendStickerDocument(body.chatId, body.docOrInput, body.replyToMsgId);
+        return sendJson(res, 200, { success: true, message });
+      }
+
+      // 29. GET /api/telegram/sessions
+      if (req.method === 'GET' && pathname === '/api/telegram/sessions') {
+        try {
+          const sessions = await getSessionsList();
+          return sendJson(res, 200, { sessions });
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch sessions');
+        }
+      }
+
+      // 30. POST /api/telegram/sessions/terminate
+      if (req.method === 'POST' && pathname === '/api/telegram/sessions/terminate') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.hash) {
+            return sendError(res, 400, 'hash is required');
+          }
+          const result = await terminateSessionByHash(body.hash);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to terminate session');
+        }
+      }
+
+      // 31. POST /api/telegram/sessions/terminate-all
+      if (req.method === 'POST' && pathname === '/api/telegram/sessions/terminate-all') {
+        try {
+          const result = await terminateAllOtherSessions();
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to terminate other sessions');
+        }
+      }
+
+      // 32. GET /api/telegram/privacy
+      if (req.method === 'GET' && pathname === '/api/telegram/privacy') {
+        try {
+          const type = parsedUrl.query.type || 'lastSeen';
+          const rule = await getPrivacySetting(type);
+          return sendJson(res, 200, { rule });
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch privacy setting');
+        }
+      }
+
+      // 33. POST /api/telegram/privacy
+      if (req.method === 'POST' && pathname === '/api/telegram/privacy') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.keyType || !body.rule) {
+            return sendError(res, 400, 'keyType and rule are required');
+          }
+          const result = await setPrivacySetting(body.keyType, body.rule);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to update privacy setting');
+        }
+      }
+
+      // 34. GET /api/telegram/shared-media
+      if (req.method === 'GET' && pathname === '/api/telegram/shared-media') {
+        try {
+          const { chatId, type = 'photos', limit = 50 } = parsedUrl.query;
+          if (!chatId) {
+            return sendError(res, 400, 'chatId is required');
+          }
+          const messages = await getChatSharedMediaList(chatId, type, limit);
+          return sendJson(res, 200, { messages });
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch shared media');
+        }
+      }
+
+      // 35. GET /api/telegram/updates (Server-Sent Events stream for real-time MTProto updates)
+      if (req.method === 'GET' && pathname === '/api/telegram/updates') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.write(':connected\n\n');
+        addSseClient(res);
+        req.on('close', () => {
+          removeSseClient(res);
+        });
+        // Ensure client connection and event handlers are established
+        getClient().catch((err) => console.warn('[MTProto Middleware] getClient for updates failed:', err.message));
+        return;
       }
 
       // Route not found in /api/telegram

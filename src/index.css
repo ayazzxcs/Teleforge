@@ -154,3 +154,31 @@ input[type="submit"] {
   touch-action: manipulation;
 }
 
+/* Fullscreen Native Video Player Styles */
+:fullscreen .teleforge-video-container,
+:-webkit-full-screen .teleforge-video-container {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  border-radius: 0 !important;
+}
+
+.teleforge-video-container:fullscreen,
+.teleforge-video-container:-webkit-full-screen {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  border-radius: 0 !important;
+  background-color: #000000 !important;
+}
+
+.teleforge-video-container:fullscreen video,
+.teleforge-video-container:-webkit-full-screen video {
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100vh !important;
+  object-fit: contain !important;
+}
+

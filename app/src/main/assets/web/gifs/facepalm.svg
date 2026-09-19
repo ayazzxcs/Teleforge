@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
-  <rect width="160" height="160" rx="16" fill="#1E293B"/>
-  <g transform="translate(80, 85)">
-    <animateTransform attributeName="transform" type="rotate" values="0; -8; 4; 0" dur="0.9s" repeatCount="indefinite"/>
-    <text x="-30" y="15" font-size="52">🤦‍♂️</text>
-  </g>
-  <text x="80" y="145" text-anchor="middle" font-family="Arial" font-size="13" font-weight="bold" fill="#94A3B8">OH NO WHY</text>
-</svg>

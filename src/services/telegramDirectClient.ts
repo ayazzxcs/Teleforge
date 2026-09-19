@@ -19,6 +19,7 @@ import {
   OnlineGifItem,
   TelegramStickerSet,
   TelegramStickerItem,
+  resolveApiUrl,
 } from './telegramApi';
 
 // Production Telegram API Credentials
@@ -80,6 +81,19 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+function bytesToBase64(buffer: Uint8Array | number[] | ArrayBuffer): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(buffer as any).toString('base64');
+  }
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer as any);
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 function extractPeerId(peer: any): string | null {
   if (!peer) return null;
   if (typeof peer === 'string' || typeof peer === 'number') return peer.toString();
@@ -102,7 +116,7 @@ export function onDirectNewMessage(listener: DirectMessageListener): () => void 
   return () => messageListeners.delete(listener);
 }
 
-function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
+function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number, any>): TelegramMessage {
   let senderIdStr = m.senderId ? m.senderId.toString() : (m.fromId ? extractPeerId(m.fromId) : null);
   const senderEntity = m.sender || m._sender || (senderIdStr ? peerEntityCache.get(senderIdStr) : null);
 
@@ -362,6 +376,35 @@ function mapGramJsMessage(m: any, chatId: string): TelegramMessage {
     fileSize,
     duration: durationStr,
     replyToMsgId: m.replyTo?.replyToMsgId,
+    replyToText: (() => {
+      if (m.replyTo?.quoteText) return m.replyTo.quoteText;
+      if (m.replyTo?.replyToMsgId && batchMessagesMap) {
+        const rm = batchMessagesMap.get(m.replyTo.replyToMsgId);
+        if (rm) {
+          if (rm.message) return rm.message;
+          if (rm.media) return 'Attachment';
+        }
+      }
+      return undefined;
+    })(),
+    replyToSenderName: (() => {
+      if (m.replyTo?.replyToMsgId && batchMessagesMap) {
+        const rm = batchMessagesMap.get(m.replyTo.replyToMsgId);
+        if (rm) {
+          if (rm.out) return 'You';
+          const rmSenderId = rm.senderId ? rm.senderId.toString() : (rm.fromId ? extractPeerId(rm.fromId) : null);
+          if (rmSenderId) {
+            const ent = rm.sender || rm._sender || peerEntityCache.get(rmSenderId.toString());
+            if (ent) {
+              return ent.firstName
+                ? `${ent.firstName}${ent.lastName ? ` ${ent.lastName}` : ''}`
+                : (ent.title || ent.username || undefined);
+            }
+          }
+        }
+      }
+      return undefined;
+    })(),
     reactions,
     isRound,
     isSticker,
@@ -582,6 +625,13 @@ function serializeUser(u: any): TelegramUser | null {
 async function resolveInputPeer(client: TelegramClient, id: string): Promise<any> {
   if (!id) return null;
   const str = id.toString();
+  if (peerEntityCache.has(str)) {
+    try {
+      const cached = peerEntityCache.get(str);
+      const input = await client.getInputEntity(cached);
+      if (input) return input;
+    } catch (e) {}
+  }
   try {
     const entity = await client.getInputEntity(str);
     if (entity) return entity;
@@ -966,7 +1016,12 @@ export const telegramDirectClient = {
   /**
    * Get messages for a given chat or channel
    */
-  async getMessages(chatId: string, limit = 50, offsetId?: number): Promise<TelegramMessage[]> {
+  async getMessages(
+    chatId: string,
+    limit = 50,
+    offsetId?: number,
+    options: { search?: string; addOffset?: number; ids?: number[] } = {}
+  ): Promise<TelegramMessage[]> {
     const client = await getDirectClient();
     const isAuth = await client.isUserAuthorized();
     if (!isAuth) {
@@ -987,10 +1042,62 @@ export const telegramDirectClient = {
     if (offsetId && offsetId > 0) {
       fetchOptions.offsetId = offsetId;
     }
+    if (options.addOffset !== undefined) {
+      fetchOptions.addOffset = options.addOffset;
+    }
+    if (options.search && typeof options.search === 'string' && options.search.trim()) {
+      fetchOptions.search = options.search.trim();
+    }
+    if (options.ids && Array.isArray(options.ids)) {
+      fetchOptions.ids = options.ids;
+    }
 
-    const messages = await client.getMessages(targetPeer, fetchOptions);
+    try {
+      const messages = await client.getMessages(targetPeer, fetchOptions);
+      const batchMessagesMap = new Map<number, any>();
+      for (const m of messages) {
+        if (m && m.id) batchMessagesMap.set(m.id, m);
+      }
+      const missingReplyIds: number[] = [];
+      for (const m of messages) {
+        const rId = m?.replyTo?.replyToMsgId;
+        if (rId && !batchMessagesMap.has(rId) && !missingReplyIds.includes(rId)) {
+          missingReplyIds.push(rId);
+        }
+      }
+      if (missingReplyIds.length > 0) {
+        try {
+          const fetchedReplies = await client.getMessages(targetPeer, { ids: missingReplyIds.slice(0, 25) });
+          if (Array.isArray(fetchedReplies)) {
+            for (const rm of fetchedReplies) {
+              if (rm && rm.id) batchMessagesMap.set(rm.id, rm);
+            }
+          }
+        } catch (e) {}
+      }
+      return messages.map((m: any) => mapGramJsMessage(m, chatId, batchMessagesMap));
+    } catch (err: any) {
+      console.warn('[MTProto-Direct] getMessages fallback for peer:', chatId, err?.message || err);
+      return [];
+    }
+  },
 
-    return messages.map((m: any) => mapGramJsMessage(m, chatId));
+  /**
+   * Search messages in a chat directly via Telegram MTProto
+   */
+  async searchMessages(chatId: string, query: string, limit = 30): Promise<TelegramMessage[]> {
+    if (!query || !query.trim()) return [];
+    return this.getMessages(chatId, limit, 0, { search: query.trim() });
+  },
+
+  /**
+   * Get messages surrounding a target message ID for direct navigation
+   */
+  async getMessagesAround(chatId: string, messageId: number | string, limit = 50): Promise<TelegramMessage[]> {
+    const mid = parseInt(String(messageId), 10);
+    if (!mid) return [];
+    const half = Math.floor(limit / 2);
+    return this.getMessages(chatId, limit, mid, { addOffset: -half });
   },
 
   /**
@@ -1529,8 +1636,15 @@ export const telegramDirectClient = {
         try {
           target = await client.getInputEntity(userId);
         } catch (e) {
-          target = userId;
+          try {
+            target = await client.getEntity(userId);
+          } catch (e2) {
+            target = null;
+          }
         }
+      }
+      if (!target) {
+        return {};
       }
       const full: any = await client.invoke(new Api.users.GetFullUser({ id: target }));
       const bio = full?.fullUser?.about || full?.about || '';
@@ -1603,12 +1717,24 @@ export const telegramDirectClient = {
 
     try {
       const client = await getDirectClient();
-      let targetPeer: any = cleanId === 'me' ? 'me' : peerEntityCache.get(cleanId);
-      if (!targetPeer && cleanId !== 'me') {
+      let targetPeer: any = cleanId === 'me' ? 'me' : null;
+      if (!targetPeer) {
+        const variations = [cleanId];
         if (cleanId.startsWith('-100')) {
-          targetPeer = peerEntityCache.get(cleanId.slice(4));
+          variations.push(cleanId.slice(4));
+          variations.push(`-${cleanId.slice(4)}`);
         } else if (cleanId.startsWith('-')) {
-          targetPeer = peerEntityCache.get(cleanId.slice(1));
+          variations.push(cleanId.slice(1));
+          variations.push(`-100${cleanId.slice(1)}`);
+        } else {
+          variations.push(`-100${cleanId}`);
+          variations.push(`-${cleanId}`);
+        }
+        for (const v of variations) {
+          if (peerEntityCache.has(v)) {
+            targetPeer = peerEntityCache.get(v);
+            break;
+          }
         }
       }
       if (!targetPeer && cleanId !== 'me') {
@@ -1619,8 +1745,22 @@ export const telegramDirectClient = {
         }
       }
 
-      const buffer = await client.downloadProfilePhoto(targetPeer || cleanId, { isBig });
-      if (buffer && buffer.length > 0) {
+      let buffer: any = null;
+      try {
+        buffer = await client.downloadProfilePhoto(targetPeer || cleanId, { isBig });
+      } catch (e) {}
+
+      if ((!buffer || buffer.length < 500) && !isBig) {
+        try {
+          buffer = await client.downloadProfilePhoto(targetPeer || cleanId, { isBig: true });
+        } catch (e) {}
+      } else if ((!buffer || buffer.length < 500) && isBig) {
+        try {
+          buffer = await client.downloadProfilePhoto(targetPeer || cleanId, { isBig: false });
+        } catch (e) {}
+      }
+
+      if (buffer && buffer.length > 200) {
         const dataUrl = `data:image/jpeg;base64,${Buffer.from(buffer).toString('base64')}`;
         avatarBlobUrlCache.set(cleanId, dataUrl);
         return dataUrl;
@@ -1638,7 +1778,7 @@ export const telegramDirectClient = {
     fileBase64?: string;
     filename?: string;
     url?: string;
-  }): Promise<{ success: boolean; user: TelegramUser; avatarUrl: string }> {
+  }): Promise<{ success: boolean; user: TelegramUser; avatarUrl: string; dataUrl?: string; photoId?: string }> {
     const client = await getDirectClient();
     const isAuth = await client.isUserAuthorized();
     if (!isAuth) {
@@ -1876,31 +2016,6 @@ export const telegramDirectClient = {
           a._ === 'documentAttributeSticker' || a.className === 'DocumentAttributeSticker'
         ) || mimeType === 'image/webp' || mimeType === 'application/x-tgsticker';
 
-        // 1. FAST-PATH THUMBNAIL: If requesting thumbnail for video or sticker, check embedded thumbs first!
-        if (!options?.fullVideo) {
-          const thumbs = mediaObj.document?.thumbs || [];
-          const stripped = thumbs.find((t: any) =>
-            t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
-          );
-          if (stripped?.bytes) {
-            try {
-              const thumbBuf = strippedPhotoToJpg(stripped.bytes);
-              if (thumbBuf && thumbBuf.length > 0) {
-                const dataUrl = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
-                return { dataUrl, mimeType: 'image/jpeg' };
-              }
-            } catch (e) {}
-          }
-
-          const cached = thumbs.find((t: any) =>
-            (t._ === 'photoCachedSize' || t.className === 'PhotoCachedSize') && t.bytes
-          );
-          if (cached?.bytes) {
-            const dataUrl = `data:image/jpeg;base64,${Buffer.from(cached.bytes).toString('base64')}`;
-            return { dataUrl, mimeType: 'image/jpeg' };
-          }
-        }
-
         if (isVideo) {
           mimeType = mimeType.startsWith('video/') ? mimeType : 'video/mp4';
           // If downloading thumbnail for video, use a valid thumbnail type - NEVER thumb = -1!
@@ -1912,6 +2027,9 @@ export const telegramDirectClient = {
             if (normalThumbs.length > 0) {
               const best = normalThumbs[normalThumbs.length - 1];
               downloadParams.thumb = best.type || (normalThumbs.length - 1);
+              mimeType = 'image/jpeg';
+            } else if (mediaObj.document?.videoThumbs && mediaObj.document.videoThumbs.length > 0) {
+              downloadParams.thumb = mediaObj.document.videoThumbs[0].type;
               mimeType = 'image/jpeg';
             } else {
               return null; // Don't download full video when thumbnail requested
@@ -1967,12 +2085,15 @@ export const telegramDirectClient = {
           console.warn('[MTProto-Direct] fullVideo download error:', dlErr?.message || dlErr);
         }
 
-        if (chunks.length === 0) return null;
+        if (totalDownloaded === 0 || chunks.length === 0) {
+          return null;
+        }
 
-        const blob = new Blob(chunks as any[], { type: 'video/mp4' });
+        const actualMime = mimeType && mimeType.startsWith('video/') ? mimeType : 'video/mp4';
+        const blob = new Blob(chunks as any[], { type: actualMime });
         const blobUrl = URL.createObjectURL(blob);
         options?.onProgress?.(100, totalDownloaded, totalDownloaded);
-        return { dataUrl: blobUrl, mimeType: 'video/mp4', blob, size: totalDownloaded };
+        return { dataUrl: blobUrl, mimeType: actualMime, blob, size: totalDownloaded };
       }
 
       // Normal thumbnail / image download with fallback retry if thumb returns empty
@@ -2481,7 +2602,7 @@ export const telegramDirectClient = {
         'Thumb download timeout'
       );
       if (buffer && buffer.length > 0) {
-        const dataUrl = `data:image/jpeg;base64,${Buffer.from(buffer).toString('base64')}`;
+        const dataUrl = `data:image/jpeg;base64,${bytesToBase64(buffer)}`;
         if (docId) gifThumbCache.set(docId, dataUrl);
         return dataUrl;
       }
@@ -2552,7 +2673,7 @@ export const telegramDirectClient = {
             try {
               const jpgBuf = strippedPhotoToJpg(stripped.bytes);
               if (jpgBuf) {
-                thumbUrl = `data:image/jpeg;base64,${Buffer.from(jpgBuf).toString('base64')}`;
+                thumbUrl = `data:image/jpeg;base64,${bytesToBase64(jpgBuf)}`;
               }
             } catch (e) {}
           }
@@ -2636,9 +2757,12 @@ export const telegramDirectClient = {
           try {
             const jpgBuf = strippedPhotoToJpg(stripped.bytes);
             if (jpgBuf) {
-              thumbUrl = `data:image/jpeg;base64,${Buffer.from(jpgBuf).toString('base64')}`;
+              thumbUrl = `data:image/jpeg;base64,${bytesToBase64(jpgBuf)}`;
             }
           } catch (e) {}
+        }
+        if (!thumbUrl && dId) {
+          thumbUrl = resolveApiUrl(`/api/telegram/document?id=${dId}&thumb=m`);
         }
 
         stickers.push({
@@ -2648,6 +2772,7 @@ export const telegramDirectClient = {
           fileReference: fileRef,
           emoji: emojiMap.get(dId),
           thumbUrl,
+          url: thumbUrl || resolveApiUrl(`/api/telegram/document?id=${dId}&thumb=m`),
           rawDoc: doc,
         });
       }

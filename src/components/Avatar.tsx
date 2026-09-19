@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { avatarService } from '../services/avatarService';
+import { resolveApiUrl } from '../services/telegramApi';
 
 interface AvatarProps {
   src?: string;
@@ -33,16 +34,19 @@ export const Avatar: React.FC<AvatarProps> = ({
 }) => {
   const effectivePeerId = peerId || extractPeerIdFromSrc(src) || undefined;
   
-  // Check if src is already a direct high-res data URL or blob URL (> 500 bytes)
-  const isDirectHighRes = Boolean(
-    src &&
-    (src.startsWith('blob:') || (src.startsWith('data:image/') && src.length > 500))
-  );
+  // Any data URL under 5000 characters is a micro stripped preview thumbnail, not high-res
+  const isMicroThumb = Boolean(src && src.startsWith('data:image/') && src.length < 5000);
+  const directSrc = src && !isMicroThumb ? src : undefined;
+  const effectivePreviewSrc = previewSrc || (isMicroThumb ? src : undefined);
+
+  const fallbackAvatarUrl = effectivePeerId
+    ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(effectivePeerId)}`)
+    : undefined;
 
   const [highResSrc, setHighResSrc] = useState<string | null>(() => {
-    if (isDirectHighRes) return src!;
+    if (directSrc) return directSrc;
     if (effectivePeerId) {
-      return avatarService.get(effectivePeerId);
+      return avatarService.get(effectivePeerId) || fallbackAvatarUrl || null;
     }
     return null;
   });
@@ -53,8 +57,8 @@ export const Avatar: React.FC<AvatarProps> = ({
 
   // Subscribe to live high-res avatar updates
   useEffect(() => {
-    if (isDirectHighRes && src) {
-      setHighResSrc(src);
+    if (directSrc) {
+      setHighResSrc(directSrc);
       return;
     }
 
@@ -67,6 +71,8 @@ export const Avatar: React.FC<AvatarProps> = ({
     const existing = avatarService.get(effectivePeerId);
     if (existing) {
       setHighResSrc(existing);
+    } else if (fallbackAvatarUrl) {
+      setHighResSrc(fallbackAvatarUrl);
     }
 
     // 2. Subscribe to background download updates
@@ -84,24 +90,24 @@ export const Avatar: React.FC<AvatarProps> = ({
           setHighResSrc(url);
           setHasError(false);
         }
-      });
+      }).catch(() => {});
     }
 
     return () => {
       unsubscribe();
     };
-  }, [effectivePeerId, src, isDirectHighRes, size]);
+  }, [effectivePeerId, directSrc, size, fallbackAvatarUrl]);
 
-  // Reset load state when image source changes
-  const activeSrc = highResSrc || (isDirectHighRes ? src : undefined);
+  // Active high-resolution source
+  const activeSrc = highResSrc || directSrc || (effectivePeerId ? avatarService.get(effectivePeerId) : undefined) || fallbackAvatarUrl;
 
   useEffect(() => {
     setIsLoaded(false);
-    setHasError(!activeSrc && !previewSrc);
+    setHasError(!activeSrc && !effectivePreviewSrc);
     if (activeSrc && imgRef.current?.complete && imgRef.current.naturalWidth > 0) {
       setIsLoaded(true);
     }
-  }, [activeSrc, previewSrc]);
+  }, [activeSrc, effectivePreviewSrc]);
 
   const getInitials = (text: string) => {
     if (!text) return '?';
@@ -124,9 +130,9 @@ export const Avatar: React.FC<AvatarProps> = ({
   const bgStyle = isClassColor ? undefined : { backgroundColor: color };
   const bgClass = isGradient ? `bg-gradient-to-br ${color}` : isClassColor ? color : '';
 
-  const hasAnyPhoto = Boolean(activeSrc || previewSrc);
+  const hasAnyPhoto = Boolean(activeSrc || effectivePreviewSrc);
 
-  if (!hasAnyPhoto || (hasError && !previewSrc)) {
+  if (!hasAnyPhoto || hasError) {
     return (
       <div
         style={bgStyle}
@@ -146,12 +152,12 @@ export const Avatar: React.FC<AvatarProps> = ({
       <span>{getInitials(name)}</span>
 
       {/* Low-res preview thumbnail (shown while high-res loads) */}
-      {previewSrc && !isLoaded && (
+      {effectivePreviewSrc && !isLoaded && !hasError && (
         <img
-          src={previewSrc}
+          src={effectivePreviewSrc}
           alt=""
           aria-hidden="true"
-          className="absolute inset-0 w-full h-full object-cover rounded-full"
+          className="absolute inset-0 w-full h-full object-cover rounded-full filter blur-[1.5px] scale-105"
         />
       )}
 

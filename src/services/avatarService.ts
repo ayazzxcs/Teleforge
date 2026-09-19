@@ -58,6 +58,15 @@ async function putToIndexedDB(key: string, value: string): Promise<void> {
   } catch (e) {}
 }
 
+async function deleteFromIndexedDB(key: string): Promise<void> {
+  try {
+    const db = await getDB();
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    store.delete(key);
+  } catch (e) {}
+}
+
 function notifySubscribers(peerId: string, url: string): void {
   const subs = subscribers.get(peerId);
   if (subs) {
@@ -106,22 +115,111 @@ export const avatarService = {
     const direct = memoryCache.get(cleanId);
     if (direct) return direct;
     if (cleanId.startsWith('-100')) {
-      return memoryCache.get(cleanId.slice(4)) || null;
+      return memoryCache.get(cleanId.slice(4)) || memoryCache.get(`-${cleanId.slice(4)}`) || null;
     } else if (cleanId.startsWith('-')) {
-      return memoryCache.get(cleanId.slice(1)) || null;
+      return memoryCache.get(cleanId.slice(1)) || memoryCache.get(`-100${cleanId.slice(1)}`) || null;
+    } else {
+      return memoryCache.get(`-100${cleanId}`) || memoryCache.get(`-${cleanId}`) || null;
     }
-    return null;
+  },
+
+  /**
+   * Remove avatar from memory and IndexedDB, notifying active subscribers
+   */
+  deleteAvatar(peerId?: string | null): void {
+    if (!peerId) return;
+    const cleanId = String(peerId).trim();
+    memoryCache.delete(cleanId);
+    deleteFromIndexedDB(cleanId);
+    notifySubscribers(cleanId, '');
+
+    if (cleanId === 'me' || cleanId === 'user-me') {
+      try {
+        const cachedUser = localStorage.getItem('teleforge_cached_user');
+        if (cachedUser) {
+          const u = JSON.parse(cachedUser);
+          if (u.id) {
+            const idStr = String(u.id);
+            memoryCache.delete(idStr);
+            deleteFromIndexedDB(idStr);
+            notifySubscribers(idStr, '');
+          }
+        }
+      } catch (e) {}
+    } else {
+      try {
+        const cachedUser = localStorage.getItem('teleforge_cached_user');
+        if (cachedUser) {
+          const u = JSON.parse(cachedUser);
+          if (u.id && String(u.id) === cleanId) {
+            memoryCache.delete('me');
+            deleteFromIndexedDB('me');
+            notifySubscribers('me', '');
+            memoryCache.delete('user-me');
+            deleteFromIndexedDB('user-me');
+            notifySubscribers('user-me', '');
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (cleanId.startsWith('-100')) {
+      const bare = cleanId.slice(4);
+      memoryCache.delete(bare);
+      deleteFromIndexedDB(bare);
+      notifySubscribers(bare, '');
+    } else if (cleanId.startsWith('-')) {
+      const bare = cleanId.slice(1);
+      memoryCache.delete(bare);
+      deleteFromIndexedDB(bare);
+      notifySubscribers(bare, '');
+    }
   },
 
   /**
    * Store high-res avatar in memory and IndexedDB, notifying any active UI components
    */
   setAvatar(peerId: string, dataUrl: string): void {
-    if (!peerId || !dataUrl) return;
+    if (!peerId) return;
+    if (!dataUrl) {
+      this.deleteAvatar(peerId);
+      return;
+    }
     const cleanId = String(peerId).trim();
     memoryCache.set(cleanId, dataUrl);
     putToIndexedDB(cleanId, dataUrl);
     notifySubscribers(cleanId, dataUrl);
+
+    if (cleanId === 'me' || cleanId === 'user-me') {
+      try {
+        const cachedUser = localStorage.getItem('teleforge_cached_user');
+        if (cachedUser) {
+          const u = JSON.parse(cachedUser);
+          if (u.id && String(u.id) !== cleanId) {
+            const idStr = String(u.id);
+            memoryCache.set(idStr, dataUrl);
+            putToIndexedDB(idStr, dataUrl);
+            notifySubscribers(idStr, dataUrl);
+          }
+        }
+      } catch (e) {}
+    } else {
+      try {
+        const cachedUser = localStorage.getItem('teleforge_cached_user');
+        if (cachedUser) {
+          const u = JSON.parse(cachedUser);
+          if (u.id && String(u.id) === cleanId) {
+            memoryCache.set('me', dataUrl);
+            putToIndexedDB('me', dataUrl);
+            notifySubscribers('me', dataUrl);
+            memoryCache.set('user-me', dataUrl);
+            putToIndexedDB('user-me', dataUrl);
+            notifySubscribers('user-me', dataUrl);
+          }
+        }
+      } catch (e) {}
+    }
+
     if (cleanId.startsWith('-100')) {
       const bare = cleanId.slice(4);
       memoryCache.set(bare, dataUrl);
@@ -203,11 +301,31 @@ export const avatarService = {
         }
       } catch (e) {}
 
-      // 4. Direct MTProto download
       return new Promise<string>((resolve) => {
         enqueueDownload(async () => {
           try {
-            const dataUrl = await telegramDirectClient.downloadAvatarUrl(cleanId, isBig);
+            let dataUrl = '';
+            try {
+              dataUrl = await telegramDirectClient.downloadAvatarUrl(cleanId, isBig);
+            } catch (e) {}
+
+            // Fallback to backend avatar endpoint on localhost/web or if direct client failed
+            if (!dataUrl && typeof fetch !== 'undefined') {
+              try {
+                const res = await fetch(`/api/telegram/avatar?id=${encodeURIComponent(cleanId)}&v=${isBig ? 'big' : '1'}`);
+                if (res.ok) {
+                  const blob = await res.blob();
+                  if (blob.size > 200) {
+                    dataUrl = await new Promise<string>((resBlob) => {
+                      const reader = new FileReader();
+                      reader.onloadend = () => resBlob(reader.result as string);
+                      reader.readAsDataURL(blob);
+                    });
+                  }
+                }
+              } catch (e) {}
+            }
+
             if (dataUrl && dataUrl.length > 200) {
               memoryCache.set(cleanId, dataUrl);
               putToIndexedDB(cleanId, dataUrl);

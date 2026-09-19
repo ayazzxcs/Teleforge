@@ -18,6 +18,7 @@ import { showToast } from './Toast';
 import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
 import { mediaService } from '../services/mediaService';
 import { downloadFileToDevice } from '../utils/fileDownloader';
+import { resolveApiUrl } from '../services/telegramApi';
 
 interface MediaModalProps {
   attachment: Attachment | null;
@@ -45,14 +46,28 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
       return;
     }
 
-    const isValidVideo = attachment.url && (attachment.url.startsWith('blob:') || attachment.url.startsWith('http') || attachment.url.startsWith('data:video/'));
+    const streamUrl = (attachment.chatId && attachment.messageId)
+      ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(attachment.chatId)}&messageId=${attachment.messageId}`)
+      : '';
+    const initialUrl = attachment.url || streamUrl;
+    const isValidVideo = initialUrl && (
+      initialUrl.startsWith('blob:') ||
+      initialUrl.startsWith('http://') ||
+      initialUrl.startsWith('https://') ||
+      initialUrl.startsWith('/api/') ||
+      initialUrl.startsWith('data:video/')
+    );
+
     if (isValidVideo) {
-      setVideoUrl(attachment.url);
+      setVideoUrl(initialUrl);
       setIsVideoLoading(false);
     } else if (attachment.chatId && attachment.messageId) {
       const cached = mediaService.get(attachment.chatId, attachment.messageId, { fullVideo: true });
       if (cached) {
         setVideoUrl(cached);
+        setIsVideoLoading(false);
+      } else if (streamUrl) {
+        setVideoUrl(streamUrl);
         setIsVideoLoading(false);
       } else {
         setIsVideoLoading(true);
@@ -73,7 +88,8 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
             },
           })
           .then((url) => {
-            if (url) setVideoUrl(url);
+            const finalUrl = url || streamUrl;
+            if (finalUrl) setVideoUrl(finalUrl);
           })
           .finally(() => {
             setIsVideoLoading(false);
@@ -249,6 +265,18 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
                   poster={attachment.thumbUrl}
                   title={attachment.name}
                   autoPlay={true}
+                  initialDuration={(() => {
+                    if (!attachment.duration) return 0;
+                    const parts = attachment.duration.split(':').map((p) => parseInt(p, 10));
+                    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                      return parts[0] * 60 + parts[1];
+                    }
+                    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+                      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+                    }
+                    const n = Number(attachment.duration);
+                    return isNaN(n) ? 0 : n;
+                  })()}
                 />
               ) : (
                 <div className="relative w-full max-h-[82vh] flex items-center justify-center bg-black/80 rounded-2xl overflow-hidden min-h-[260px] border border-white/10">

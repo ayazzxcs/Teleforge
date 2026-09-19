@@ -354,21 +354,31 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
 
   const handlePhotoClick = (item: { id: string | number; attachment: any }) => {
     if (onOpenMediaModal) {
+      const fullUrl =
+        mediaService.get(chat.id, item.id) ||
+        item.attachment?.url ||
+        `/api/telegram/media?chatId=${encodeURIComponent(chat.id)}&messageId=${item.id}`;
       onOpenMediaModal({
         ...item.attachment,
         chatId: chat.id,
         messageId: item.id,
-        url: item.attachment.thumbUrl || item.attachment.url || '',
+        url: fullUrl,
+        thumbUrl: item.attachment?.thumbUrl,
       });
     }
   };
 
   const handleVideoClick = (item: { id: string | number; attachment: any }) => {
     if (onOpenMediaModal) {
+      const videoUrl =
+        item.attachment?.url ||
+        `/api/telegram/media?chatId=${encodeURIComponent(chat.id)}&messageId=${item.id}`;
       onOpenMediaModal({
         ...item.attachment,
         chatId: chat.id,
         messageId: item.id,
+        url: videoUrl,
+        thumbUrl: item.attachment?.thumbUrl,
       });
     }
   };

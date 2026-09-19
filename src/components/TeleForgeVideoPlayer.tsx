@@ -12,6 +12,7 @@ import {
   Check,
   ChevronUp,
   Settings,
+  AlertTriangle,
 } from 'lucide-react';
 import { downloadFileToDevice } from '../utils/fileDownloader';
 
@@ -22,6 +23,8 @@ export interface TeleForgeVideoPlayerProps {
   autoPlay?: boolean;
   className?: string;
   maxHeightClass?: string;
+  initialDuration?: number;
+  onFullscreenChange?: (isFullscreen: boolean) => void;
 }
 
 export interface AudioTrackItem {
@@ -84,23 +87,38 @@ const LANGUAGE_NAMES: Record<string, string> = {
   pol: 'Polish',
 };
 
-function formatLanguageLabel(track: { label?: string; language?: string; index: number }): string {
+function formatLanguageLabel(track: { label?: string; language?: string; codec?: string; index: number }): string {
   const langKey = (track.language || '').toLowerCase().trim();
   const knownName = LANGUAGE_NAMES[langKey];
-  if (track.label && track.label.trim()) {
-    return track.label;
+  const codecClean = (track.codec || '').replace('A_', '').replace('MPEG/L3', 'MP3');
+  const trackNum = `Track ${track.index + 1}`;
+
+  // If label is a clean custom title (ignore bot/channel watermarks like @channel)
+  const cleanLabel = track.label && !track.label.trim().startsWith('@') ? track.label.trim() : '';
+
+  if (cleanLabel && knownName) {
+    return `${cleanLabel} • ${knownName}`;
+  }
+  if (knownName && codecClean) {
+    return `${knownName} • ${codecClean} (${trackNum})`;
   }
   if (knownName) {
-    return `${knownName} (${langKey.toUpperCase()})`;
+    return `${knownName} (${trackNum})`;
+  }
+  if (cleanLabel) {
+    return `${cleanLabel} (${trackNum})`;
+  }
+  if (codecClean) {
+    return `${codecClean} Audio (${trackNum})`;
   }
   if (track.language) {
-    return `Audio: ${track.language.toUpperCase()}`;
+    return `Audio: ${track.language.toUpperCase()} (${trackNum})`;
   }
   return `Audio Track ${track.index + 1}`;
 }
 
 function formatTime(seconds: number): string {
-  if (isNaN(seconds) || seconds < 0) return '0:00';
+  if (isNaN(seconds) || seconds < 0 || !isFinite(seconds)) return '0:00';
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   const hrs = Math.floor(mins / 60);
@@ -118,6 +136,8 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
   autoPlay = false,
   className = '',
   maxHeightClass = 'max-h-[80vh]',
+  initialDuration = 0,
+  onFullscreenChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -125,7 +145,7 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
 
   const [isPlaying, setIsPlaying] = useState(autoPlay);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState<number>(initialDuration || 0);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
@@ -134,6 +154,27 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [bufferedPercent, setBufferedPercent] = useState(0);
+
+  const updateBuffered = useCallback(() => {
+    const v = videoRef.current;
+    if (v && v.buffered.length > 0) {
+      try {
+        const end = v.buffered.end(v.buffered.length - 1);
+        const total = v.duration || duration || 0;
+        if (total > 0) {
+          setBufferedPercent(Math.min(100, Math.max(0, (end / total) * 100)));
+        }
+      } catch (e) {}
+    }
+  }, [duration]);
+
+  useEffect(() => {
+    if (initialDuration && initialDuration > 0) {
+      setDuration(initialDuration);
+    }
+  }, [initialDuration]);
 
   useEffect(() => {
     setHasError(false);
@@ -159,12 +200,58 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
 
   const controlsTimeoutRef = useRef<any>(null);
 
-  // Inspect and extract audio tracks from HTMLMediaElement
+  // Auto-transcode fallback: if playback fails, automatically retry with &transcode=1 (server-side H.264 transcode)
+  const [useTranscode, setUseTranscode] = useState(false);
+  const transcodeAttemptedRef = useRef(false);
+  const probedSrcRef = useRef<string>('');
+
+  // The actual src fed to <video>: adds active audioTrack and &transcode=1 if auto-fallback kicked in
+  const activeSrc = (() => {
+    let url = src;
+    if (selectedTrackIndex > 0) {
+      const sep = url.includes('?') ? '&' : '?';
+      url = `${url.replace(/[?&]audioTrack=\d+/, '')}${sep}audioTrack=${selectedTrackIndex}`;
+    }
+    if (useTranscode) {
+      const sep = url.includes('?') ? '&' : '?';
+      url = `${url.replace(/[?&]transcode=1/, '')}${sep}transcode=1`;
+    }
+    return url;
+  })();
+
+  // Reset transcode state when src changes
+  useEffect(() => {
+    setUseTranscode(false);
+    transcodeAttemptedRef.current = false;
+    setSelectedTrackIndex(0);
+  }, [src]);
+
+  // When activeSrc changes (audioTrack switched or transcode fallback enabled), re-load and continue playing
+  const prevActiveSrcRef = useRef(activeSrc);
+  useEffect(() => {
+    if (prevActiveSrcRef.current !== activeSrc) {
+      prevActiveSrcRef.current = activeSrc;
+      const video = videoRef.current;
+      if (video) {
+        const wasPlaying = isPlaying;
+        const currentPos = currentTime;
+        video.load();
+        if (currentPos > 0) {
+          video.currentTime = currentPos;
+        }
+        if (wasPlaying || autoPlay) {
+          video.play().then(() => setIsPlaying(true)).catch(() => {});
+        }
+      }
+    }
+  }, [activeSrc, isPlaying, currentTime, autoPlay]);
+
+  // Inspect and extract audio tracks from HTMLMediaElement or dedicated probe endpoint
   const inspectAudioTracks = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     const rawList = (video as any).audioTracks;
-    if (rawList && rawList.length > 0) {
+    if (rawList && rawList.length > 1) {
       const parsed: AudioTrackItem[] = [];
       let activeIdx = 0;
       for (let i = 0; i < rawList.length; i++) {
@@ -181,24 +268,70 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
       }
       setAudioTracks(parsed);
       setSelectedTrackIndex(activeIdx);
+      return;
     }
-  }, []);
+
+    // Query backend audio tracks endpoint (reads first 256KB once, 0ms on cache)
+    if (src && src.includes('/api/telegram/media') && probedSrcRef.current !== src) {
+      probedSrcRef.current = src;
+      const cleanUrl = src.replace(/[?&](?:audioTrack|transcode|compat)=\w+/g, '');
+      const tracksUrl = cleanUrl.replace('/api/telegram/media', '/api/telegram/media/tracks');
+      fetch(tracksUrl)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.tracks && data.tracks.length > 0) {
+            setAudioTracks(data.tracks);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [src]);
+
+  useEffect(() => {
+    inspectAudioTracks();
+  }, [src, inspectAudioTracks]);
+
+  // Watchdog: detect if audio is playing but 0 video frames are decoded (unsupported video codec like HEVC in Chromium)
+  useEffect(() => {
+    if (!isPlaying || useTranscode) return;
+    const timer = setInterval(() => {
+      const v = videoRef.current;
+      if (!v || v.paused || v.currentTime < 1.2) return;
+
+      const decoded = (v as any).webkitDecodedFrameCount !== undefined
+        ? (v as any).webkitDecodedFrameCount
+        : v.getVideoPlaybackQuality?.()?.totalVideoFrames;
+
+      // If video has played past 1.2s but decoded 0 frames (or videoWidth is 0)
+      if (
+        (decoded === 0 || (v.videoWidth === 0 && v.videoHeight === 0)) &&
+        !transcodeAttemptedRef.current &&
+        src.includes('/api/telegram/media')
+      ) {
+        console.warn('[TeleForgeVideoPlayer] Audio playing but 0 video frames decoded (e.g. HEVC). Auto-enabling H.264 transcode...');
+        transcodeAttemptedRef.current = true;
+        setUseTranscode(true);
+      }
+    }, 800);
+
+    return () => clearInterval(timer);
+  }, [isPlaying, useTranscode, src]);
 
   // Switch active audio track
   const handleSelectAudioTrack = (index: number) => {
+    setSelectedTrackIndex(index);
+    setAudioTracks((prev) =>
+      prev.map((t, i) => ({ ...t, enabled: i === index }))
+    );
+
     const video = videoRef.current;
-    if (!video) return;
-    const rawList = (video as any).audioTracks;
-    if (rawList && rawList.length > 0) {
-      for (let i = 0; i < rawList.length; i++) {
-        rawList[i].enabled = i === index;
+    if (video) {
+      const rawList = (video as any).audioTracks;
+      if (rawList && rawList.length > 1) {
+        for (let i = 0; i < rawList.length; i++) {
+          rawList[i].enabled = i === index;
+        }
       }
-      setSelectedTrackIndex(index);
-      setAudioTracks((prev) =>
-        prev.map((t, i) => ({ ...t, enabled: i === index }))
-      );
-    } else {
-      setSelectedTrackIndex(index);
     }
     setShowLanguageMenu(false);
   };
@@ -300,38 +433,54 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
     setShowSpeedMenu(false);
   };
 
-  // Toggle Fullscreen (Native Android Immersive Bridge + HTML5 Video Fullscreen)
+  // Toggle Fullscreen (Native Container Fullscreen API + Android Immersive Bridge)
   const toggleFullscreen = () => {
-    if (!isFullscreen) {
+    const container = containerRef.current;
+    const isCurrentlyFs = Boolean(
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      isFullscreen
+    );
+
+    if (!isCurrentlyFs) {
       try {
         (window as any).TeleForgeBridge?.setFullscreen?.(true);
       } catch (e) {}
 
-      // Attempt native HTML5 video element fullscreen (triggers Android WebChromeClient.onShowCustomView)
-      const video = videoRef.current;
-      if (video) {
-        if (typeof (video as any).webkitEnterFullscreen === 'function') {
-          try { (video as any).webkitEnterFullscreen(); } catch (e) {}
-        } else if (typeof video.requestFullscreen === 'function') {
-          video.requestFullscreen().catch(() => {});
-        } else if (typeof (video as any).webkitRequestFullscreen === 'function') {
-          try { (video as any).webkitRequestFullscreen(); } catch (e) {}
+      if (container) {
+        if (typeof container.requestFullscreen === 'function') {
+          container.requestFullscreen().catch(() => {
+            setIsFullscreen(true);
+          });
+        } else if (typeof (container as any).webkitRequestFullscreen === 'function') {
+          try {
+            (container as any).webkitRequestFullscreen();
+          } catch (e) {
+            setIsFullscreen(true);
+          }
+        } else if (videoRef.current && typeof (videoRef.current as any).webkitEnterFullscreen === 'function') {
+          try {
+            (videoRef.current as any).webkitEnterFullscreen();
+          } catch (e) {
+            setIsFullscreen(true);
+          }
+        } else {
+          setIsFullscreen(true);
         }
+      } else {
+        setIsFullscreen(true);
       }
-
-      setIsFullscreen(true);
     } else {
       try {
         (window as any).TeleForgeBridge?.setFullscreen?.(false);
       } catch (e) {}
 
-      const video = videoRef.current;
-      if (video && typeof (video as any).webkitExitFullscreen === 'function') {
-        try { (video as any).webkitExitFullscreen(); } catch (e) {}
-      } else if (document.fullscreenElement) {
+      if (document.fullscreenElement) {
         document.exitFullscreen?.().catch(() => {});
       } else if ((document as any).webkitFullscreenElement) {
         try { (document as any).webkitExitFullscreen?.(); } catch (e) {}
+      } else if (videoRef.current && typeof (videoRef.current as any).webkitExitFullscreen === 'function') {
+        try { (videoRef.current as any).webkitExitFullscreen(); } catch (e) {}
       }
       setIsFullscreen(false);
     }
@@ -340,12 +489,17 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
   // Handle Fullscreen change listener
   useEffect(() => {
     const handleFsChange = () => {
-      const isNativeFs = Boolean(document.fullscreenElement || (document as any).webkitFullscreenElement);
-      if (!isNativeFs && isFullscreen) {
+      const isNativeFs = Boolean(
+        document.fullscreenElement === containerRef.current ||
+        (document as any).webkitFullscreenElement === containerRef.current ||
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement
+      );
+      setIsFullscreen(isNativeFs);
+      if (!isNativeFs) {
         try {
           (window as any).TeleForgeBridge?.setFullscreen?.(false);
         } catch (e) {}
-        setIsFullscreen(false);
       }
     };
     document.addEventListener('fullscreenchange', handleFsChange);
@@ -354,7 +508,11 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
       document.removeEventListener('fullscreenchange', handleFsChange);
       document.removeEventListener('webkitfullscreenchange', handleFsChange);
     };
-  }, [isFullscreen]);
+  }, []);
+
+  useEffect(() => {
+    onFullscreenChange?.(isFullscreen);
+  }, [isFullscreen, onFullscreenChange]);
 
   // Auto-hide controls timer
   const resetControlsTimeout = () => {
@@ -377,9 +535,9 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
   }, [isPlaying]);
 
   const currentTrackLabel = audioTracks.length > 0
-    ? audioTracks[selectedTrackIndex]?.label || `Track ${selectedTrackIndex + 1}`
+    ? audioTracks[selectedTrackIndex]?.label || `Audio Track ${selectedTrackIndex + 1}`
     : channelMode !== 'both'
-      ? `${channelMode === 'left' ? 'Left Audio' : 'Right Audio'}`
+      ? `${channelMode === 'left' ? 'Audio 1 (L)' : 'Audio 2 (R)'}`
       : 'Audio';
 
   const playerContent = (
@@ -410,40 +568,106 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
       {/* Native Video Element */}
       <video
         ref={videoRef}
-        src={src}
+        src={activeSrc}
         poster={poster}
         autoPlay={autoPlay}
         playsInline
         onClick={togglePlay}
+        onWaiting={() => setIsBuffering(true)}
+        onLoadStart={() => setIsBuffering(true)}
+        onSeeking={() => setIsBuffering(true)}
+        onSeeked={() => {
+          setIsBuffering(false);
+          updateBuffered();
+        }}
         onTimeUpdate={() => {
           if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+          updateBuffered();
         }}
         onLoadedMetadata={() => {
           if (videoRef.current) {
-            setDuration(videoRef.current.duration || 0);
+            const d = videoRef.current.duration;
+            if (isFinite(d) && d > 0) {
+              setDuration(d);
+            }
             inspectAudioTracks();
+            updateBuffered();
           }
         }}
-        onCanPlay={inspectAudioTracks}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
-        onEnded={() => setIsPlaying(false)}
+        onProgress={updateBuffered}
+        onCanPlay={() => {
+          setIsBuffering(false);
+          inspectAudioTracks();
+          updateBuffered();
+        }}
+        onPlay={() => {
+          setIsBuffering(false);
+          setIsPlaying(true);
+        }}
+        onPause={() => {
+          setIsBuffering(false);
+          setIsPlaying(false);
+        }}
+        onEnded={() => {
+          setIsBuffering(false);
+          setIsPlaying(false);
+        }}
         onError={(e) => {
-          console.warn('[TeleForgeVideoPlayer] Playback error on src:', src, e);
+          setIsBuffering(false);
+          const err = videoRef.current?.error;
+          if (err && err.code === 1) {
+            // Normal user/browser abort, do not show fatal error overlay
+            return;
+          }
+          console.warn('[TeleForgeVideoPlayer] Playback error on src:', activeSrc, err || e);
+
+          // Auto-fallback: if we haven't tried transcode yet and src is a Telegram stream URL, retry with server-side transcode
+          if (!transcodeAttemptedRef.current && src.includes('/api/telegram/media') && !useTranscode) {
+            console.log('[TeleForgeVideoPlayer] Auto-retrying with server-side H.264 transcode...');
+            transcodeAttemptedRef.current = true;
+            setUseTranscode(true);
+            setHasError(false);
+            return;
+          }
+
           setHasError(true);
           setIsPlaying(false);
         }}
         className={`w-full object-contain ${isFullscreen ? 'h-full max-h-screen' : maxHeightClass}`}
       />
 
+      {/* Buffering Spinner */}
+      {isBuffering && !hasError && (
+        <div className="absolute z-25 pointer-events-none flex flex-col items-center justify-center gap-2 bg-black/60 px-4 py-3 rounded-2xl backdrop-blur-md border border-white/10 shadow-2xl">
+          <div className="w-8 h-8 border-3 border-white/20 border-t-blue-500 rounded-full animate-spin" />
+          <span className="text-[11px] font-medium text-white/90 tracking-wide">Buffering...</span>
+        </div>
+      )}
+
       {/* Error Fallback Overlay */}
       {hasError && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-black/85 text-white p-4 text-center">
-          <div className="text-xs sm:text-sm font-semibold text-red-400">Unable to play video stream</div>
-          <div className="text-[11px] text-gray-300 max-w-xs">
-            The media codec or format could not be decoded. You can retry or download the video directly.
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2.5 bg-black/90 text-white p-4 text-center">
+          <AlertTriangle size={28} className="text-amber-400" />
+          <div className="text-xs sm:text-sm font-semibold text-red-400">The media codec or format could not be decoded</div>
+          <div className="text-[11px] text-gray-300 max-w-sm leading-relaxed">
+            You can retry or download the video directly.
           </div>
-          <div className="flex items-center gap-2 mt-2">
+          <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+            {/* Play in Compatibility Mode: forces server-side H.264 transcode */}
+            {!useTranscode && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setHasError(false);
+                  transcodeAttemptedRef.current = true;
+                  setUseTranscode(true);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-orange-600 hover:bg-orange-700 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors shadow-md"
+                title="Re-encode on server to universal H.264 for maximum compatibility"
+              >
+                <Settings size={14} /> Play in Compatibility Mode
+              </button>
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -453,7 +677,7 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
                   videoRef.current.play().catch(() => {});
                 }
               }}
-              className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors"
+              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors"
             >
               <RotateCcw size={14} /> Retry
             </button>
@@ -508,8 +732,14 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
           onClick={handleSeek}
           className="w-full h-1.5 hover:h-2.5 bg-white/25 hover:bg-white/35 rounded-full cursor-pointer relative transition-all duration-150 group/bar flex items-center"
         >
+          {/* Buffering Progress Bar */}
           <div
-            className="h-full bg-blue-500 rounded-full relative"
+            className="absolute left-0 top-0 h-full bg-white/30 rounded-full pointer-events-none transition-all duration-200"
+            style={{ width: `${bufferedPercent}%` }}
+          />
+          {/* Played Progress Bar */}
+          <div
+            className="h-full bg-blue-500 rounded-full relative z-10"
             style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
           >
             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow opacity-0 group-hover/bar:opacity-100 transition-opacity" />
@@ -593,61 +823,85 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
                     <Languages size={13} />
                   </div>
 
-                  {/* Detected Multi-Stream Audio Tracks */}
-                  {audioTracks.length > 0 ? (
+                  {/* Multi-Stream Audio Tracks */}
+                  {audioTracks.length > 1 ? (
                     <div className="max-h-40 overflow-y-auto space-y-0.5 custom-scrollbar">
                       {audioTracks.map((track) => (
                         <button
                           key={track.id}
                           onClick={() => handleSelectAudioTrack(track.index)}
-                          className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors ${
-                            track.enabled || selectedTrackIndex === track.index
+                          className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                            selectedTrackIndex === track.index
                               ? 'bg-blue-600 text-white font-semibold'
                               : 'hover:bg-white/10 text-gray-200'
                           }`}
                         >
                           <span className="truncate">{track.label}</span>
-                          {(track.enabled || selectedTrackIndex === track.index) && <Check size={14} />}
+                          {selectedTrackIndex === track.index && <Check size={14} />}
                         </button>
                       ))}
                     </div>
                   ) : (
-                    <div className="px-2 py-1 text-[11px] text-gray-400">
-                      Single audio track container
+                    <div className="space-y-1">
+                      <button
+                        onClick={() => handleSelectAudioTrack(0)}
+                        className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                          selectedTrackIndex === 0
+                            ? 'bg-blue-600 text-white font-semibold'
+                            : 'hover:bg-white/10 text-gray-200'
+                        }`}
+                      >
+                        <span className="truncate">
+                          {audioTracks[0]?.label || 'Audio Track 1 (Primary)'}
+                        </span>
+                        {selectedTrackIndex === 0 && <Check size={14} />}
+                      </button>
+                      <button
+                        onClick={() => handleSelectAudioTrack(1)}
+                        className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                          selectedTrackIndex === 1
+                            ? 'bg-blue-600 text-white font-semibold'
+                            : 'hover:bg-white/10 text-gray-200'
+                        }`}
+                      >
+                        <span className="truncate">Audio Track 2 (Alternate Stream)</span>
+                        {selectedTrackIndex === 1 && <Check size={14} />}
+                      </button>
                     </div>
                   )}
 
                   {/* Dual-Audio Channel Separation (Left / Right channel audio rips) */}
-                  <div className="mt-2 pt-1 border-t border-white/10">
-                    <div className="px-2 py-0.5 text-[10px] font-semibold text-gray-400 uppercase">
-                      Channel Balance
+                  <div className="mt-2 pt-1.5 border-t border-white/10">
+                    <div className="px-2 py-0.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                      Dual-Audio Channel Mode
                     </div>
                     <div className="grid grid-cols-3 gap-1 mt-1">
                       <button
                         onClick={() => handleSelectChannelMode('both')}
-                        className={`py-1 px-1.5 rounded text-[10px] font-medium text-center truncate ${
-                          channelMode === 'both' ? 'bg-blue-600 text-white' : 'bg-white/10 hover:bg-white/20'
+                        className={`py-1.5 px-1 rounded-lg text-[10px] font-medium text-center truncate transition-colors ${
+                          channelMode === 'both' ? 'bg-blue-600 text-white shadow' : 'bg-white/10 hover:bg-white/20 text-gray-300'
                         }`}
+                        title="Stereo (Play both channels)"
                       >
                         Stereo
                       </button>
                       <button
                         onClick={() => handleSelectChannelMode('left')}
-                        className={`py-1 px-1.5 rounded text-[10px] font-medium text-center truncate ${
-                          channelMode === 'left' ? 'bg-blue-600 text-white' : 'bg-white/10 hover:bg-white/20'
+                        className={`py-1.5 px-1 rounded-lg text-[10px] font-medium text-center truncate transition-colors ${
+                          channelMode === 'left' ? 'bg-blue-600 text-white shadow' : 'bg-white/10 hover:bg-white/20 text-gray-300'
                         }`}
-                        title="Left audio channel only (Track 1)"
+                        title="Audio 1 (Left Channel)"
                       >
-                        Left (L)
+                        Audio 1 (L)
                       </button>
                       <button
                         onClick={() => handleSelectChannelMode('right')}
-                        className={`py-1 px-1.5 rounded text-[10px] font-medium text-center truncate ${
-                          channelMode === 'right' ? 'bg-blue-600 text-white' : 'bg-white/10 hover:bg-white/20'
+                        className={`py-1.5 px-1 rounded-lg text-[10px] font-medium text-center truncate transition-colors ${
+                          channelMode === 'right' ? 'bg-blue-600 text-white shadow' : 'bg-white/10 hover:bg-white/20 text-gray-300'
                         }`}
-                        title="Right audio channel only (Track 2)"
+                        title="Audio 2 (Right Channel)"
                       >
-                        Right (R)
+                        Audio 2 (R)
                       </button>
                     </div>
                   </div>
@@ -689,7 +943,23 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
               )}
             </div>
 
-            {/* Download Video Button */}
+            {/* Compatibility Mode / H.264 Toggle */}
+            {src.includes('/api/telegram/media') && (
+              <button
+                onClick={() => {
+                  setUseTranscode(!useTranscode);
+                  transcodeAttemptedRef.current = true;
+                }}
+                className={`px-1.5 py-1 rounded-lg text-[10px] font-semibold transition-colors border ${
+                  useTranscode
+                    ? 'bg-amber-600 border-amber-400 text-white shadow-xs'
+                    : 'bg-white/10 hover:bg-white/20 border-white/10 text-gray-300'
+                }`}
+                title={useTranscode ? 'Compatibility Mode: Active (H.264)' : 'Video not showing? Click to switch to H.264 Compatibility Mode'}
+              >
+                {useTranscode ? 'H.264' : 'HQ'}
+              </button>
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -715,10 +985,5 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
     </div>
   );
 
-  return (
-    <>
-      {isFullscreen && <div className={`w-full bg-black/40 rounded-2xl ${maxHeightClass || 'h-64'}`} />}
-      {playerContent}
-    </>
-  );
+  return playerContent;
 };

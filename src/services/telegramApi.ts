@@ -65,6 +65,8 @@ export interface TelegramMessage {
   fileSize?: string;
   duration?: string;
   replyToMsgId?: number;
+  replyToText?: string;
+  replyToSenderName?: string;
   reactions?: { emoji: string; count: number; userReacted?: boolean }[];
   isRound?: boolean;
   isSticker?: boolean;
@@ -223,6 +225,99 @@ export async function probeBackendServer(): Promise<string> {
   return '';
 }
 
+type MessageListener = (event: { chatId: string; message: TelegramMessage }) => void;
+const messageListeners = new Set<MessageListener>();
+const seenMessageKeys = new Set<string>();
+
+let sseEventSource: EventSource | null = null;
+let sseReconnectTimer: any = null;
+let directUnsubscribe: (() => void) | null = null;
+
+function dispatchIncomingMessage(chatId: string, message: TelegramMessage) {
+  if (!chatId || !message || message.id == null) return;
+  const key = `${chatId}_${message.id}`;
+  if (seenMessageKeys.has(key)) return;
+  seenMessageKeys.add(key);
+  if (seenMessageKeys.size > 2000) {
+    const it = seenMessageKeys.values();
+    for (let i = 0; i < 500; i++) {
+      const next = it.next();
+      if (!next.done) seenMessageKeys.delete(next.value);
+    }
+  }
+
+  messageListeners.forEach((listener) => {
+    try {
+      listener({ chatId, message });
+    } catch (e) {
+      console.warn('[telegramApi] Message listener error:', e);
+    }
+  });
+}
+
+function initRealtimeUpdates() {
+  // 1. Direct MTProto client listener (for Android or Direct WSS mode)
+  if (!directUnsubscribe) {
+    try {
+      directUnsubscribe = telegramDirectClient.onNewMessage(({ chatId, message }) => {
+        dispatchIncomingMessage(chatId, message);
+      });
+    } catch (e) {}
+  }
+
+  // 2. Server-Sent Events (SSE) from backend (for Web browser mode)
+  if (typeof window !== 'undefined' && 'EventSource' in window) {
+    if (sseEventSource) return;
+
+    const connectSse = () => {
+      if (sseEventSource) {
+        try {
+          sseEventSource.close();
+        } catch (e) {}
+      }
+
+      const sseUrl = resolveApiUrl(`${getApiBase()}/updates`);
+      try {
+        const es = new EventSource(sseUrl);
+        sseEventSource = es;
+
+        es.onmessage = (event) => {
+          try {
+            if (!event.data) return;
+            const data = JSON.parse(event.data);
+            if (data.type === 'new_message' && data.chatId && data.message) {
+              dispatchIncomingMessage(data.chatId, data.message);
+            }
+          } catch (err) {}
+        };
+
+        es.onerror = () => {
+          try {
+            es.close();
+          } catch (e) {}
+          sseEventSource = null;
+          clearTimeout(sseReconnectTimer);
+          sseReconnectTimer = setTimeout(() => {
+            connectSse();
+          }, 4000);
+        };
+      } catch (err) {
+        console.warn('[telegramApi] SSE connection error:', err);
+      }
+    };
+
+    connectSse();
+  }
+}
+
+function registerMessageListener(listener: MessageListener): () => void {
+  messageListeners.add(listener);
+  initRealtimeUpdates();
+  return () => {
+    messageListeners.delete(listener);
+  };
+}
+
 export const telegramApi = {
   async getConfig(): Promise<{ hasCredentials: boolean; apiId: number }> {
     if (isAndroidApp()) {
@@ -245,7 +340,13 @@ export const telegramApi = {
     }
     try {
       const res = await fetchWithTimeout(`${getApiBase()}/auth/status`, {}, 2000);
-      if (res.ok) return res.json();
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.session && typeof localStorage !== 'undefined') {
+          localStorage.setItem('teleforge_session', data.session);
+        }
+        return data;
+      }
     } catch (e) {}
     return telegramDirectClient.checkAuthStatus();
   },
@@ -280,6 +381,9 @@ export const telegramApi = {
       }, 8000);
       const data = await res.json();
       if (!res.ok && !data.requires2FA) throw new Error(data.error || 'Failed to sign in');
+      if (data?.session && typeof localStorage !== 'undefined') {
+        localStorage.setItem('teleforge_session', data.session);
+      }
       return data;
     } catch (err: any) {
       return telegramDirectClient.signIn(phoneNumber, phoneCode, phoneCodeHash);
@@ -298,6 +402,9 @@ export const telegramApi = {
       }, 8000);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Two-step verification password failed');
+      if (data?.session && typeof localStorage !== 'undefined') {
+        localStorage.setItem('teleforge_session', data.session);
+      }
       return data;
     } catch (err: any) {
       return telegramDirectClient.submit2FA(password);
@@ -344,6 +451,36 @@ export const telegramApi = {
       }
     } catch (e) {}
     return telegramDirectClient.getMessages(chatId, limit, offsetId);
+  },
+
+  async searchMessages(chatId: string, query: string, limit = 30): Promise<TelegramMessage[]> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.searchMessages(chatId, query, limit);
+    }
+    try {
+      const url = `${getApiBase()}/messages/search?chatId=${encodeURIComponent(chatId)}&query=${encodeURIComponent(query)}&limit=${limit}`;
+      const res = await fetchWithTimeout(url, {}, 8000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.messages || [];
+      }
+    } catch (e) {}
+    return telegramDirectClient.searchMessages(chatId, query, limit);
+  },
+
+  async getMessagesAround(chatId: string, messageId: number | string, limit = 50): Promise<TelegramMessage[]> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.getMessagesAround(chatId, messageId, limit);
+    }
+    try {
+      const url = `${getApiBase()}/messages/around?chatId=${encodeURIComponent(chatId)}&messageId=${encodeURIComponent(String(messageId))}&limit=${limit}`;
+      const res = await fetchWithTimeout(url, {}, 8000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.messages || [];
+      }
+    } catch (e) {}
+    return telegramDirectClient.getMessagesAround(chatId, messageId, limit);
   },
 
   async sendMessage(chatId: string, message: string, replyToMsgId?: number): Promise<TelegramMessage> {
@@ -617,34 +754,38 @@ export const telegramApi = {
     fileBase64?: string;
     filename?: string;
     url?: string;
-  }): Promise<{ success: boolean; user: TelegramUser; avatarUrl: string }> {
+  }): Promise<{ success: boolean; user: TelegramUser; avatarUrl: string; dataUrl?: string; photoId?: string }> {
     if (isAndroidApp()) {
       return telegramDirectClient.uploadProfilePhoto(params);
     }
-    try {
-      const res = await fetchWithTimeout(`${getApiBase()}/profile/photo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      }, 15000);
-      const data = await res.json();
-      if (res.ok) return data;
-    } catch (e) {}
-    return telegramDirectClient.uploadProfilePhoto(params);
+    const res = await fetchWithTimeout(`${getApiBase()}/profile/photo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileBase64: params.fileBase64,
+        filename: params.filename,
+        url: params.url,
+      }),
+    }, 60000);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || `Failed to upload photo (HTTP ${res.status})`);
+    }
+    return data;
   },
 
   async deleteProfilePhoto(): Promise<{ success: boolean; user: TelegramUser }> {
     if (isAndroidApp()) {
       return telegramDirectClient.deleteProfilePhoto();
     }
-    try {
-      const res = await fetchWithTimeout(`${getApiBase()}/profile/photo`, {
-        method: 'DELETE',
-      }, 10000);
-      const data = await res.json();
-      if (res.ok) return data;
-    } catch (e) {}
-    return telegramDirectClient.deleteProfilePhoto();
+    const res = await fetchWithTimeout(`${getApiBase()}/profile/photo`, {
+      method: 'DELETE',
+    }, 20000);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || `Failed to delete photo (HTTP ${res.status})`);
+    }
+    return data;
   },
 
   async downloadMessageMedia(
@@ -656,18 +797,59 @@ export const telegramApi = {
   },
 
   async getPrivacy(keyType: 'lastSeen' | 'phoneNumber'): Promise<'everybody' | 'contacts' | 'nobody'> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/privacy?type=${encodeURIComponent(keyType)}`, {}, 6000);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.rule) return data.rule;
+        }
+      } catch (e) {}
+    }
     return telegramDirectClient.getPrivacy(keyType);
   },
 
   async setPrivacy(keyType: 'lastSeen' | 'phoneNumber', rule: 'everybody' | 'contacts' | 'nobody'): Promise<{ success: boolean }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/privacy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyType, rule }),
+        }, 6000);
+        if (res.ok) {
+          const data = await res.json();
+          return { success: Boolean(data.success) };
+        }
+      } catch (e) {}
+    }
     return telegramDirectClient.setPrivacy(keyType, rule);
   },
 
   async getAuthorizations(): Promise<TelegramSessionInfo[]> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/sessions`, {}, 6000);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.sessions)) return data.sessions;
+        }
+      } catch (e) {}
+    }
     return telegramDirectClient.getAuthorizations();
   },
 
   async getOnlineGifs(query = '', offset = ''): Promise<{ results: OnlineGifItem[]; nextOffset: string }> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.getOnlineGifs(query, offset);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/gifs?q=${encodeURIComponent(query)}&offset=${encodeURIComponent(offset)}`, {}, 8000);
+      if (res.ok) {
+        const data = await res.json();
+        return data;
+      }
+    } catch (e) {}
     return telegramDirectClient.getOnlineGifs(query, offset);
   },
 
@@ -685,34 +867,130 @@ export const telegramApi = {
   },
 
   async getInstalledStickerSets(): Promise<TelegramStickerSet[]> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.getInstalledStickerSets();
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/stickers/installed`, {}, 8000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.sets || [];
+      }
+    } catch (e) {}
     return telegramDirectClient.getInstalledStickerSets();
   },
 
   async getStickerSet(stickerset: { id?: string; accessHash?: string; shortName?: string }): Promise<TelegramStickerSet | null> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.getStickerSet(stickerset);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/stickers/set?id=${encodeURIComponent(stickerset.id || '')}&accessHash=${encodeURIComponent(stickerset.accessHash || '')}&shortName=${encodeURIComponent(stickerset.shortName || '')}`, {}, 8000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.set || null;
+      }
+    } catch (e) {}
     return telegramDirectClient.getStickerSet(stickerset);
   },
 
   async installStickerSet(stickerset: { id?: string; accessHash?: string; shortName?: string }): Promise<boolean> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.installStickerSet(stickerset);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/stickers/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stickerset }),
+      }, 8000);
+      if (res.ok) {
+        const data = await res.json();
+        return Boolean(data.success);
+      }
+    } catch (e) {}
     return telegramDirectClient.installStickerSet(stickerset);
   },
 
   async faveSticker(documentId: string, accessHash: string, fileReference?: string): Promise<boolean> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.faveSticker(documentId, accessHash, fileReference);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/stickers/fave`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId, accessHash, fileReference }),
+      }, 8000);
+      if (res.ok) {
+        const data = await res.json();
+        return Boolean(data.success);
+      }
+    } catch (e) {}
     return telegramDirectClient.faveSticker(documentId, accessHash, fileReference);
   },
 
   async sendStickerDocument(chatId: string, docOrInput: any, replyToMsgId?: number): Promise<TelegramMessage> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.sendStickerDocument(chatId, docOrInput, replyToMsgId);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/stickers/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, docOrInput, replyToMsgId }),
+      }, 8000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.message;
+      }
+    } catch (e) {}
     return telegramDirectClient.sendStickerDocument(chatId, docOrInput, replyToMsgId);
   },
 
   async terminateSession(hash: string): Promise<{ success: boolean }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/sessions/terminate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hash }),
+        }, 6000);
+        if (res.ok) {
+          const data = await res.json();
+          return { success: Boolean(data.success) };
+        }
+      } catch (e) {}
+    }
     return telegramDirectClient.terminateSession(hash);
   },
 
   async terminateAllOtherSessions(): Promise<{ success: boolean }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(`${getApiBase()}/sessions/terminate-all`, {
+          method: 'POST',
+        }, 6000);
+        if (res.ok) {
+          const data = await res.json();
+          return { success: Boolean(data.success) };
+        }
+      } catch (e) {}
+    }
     return telegramDirectClient.terminateAllOtherSessions();
   },
 
   async getUserFull(userId: string): Promise<{ bio?: string; phone?: string; username?: string; name?: string }> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.getUserFull(userId);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/user/full?id=${encodeURIComponent(userId)}`, {}, 4000);
+      if (res.ok) {
+        const data = await res.json();
+        return data.user || {};
+      }
+    } catch (e) {}
     return telegramDirectClient.getUserFull(userId);
   },
 
@@ -731,7 +1009,7 @@ export const telegramApi = {
   },
 
   onNewMessage(listener: (event: { chatId: string; message: TelegramMessage }) => void): () => void {
-    return telegramDirectClient.onNewMessage(listener);
+    return registerMessageListener(listener);
   },
 
   async getChatSharedMedia(
@@ -739,6 +1017,21 @@ export const telegramApi = {
     type: 'photos' | 'videos' | 'files' | 'audio',
     limit = 50
   ): Promise<TelegramMessage[]> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/shared-media?chatId=${encodeURIComponent(chatId)}&type=${encodeURIComponent(type)}&limit=${limit}`,
+          {},
+          8000
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.messages)) {
+            return data.messages;
+          }
+        }
+      } catch (e) {}
+    }
     return telegramDirectClient.getChatSharedMedia(chatId, type, limit);
   },
 };

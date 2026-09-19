@@ -26,6 +26,7 @@ import {
 import { runTeleForgeSettingsMigration } from './services/teleforgeSettingsMigration';
 import { showToast, ToastContainer } from './components/Toast';
 import { RefreshCw } from 'lucide-react';
+import { notificationService, InAppToast } from './services/notificationService';
 
 export const App: React.FC = () => {
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse>({
@@ -86,6 +87,52 @@ export const App: React.FC = () => {
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState<Record<string, boolean>>({});
   const directChatsRef = useRef<Map<string, Chat>>(new Map());
+  const activeChatIdRef = useRef<string | null>(activeChatId);
+
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
+
+  const chatsRef = useRef<Chat[]>(chats);
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
+
+  const [inAppToast, setInAppToast] = useState<InAppToast | null>(null);
+
+  useEffect(() => {
+    return notificationService.onInAppToast((toast) => {
+      setInAppToast(toast);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!inAppToast) return;
+    const timer = setTimeout(() => {
+      setInAppToast(null);
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, [inAppToast]);
+
+  // Sync document title unread counter
+  useEffect(() => {
+    const totalUnread = chats.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
+    notificationService.updateDocumentTitle(totalUnread);
+  }, [chats]);
+
+  // Handle open chat event triggered by notifications or toasts
+  useEffect(() => {
+    const handleOpenChat = (e: any) => {
+      if (e.detail?.chatId) {
+        setActiveChatId(e.detail.chatId);
+        setMobileShowChat(true);
+      }
+    };
+    window.addEventListener('teleforge:openChat', handleOpenChat as EventListener);
+    return () => {
+      window.removeEventListener('teleforge:openChat', handleOpenChat as EventListener);
+    };
+  }, []);
 
   // TeleForge Power Tools State
   const [powerToolsSettings, setPowerToolsSettings] = useState<TeleForgePowerToolsSettings>(() =>
@@ -111,6 +158,34 @@ export const App: React.FC = () => {
     runTeleForgeSettingsMigration();
   }, []);
 
+  // Update theme on mode change or custom theme change
+  useEffect(() => {
+    const isDark = activeTheme.mode === 'dark';
+    setDarkMode(isDark);
+    applyTheme(activeTheme);
+  }, [activeTheme]);
+
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'teleforge_theme' && e.newValue) {
+        try {
+          const newTheme = JSON.parse(e.newValue);
+          setActiveTheme(newTheme);
+        } catch (err) {}
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  const handleToggleDarkMode = useCallback(() => {
+    const nextMode = !darkMode;
+    setDarkMode(nextMode);
+    const matchingPreset = nextMode ? BUILTIN_PRESETS[0] : BUILTIN_PRESETS[3];
+    setActiveTheme(matchingPreset);
+    applyTheme(matchingPreset);
+  }, [darkMode]);
+
   // TeleForge Power Folders State
   const [folders, setFolders] = useState<TeleForgeDialogFilter[]>([
     { id: 'all', title: 'All', emoticon: '', isDefault: true, enabled: true },
@@ -123,19 +198,6 @@ export const App: React.FC = () => {
   const [isFolderManagerOpen, setIsFolderManagerOpen] = useState(false);
   const [contactsList, setContactsList] = useState<TelegramUser[]>([]);
 
-  // Apply theme tokens and sync dark mode class
-  useEffect(() => {
-    applyTheme(activeTheme);
-  }, [activeTheme]);
-
-  const handleToggleDarkMode = useCallback(() => {
-    const nextMode = !darkMode;
-    setDarkMode(nextMode);
-    const matchingPreset = nextMode ? BUILTIN_PRESETS[0] : BUILTIN_PRESETS[3];
-    setActiveTheme(matchingPreset);
-    applyTheme(matchingPreset);
-  }, [darkMode]);
-
   // Load real dialogs from Telegram MTProto
   const loadTelegramDialogs = useCallback(async () => {
     setIsSyncingDialogs(true);
@@ -145,13 +207,14 @@ export const App: React.FC = () => {
       const mapped = realDialogs.map(mapDialogToChat);
 
       const finalChats = mapped;
+      const currentActiveId = activeChatIdRef.current;
       // Preserve existing messages when refreshing — prevents race condition
       // where loadTelegramDialogs overwrites messages loaded by loadMessagesForChat
       setChats((prev) => {
         const finalChatIds = new Set(finalChats.map((c) => c.id));
         // Preserve client-created direct chats, active chat, or chats with messages
         const preservedChats = prev.filter(
-          (c) => !finalChatIds.has(c.id) && (c.id === activeChatId || directChatsRef.current.has(c.id) || c.messages.length > 0)
+          (c) => !finalChatIds.has(c.id) && (c.id === currentActiveId || directChatsRef.current.has(c.id) || c.messages.length > 0)
         );
         const updatedFinalChats = finalChats.map((newChat) => {
           const existing = prev.find((c) => c.id === newChat.id);
@@ -173,7 +236,8 @@ export const App: React.FC = () => {
         localStorage.setItem('teleforge_cached_chats', JSON.stringify(finalChats.slice(0, 30)));
       } catch (e) {}
 
-      if (finalChats.length > 0 && !activeChatId) {
+      if (finalChats.length > 0 && !activeChatIdRef.current) {
+        activeChatIdRef.current = finalChats[0].id;
         setActiveChatId(finalChats[0].id);
       }
     } catch (err: any) {
@@ -181,7 +245,7 @@ export const App: React.FC = () => {
     } finally {
       setIsSyncingDialogs(false);
     }
-  }, [activeChatId]);
+  }, []);
 
   // Load real dialog filters (folders) from Telegram MTProto
   const loadTelegramFolders = useCallback(async () => {
@@ -275,6 +339,15 @@ export const App: React.FC = () => {
     };
   }, [loadTelegramDialogs, loadTelegramFolders, loadTelegramContacts]);
 
+  // Listen for native Android photo selection to ensure Settings modal remains open
+  useEffect(() => {
+    const handleNativePhoto = () => {
+      setIsSettingsOpen(true);
+    };
+    window.addEventListener('teleforge:photoSelected', handleNativePhoto);
+    return () => window.removeEventListener('teleforge:photoSelected', handleNativePhoto);
+  }, []);
+
   // Folder Actions: Save, Delete, Reorder with real Telegram sync
   const handleSaveFilter = async (filter: TeleForgeDialogFilter) => {
     await telegramApi.saveDialogFilter(filter);
@@ -359,6 +432,8 @@ export const App: React.FC = () => {
     if (!authStatus.authorized) return;
 
     const unsubscribe = telegramApi.onNewMessage(({ chatId, message: newMsg }) => {
+      const isCurrentActive = activeChatIdRef.current === chatId;
+
       setChats((prevChats) => {
         const chatIdx = prevChats.findIndex((c) => c.id === chatId);
         const mappedMsg = mapTelegramMessage(newMsg, chatId, chatIdx >= 0 ? prevChats[chatIdx].name : 'Telegram');
@@ -367,7 +442,6 @@ export const App: React.FC = () => {
           const chat = prevChats[chatIdx];
           const exists = chat.messages.some((m) => String(m.id) === String(newMsg.id));
           const updatedMessages = exists ? chat.messages : [...chat.messages, mappedMsg];
-          const isCurrentActive = activeChatId === chatId;
 
           const updatedChat: Chat = {
             ...chat,
@@ -388,13 +462,33 @@ export const App: React.FC = () => {
         return prevChats;
       });
 
+      // Trigger notification alerts and audio chime
+      if (!newMsg.out) {
+        const existingChat = chatsRef.current.find((c) => c.id === chatId);
+        const chatTitle = existingChat ? existingChat.name : (newMsg.senderName || 'Telegram');
+        const chatType = existingChat
+          ? (existingChat.type === 'channel' ? 'channel' : (existingChat.type === 'group' ? 'group' : 'private'))
+          : 'private';
+
+        notificationService.notifyIncomingMessage({
+          chatId,
+          chatTitle,
+          chatType,
+          chatAvatar: existingChat?.avatar || newMsg.senderAvatar,
+          messageText: newMsg.text || (newMsg.hasMedia ? (newMsg.mediaType === 'photo' ? '📷 Photo' : '📎 Media') : ''),
+          isOutgoing: Boolean(newMsg.out),
+          isMuted: existingChat?.isMuted,
+          isChatActive: isCurrentActive,
+        });
+      }
+
       if (!newMsg.out && newMsg.senderId) {
         avatarService.loadAvatar(newMsg.senderId, false).catch(() => {});
       }
     });
 
     return unsubscribe;
-  }, [authStatus.authorized, activeChatId]);
+  }, [authStatus.authorized]);
 
   // Active chat polling (every 6 seconds, paused in background to preserve MTProto connection)
   useEffect(() => {
@@ -532,6 +626,48 @@ export const App: React.FC = () => {
     }
   };
 
+  // Jump to a specific message by ID — loads surrounding context if not in memory
+  const handleJumpToMessage = async (chatId: string, messageId: string): Promise<boolean> => {
+    const chat = chatsRef.current.find((c) => c.id === chatId);
+    if (!chat) return false;
+
+    // Check if message already exists in loaded messages
+    const exists = chat.messages.some((m) => m.id === messageId);
+    if (exists) return true;
+
+    try {
+      const numericId = parseInt(messageId, 10);
+      if (!numericId) return false;
+
+      const surrounding = await telegramApi.getMessagesAround(chatId, numericId, 50);
+      if (!surrounding || surrounding.length === 0) return false;
+
+      const mapped = surrounding.map((m) =>
+        mapTelegramMessage(m, chatId, chat.name || 'Telegram')
+      );
+
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id === chatId) {
+            const existingIds = new Set(c.messages.map((m) => m.id));
+            const newBatch = mapped.filter((m) => !existingIds.has(m.id));
+            if (newBatch.length === 0) return c;
+            const combined = [...newBatch, ...c.messages].sort(
+              (a, b) => (a.rawDate || 0) - (b.rawDate || 0)
+            );
+            return { ...c, messages: combined };
+          }
+          return c;
+        })
+      );
+
+      return true;
+    } catch (err: any) {
+      console.error('[JumpToMessage] Failed:', err.message);
+      return false;
+    }
+  };
+
   const handleSelectChat = (chatId: string) => {
     setActiveChatId(chatId);
     setMobileShowChat(true);
@@ -580,6 +716,7 @@ export const App: React.FC = () => {
       const exists = prev.some((c) => c.id === userId);
       return exists ? prev : [target!, ...prev];
     });
+    activeChatIdRef.current = userId;
     handleSelectChat(userId);
   };
 
@@ -1003,6 +1140,7 @@ export const App: React.FC = () => {
           hasMoreOlderMessages={activeChatId ? hasMoreOlderMessages[activeChatId] : undefined}
           onSelectChat={handleSelectChat}
           onOpenDirectChat={handleOpenDirectChat}
+          onJumpToMessage={handleJumpToMessage}
         />
       </div>
 
@@ -1069,9 +1207,17 @@ export const App: React.FC = () => {
         user={user}
         onUpdateUser={async (updated) => {
           setUser(updated);
+          try {
+            localStorage.setItem('teleforge_cached_user', JSON.stringify(updated));
+          } catch (e) {}
           if (updated.avatar !== undefined) {
             setChats((prev) =>
-              prev.map((c) => (c.id === 'saved-messages' ? { ...c, avatar: updated.avatar } : c))
+              prev.map((c) => {
+                if (c.id === 'saved-messages' || c.id === updated.id || c.id === 'me') {
+                  return { ...c, avatar: updated.avatar };
+                }
+                return c;
+              })
             );
           }
           const nameChanged = updated.name !== user.name;
@@ -1152,6 +1298,47 @@ export const App: React.FC = () => {
         onReorderFilters={handleReorderFilters}
         onRefresh={loadTelegramFolders}
       />
+
+      {/* Floating In-App Notification Toast */}
+      {inAppToast && (
+        <div
+          onClick={() => {
+            setActiveChatId(inAppToast.chatId);
+            setMobileShowChat(true);
+            setInAppToast(null);
+          }}
+          className="fixed top-4 right-4 z-50 flex items-center gap-3 p-3.5 max-w-sm bg-white/95 dark:bg-[#161C26]/95 backdrop-blur-md rounded-2xl shadow-2xl border border-teleforge-primary/30 cursor-pointer animate-in fade-in slide-in-from-top-4 duration-200 hover:scale-[1.02] transition-transform"
+        >
+          {inAppToast.avatarUrl ? (
+            <img
+              src={inAppToast.avatarUrl}
+              alt=""
+              className="w-10 h-10 rounded-full object-cover shrink-0 border border-white/10"
+            />
+          ) : (
+            <div className="w-10 h-10 rounded-full bg-teleforge-primary text-white flex items-center justify-center font-bold text-sm shrink-0">
+              {inAppToast.title.slice(0, 1).toUpperCase()}
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold text-gray-900 dark:text-white truncate">
+              {inAppToast.title}
+            </div>
+            <div className="text-xs text-gray-500 dark:text-gray-300 truncate mt-0.5">
+              {inAppToast.body}
+            </div>
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setInAppToast(null);
+            }}
+            className="p-1 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+          >
+            &times;
+          </button>
+        </div>
+      )}
 
       <ToastContainer />
     </div>

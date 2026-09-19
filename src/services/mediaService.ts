@@ -3,6 +3,7 @@
 // Downloads directly via MTProto client without requiring any backend server.
 
 import { telegramDirectClient } from './telegramDirectClient';
+import { resolveApiUrl } from './telegramApi';
 
 const DB_NAME = 'teleforge_media_cache';
 const STORE_NAME = 'media';
@@ -254,31 +255,60 @@ export const mediaService = {
               options?.onProgress?.(pct, dl, tot);
             },
           });
-          if (res && res.dataUrl) {
+          if (res && res.dataUrl && res.size && res.size > 0) {
             memoryCache.set(key, res.dataUrl);
             notifySubscribers(key, res.dataUrl);
             return res.dataUrl;
           }
-          return '';
-        } catch (err) {
-          return '';
-        }
+        } catch (err) {}
+
+        // Fallback: Return verified streaming endpoint URL
+        const streamUrl = resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`);
+        memoryCache.set(key, streamUrl);
+        notifySubscribers(key, streamUrl);
+        return streamUrl;
       }
 
       return new Promise<string>((resolve) => {
         enqueueDownload(async () => {
           try {
-            const res = await withMediaTimeout(
-              telegramDirectClient.downloadMessageMedia(chatId, messageId, options),
-              15000
-            ).catch(() => null);
-            if (res && res.dataUrl && res.dataUrl.length > 5) {
-              memoryCache.set(key, res.dataUrl);
-              if (res.dataUrl.startsWith('data:')) {
-                putToIndexedDB(key, res.dataUrl);
+            let dataUrl = '';
+            // 1. Try direct client first
+            try {
+              const res = await withMediaTimeout(
+                telegramDirectClient.downloadMessageMedia(chatId, messageId, options),
+                15000
+              ).catch(() => null);
+              if (res && res.dataUrl && res.dataUrl.length > 5) {
+                dataUrl = res.dataUrl;
               }
-              notifySubscribers(key, res.dataUrl);
-              resolve(res.dataUrl);
+            } catch (e) {}
+
+            // 2. Fallback to backend media endpoint on localhost/web or if direct client returned low-res/empty
+            if ((!dataUrl || dataUrl.length < 2000) && typeof fetch !== 'undefined') {
+              try {
+                const thumbParam = options?.fullRes || options?.fullVideo ? '' : '&thumb=1';
+                const res = await fetch(resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}${thumbParam}`));
+                if (res.ok) {
+                  const blob = await res.blob();
+                  if (blob.size > 200) {
+                    dataUrl = await new Promise<string>((resBlob) => {
+                      const reader = new FileReader();
+                      reader.onloadend = () => resBlob(reader.result as string);
+                      reader.readAsDataURL(blob);
+                    });
+                  }
+                }
+              } catch (e) {}
+            }
+
+            if (dataUrl && dataUrl.length > 5) {
+              memoryCache.set(key, dataUrl);
+              if (dataUrl.startsWith('data:')) {
+                putToIndexedDB(key, dataUrl);
+              }
+              notifySubscribers(key, dataUrl);
+              resolve(dataUrl);
             } else {
               resolve('');
             }

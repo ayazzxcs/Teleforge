@@ -65,9 +65,9 @@ export function mapDialogToChat(dialog: TelegramDialog): Chat {
   return {
     id: dialog.id,
     name: chatName || 'Telegram User',
-    avatar: (dialog.avatar && dialog.avatar.length > 500)
+    avatar: (dialog.avatar && (!dialog.avatar.startsWith('data:image/') || dialog.avatar.length > 5000))
       ? dialog.avatar
-      : (avatarService.get(dialog.id) || resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(dialog.id)}&v=2`)),
+      : (avatarService.get(dialog.id) || resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(dialog.id)}`)),
     thumbUrl: dialog.thumbUrl,
     avatarColor: getAvatarColor(chatName || dialog.id),
     type: chatType,
@@ -98,6 +98,7 @@ export function mapTelegramMessage(
   let attachment = undefined;
   if (m.hasMedia && m.mediaType) {
     let attType: 'image' | 'video' | 'audio' | 'file' | 'sticker' | 'gif' | 'videoNote' = 'file';
+    const isVideoExt = Boolean(m.fileName && /\.(mp4|mkv|mov|webm|avi|flv|m4v|3gp|ts)$/i.test(m.fileName));
     if (m.mediaType === 'photo') {
       attType = 'image';
     } else if (m.mediaType === 'videoNote' || m.isRound) {
@@ -106,7 +107,7 @@ export function mapTelegramMessage(
       attType = 'gif';
     } else if (m.mediaType === 'sticker' || m.isSticker) {
       attType = 'sticker';
-    } else if (m.mediaType === 'video') {
+    } else if (m.mediaType === 'video' || isVideoExt) {
       attType = 'video';
     } else if (m.mediaType === 'voice' || m.mediaType === 'audio') {
       attType = 'audio';
@@ -120,13 +121,11 @@ export function mapTelegramMessage(
     else if (m.mediaType === 'videoNote' || m.isRound) defaultName = 'Video Message';
     else if (m.mediaType === 'gif' || m.isGif) defaultName = 'GIF';
     else if (m.mediaType === 'sticker' || m.isSticker) defaultName = m.stickerEmoji ? `Sticker ${m.stickerEmoji}` : 'Sticker';
-    else if (m.mediaType === 'video') defaultName = 'Video';
+    else if (m.mediaType === 'video' || isVideoExt) defaultName = 'Video';
     else if (m.mediaType === 'voice') defaultName = 'Voice Message';
     else if (m.mediaType === 'audio') defaultName = 'Audio Message';
-
-    if (m.mediaThumb) {
-      mediaService.set(chatId, m.id, m.mediaThumb);
-    }
+    // Note: m.mediaThumb is preserved as attachment.thumbUrl for instant 0ms blur placeholder,
+    // while attachment.url loads the full-resolution image from /api/telegram/media.
 
     attachment = {
       type: attType,
@@ -165,7 +164,7 @@ export function mapTelegramMessage(
   const cachedSenderAvatar = m.senderId ? avatarService.get(m.senderId) : undefined;
   const senderAvatar = isOut
     ? undefined
-    : (cachedSenderAvatar || (m.senderAvatar && m.senderAvatar.length > 500 ? m.senderAvatar : undefined) || (m.senderId && m.senderId !== 'peer' ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(m.senderId)}&v=2`) : undefined));
+    : (cachedSenderAvatar || (m.senderAvatar && (!m.senderAvatar.startsWith('data:image/') || m.senderAvatar.length > 5000) ? m.senderAvatar : undefined) || (m.senderId && m.senderId !== 'peer' ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(m.senderId)}`) : undefined));
   const senderThumbUrl = isOut ? undefined : m.senderThumbUrl;
 
   return {
@@ -188,8 +187,8 @@ export function mapTelegramMessage(
     replyTo: m.replyToMsgId
       ? {
           id: String(m.replyToMsgId),
-          senderName: 'Replied Message',
-          text: 'Original message',
+          senderName: m.replyToSenderName || 'Replied Message',
+          text: m.replyToText || 'Original message',
         }
       : undefined,
   };
@@ -205,6 +204,7 @@ export function mapTelegramUserToProfile(user: TelegramUser): UserProfile {
       : resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(user.id)}${photoId ? `&v=${photoId}` : ''}`));
 
   return {
+    id: user.id,
     name: user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Telegram User',
     username: user.username ? `@${user.username}` : '',
     phone: user.phone || '',

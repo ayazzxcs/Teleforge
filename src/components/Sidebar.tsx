@@ -739,7 +739,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   >
                     <div className="relative shrink-0">
                       <Avatar
-                        src={resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(item.id)}&v=2`)}
+                        src={resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(item.id)}`)}
                         previewSrc={item.thumbUrl}
                         name={item.title}
                         color={item.isChannel ? '#E17076' : item.isGroup ? '#65AADD' : '#6C5CE7'}
