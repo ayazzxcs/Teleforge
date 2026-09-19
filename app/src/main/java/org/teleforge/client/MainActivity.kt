@@ -257,8 +257,17 @@ class MainActivity : ComponentActivity() {
                         if (!id.isNullOrBlank()) {
                             try {
                                 val file = java.io.File(cacheDir, "media/$id.mp4")
+                                // If file does not exist yet, wait up to 2 seconds for chunk 1 to be written
+                                var initWaited = 0
+                                while ((!file.exists() || file.length() == 0L) && initWaited < 20) {
+                                    try { Thread.sleep(100) } catch (e: Exception) { break }
+                                    initWaited++
+                                }
+
                                 if (file.exists() && file.length() > 0L) {
-                                    val fileLength = file.length()
+                                    val currentLen = file.length()
+                                    val sizeParam = uri.getQueryParameter("size")?.toLongOrNull()
+                                    val totalExpected = if (sizeParam != null && sizeParam > currentLen) sizeParam else currentLen
                                     val rangeHeader = request.requestHeaders?.get("Range")
                                         ?: request.requestHeaders?.get("range")
 
@@ -267,45 +276,64 @@ class MainActivity : ComponentActivity() {
                                         val parts = rangeSpec.split("-")
                                         var start = parts[0].toLongOrNull() ?: 0L
                                         var end = if (parts.size > 1 && parts[1].isNotEmpty()) {
-                                            parts[1].toLongOrNull() ?: (fileLength - 1L)
+                                            parts[1].toLongOrNull() ?: (totalExpected - 1L)
                                         } else {
-                                            fileLength - 1L
+                                            totalExpected - 1L
                                         }
-                                        if (end >= fileLength) end = fileLength - 1L
+                                        if (end >= totalExpected) end = totalExpected - 1L
                                         if (start > end) start = 0L
                                         val contentLength = end - start + 1L
 
-                                        val fis = java.io.FileInputStream(file)
+                                        val raf = java.io.RandomAccessFile(file, "r")
                                         if (start > 0L) {
-                                            fis.channel.position(start)
+                                            // If seeking beyond currently written bytes, wait for chunks
+                                            var seekWaited = 0
+                                            while (file.length() < start && file.length() < totalExpected && seekWaited < 60) {
+                                                try { Thread.sleep(50) } catch (e: Exception) { break }
+                                                seekWaited++
+                                            }
+                                            val seekPos = Math.min(start, Math.max(0L, file.length() - 1L))
+                                            raf.seek(seekPos)
                                         }
 
                                         val limitedStream = object : java.io.InputStream() {
                                             private var bytesRemaining = contentLength
                                             override fun read(): Int {
                                                 if (bytesRemaining <= 0L) return -1
-                                                val b = fis.read()
+                                                var waited = 0
+                                                while (raf.filePointer >= file.length() && file.length() < totalExpected && waited < 80) {
+                                                    try { Thread.sleep(50) } catch (e: Exception) { break }
+                                                    waited++
+                                                }
+                                                if (raf.filePointer >= file.length()) return -1
+                                                val b = raf.read()
                                                 if (b != -1) bytesRemaining--
                                                 return b
                                             }
                                             override fun read(b: ByteArray, off: Int, len: Int): Int {
                                                 if (bytesRemaining <= 0L) return -1
+                                                var waited = 0
+                                                while (raf.filePointer >= file.length() && file.length() < totalExpected && waited < 80) {
+                                                    try { Thread.sleep(50) } catch (e: Exception) { break }
+                                                    waited++
+                                                }
+                                                if (raf.filePointer >= file.length()) return -1
                                                 val toRead = Math.min(len.toLong(), bytesRemaining).toInt()
-                                                val count = fis.read(b, off, toRead)
+                                                val count = raf.read(b, off, toRead)
                                                 if (count > 0) bytesRemaining -= count.toLong()
                                                 return count
                                             }
                                             override fun available(): Int =
-                                                Math.min(fis.available().toLong(), bytesRemaining).toInt()
+                                                Math.min(Math.max(0L, file.length() - raf.filePointer), bytesRemaining).toInt()
                                             override fun close() {
-                                                fis.close()
+                                                try { raf.close() } catch (e: Exception) {}
                                             }
                                         }
 
                                         val headers = mapOf(
                                             "Access-Control-Allow-Origin" to "*",
                                             "Accept-Ranges" to "bytes",
-                                            "Content-Range" to "bytes $start-$end/$fileLength",
+                                            "Content-Range" to "bytes $start-$end/$totalExpected",
                                             "Content-Length" to contentLength.toString(),
                                             "Content-Type" to "video/mp4"
                                         )
@@ -322,7 +350,7 @@ class MainActivity : ComponentActivity() {
                                         val headers = mapOf(
                                             "Access-Control-Allow-Origin" to "*",
                                             "Accept-Ranges" to "bytes",
-                                            "Content-Length" to fileLength.toString(),
+                                            "Content-Length" to totalExpected.toString(),
                                             "Content-Type" to "video/mp4"
                                         )
                                         return WebResourceResponse(
@@ -336,7 +364,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             } catch (e: Exception) {
-                                // Fall through to assetLoader
+                                android.util.Log.e("TeleForge", "Local media stream error: ${e.message}", e)
                             }
                         }
                     }
@@ -734,11 +762,7 @@ class MainActivity : ComponentActivity() {
 
         @android.webkit.JavascriptInterface
         fun getLocalMediaUrl(id: String): String {
-            val file = java.io.File(activity.cacheDir, "media/$id.mp4")
-            if (file.exists() && file.length() > 0L) {
-                return "https://appassets.androidplatform.net/api/local-media?id=$id"
-            }
-            return ""
+            return "https://appassets.androidplatform.net/api/local-media?id=$id"
         }
 
         @android.webkit.JavascriptInterface

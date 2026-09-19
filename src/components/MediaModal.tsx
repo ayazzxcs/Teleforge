@@ -65,15 +65,26 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
       return;
     }
 
+    const mediaKey = `${attachment.chatId}_${attachment.messageId}`;
+    const bridge = typeof window !== 'undefined' ? (window as any).TeleForgeBridge : null;
+    if (bridge?.hasLocalMedia?.(mediaKey)) {
+      const localUrl = bridge.getLocalMediaUrl(mediaKey);
+      setVideoUrl(localUrl);
+      setIsVideoLoading(false);
+      return;
+    }
+
     const streamUrl = !isAndroidApp() && (attachment.chatId && attachment.messageId)
       ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(attachment.chatId)}&messageId=${attachment.messageId}`)
       : '';
     const initialUrl = attachment.url && !attachment.url.includes('/api/telegram/media')
       ? attachment.url
       : streamUrl;
+    const isLocalMediaUrl = initialUrl && (initialUrl.includes('/api/local-media') || initialUrl.includes('appassets.androidplatform.net'));
     const isValidVideo = initialUrl && (
       initialUrl.startsWith('blob:') ||
       initialUrl.startsWith('data:') ||
+      isLocalMediaUrl ||
       (!isAndroidApp() && (initialUrl.startsWith('http://') || initialUrl.startsWith('https://') || initialUrl.startsWith('/api/')))
     );
 
@@ -102,6 +113,10 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
         mediaService
           .loadMedia(attachment.chatId, attachment.messageId, {
             fullVideo: true,
+            onStreamReady: (progressiveUrl) => {
+              setVideoUrl(progressiveUrl);
+              setIsVideoLoading(false);
+            },
             onProgress: (pct, dl, tot) => {
               setDownloadProgress({ pct, dl, tot });
             },

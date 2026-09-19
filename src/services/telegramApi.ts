@@ -791,7 +791,7 @@ export const telegramApi = {
   async downloadMessageMedia(
     chatId: string,
     messageId: string | number,
-    options?: { fullRes?: boolean; fullVideo?: boolean }
+    options?: { fullRes?: boolean; fullVideo?: boolean; onProgress?: (progress: number, downloaded: number, total: number) => void; onStreamReady?: (streamUrl: string) => void }
   ): Promise<{ dataUrl: string; mimeType: string } | null> {
     return telegramDirectClient.downloadMessageMedia(chatId, messageId, options);
   },

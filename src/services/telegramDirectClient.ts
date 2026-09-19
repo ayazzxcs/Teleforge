@@ -42,6 +42,12 @@ const messageMediaMap = new Map<string, any>(); // `${chatId}_${messageId}` -> m
 const messageObjectMap = new Map<string, any>(); // `${chatId}_${messageId}` -> full Api.Message object
 const pendingLogins = new Map<string, { phoneCodeHash: string; isCodeViaApp: boolean; type?: string }>();
 
+type AvatarListener = (peerId: string, dataUrl: string) => void;
+let avatarListener: AvatarListener | null = null;
+export function setAvatarListener(listener: AvatarListener) {
+  avatarListener = listener;
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg = 'Operation timed out'): Promise<T> {
   let timer: any;
   return Promise.race([
@@ -128,13 +134,18 @@ function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number,
     if (!senderIdStr) senderIdStr = sId;
     peerEntityCache.set(sId, senderEntity);
 
-    if (senderEntity.photo?.strippedThumb) {
+    const stripped = senderEntity.photo?.strippedThumb || senderEntity.photo?.stripped_thumb;
+    if (stripped) {
       try {
-        const thumbBuf = strippedPhotoToJpg(senderEntity.photo.strippedThumb);
+        const thumbBuf = strippedPhotoToJpg(stripped);
         if (thumbBuf && thumbBuf.length > 0) {
-          const b64 = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+          const b64 = `data:image/jpeg;base64,${bytesToBase64(thumbBuf)}`;
           thumbCache.set(sId, b64);
           if (senderIdStr) thumbCache.set(senderIdStr, b64);
+          if (avatarListener) {
+            avatarListener(sId, b64);
+            if (senderIdStr) avatarListener(senderIdStr, b64);
+          }
         }
       } catch (e) {}
     }
@@ -599,12 +610,14 @@ function serializeUser(u: any): TelegramUser | null {
   const photoId = u.photo?.photoId ? u.photo.photoId.toString() : (u.photo?.id ? u.photo.id.toString() : '');
 
   // Extract stripped thumb if present
-  if (u.photo?.strippedThumb && idStr) {
+  const userStripped = u.photo?.strippedThumb || u.photo?.stripped_thumb;
+  if (userStripped && idStr) {
     try {
-      const thumbBuf = strippedPhotoToJpg(u.photo.strippedThumb);
+      const thumbBuf = strippedPhotoToJpg(userStripped);
       if (thumbBuf && thumbBuf.length > 0) {
-        const thumbUrl = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+        const thumbUrl = `data:image/jpeg;base64,${bytesToBase64(thumbBuf)}`;
         thumbCache.set(idStr, thumbUrl);
+        if (avatarListener) avatarListener(idStr, thumbUrl);
       }
     } catch (e) {}
   }
@@ -946,13 +959,19 @@ export const telegramDirectClient = {
           }
         }
 
-        if (entity.photo?.strippedThumb) {
+        const photo = entity?.photo;
+        const stripped = photo?.strippedThumb || photo?.stripped_thumb;
+        if (stripped) {
           try {
-            const thumbBuf = strippedPhotoToJpg(entity.photo.strippedThumb);
+            const thumbBuf = strippedPhotoToJpg(stripped);
             if (thumbBuf && thumbBuf.length > 0) {
-              const b64 = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+              const b64 = `data:image/jpeg;base64,${bytesToBase64(thumbBuf)}`;
               thumbCache.set(peerIdStr, b64);
               if (entity.id) thumbCache.set(entity.id.toString(), b64);
+              if (avatarListener) {
+                avatarListener(peerIdStr, b64);
+                if (entity.id) avatarListener(entity.id.toString(), b64);
+              }
             }
           } catch (e) {}
         }
@@ -997,7 +1016,7 @@ export const telegramDirectClient = {
         isChannel,
         isVerified,
         hasAvatar: hasPhoto,
-        avatar: hasPhoto ? avatarBlobUrlCache.get(peerIdStr) : undefined,
+        avatar: (hasPhoto ? avatarBlobUrlCache.get(peerIdStr) : undefined) || thumbUrl,
         thumbUrl,
         unreadCount: d.unreadCount || 0,
         unreadMentionsCount: d.unreadMentionsCount || 0,
@@ -1764,14 +1783,9 @@ export const telegramDirectClient = {
       }
 
       if (buffer && buffer.length > 200) {
-        let dataUrl = '';
-        if (typeof window !== 'undefined' && window.URL && window.Blob) {
-          const blob = new Blob([buffer], { type: 'image/jpeg' });
-          dataUrl = URL.createObjectURL(blob);
-        } else {
-          dataUrl = `data:image/jpeg;base64,${Buffer.from(buffer).toString('base64')}`;
-        }
+        const dataUrl = `data:image/jpeg;base64,${bytesToBase64(buffer)}`;
         avatarBlobUrlCache.set(cleanId, dataUrl);
+        if (avatarListener) avatarListener(cleanId, dataUrl);
         return dataUrl;
       }
     } catch (e) {}
@@ -1958,6 +1972,7 @@ export const telegramDirectClient = {
       fullRes?: boolean;
       fullVideo?: boolean;
       onProgress?: (progress: number, downloaded: number, total: number) => void;
+      onStreamReady?: (streamUrl: string) => void;
     }
   ): Promise<{ dataUrl: string; mimeType: string; blob?: Blob; size?: number } | null> {
     if (!chatId || messageId == null) return null;
@@ -2058,16 +2073,46 @@ export const telegramDirectClient = {
         }
       }
 
-      // If downloading full video/large file, stream chunks into in-memory Blob URL for direct hardware decoding
+      // If downloading full video/large file, stream chunks into in-memory Blob URL or native Android cache
       if (options?.fullVideo) {
         const chunks: Uint8Array[] = [];
         let totalDownloaded = 0;
+        let isFirstChunk = true;
+        const bridge = typeof window !== 'undefined' ? (window as any).TeleForgeBridge : null;
+
+        // 1. Check if Android bridge already has this media completely downloaded on local disk (0ms instant playback)
+        if (bridge?.hasLocalMedia?.(mediaKey)) {
+          const localUrl = bridge.getLocalMediaUrl(mediaKey);
+          if (localUrl) {
+            options?.onStreamReady?.(localUrl);
+            return { dataUrl: localUrl, mimeType: 'video/mp4', size: 1000000 };
+          }
+        }
+
+        const totalDocSize = mediaObj.document?.size
+          ? (typeof mediaObj.document.size.toJSNumber === 'function' ? mediaObj.document.size.toJSNumber() : Number(mediaObj.document.size))
+          : 0;
 
         const customWriter = {
           write: (chunk: any) => {
             if (chunk && chunk.length > 0) {
-              totalDownloaded += chunk.length;
-              chunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+              const u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+              totalDownloaded += u8.length;
+              chunks.push(u8);
+
+              if (bridge?.writeMediaChunk) {
+                try {
+                  const b64 = bytesToBase64(u8);
+                  bridge.writeMediaChunk(mediaKey, b64, !isFirstChunk);
+                  if (isFirstChunk) {
+                    isFirstChunk = false;
+                    const streamUrl = totalDocSize > 0
+                      ? `${bridge.getLocalMediaUrl(mediaKey)}&size=${totalDocSize}`
+                      : bridge.getLocalMediaUrl(mediaKey);
+                    options?.onStreamReady?.(streamUrl);
+                  }
+                } catch (bErr) {}
+              }
             }
           },
           close: () => {},
@@ -2092,6 +2137,11 @@ export const telegramDirectClient = {
           await client.downloadMedia(targetMsg || mediaObj, downloadParams);
         } catch (dlErr: any) {
           console.warn('[MTProto-Direct] fullVideo download error:', dlErr?.message || dlErr);
+        }
+
+        if (bridge?.hasLocalMedia?.(mediaKey)) {
+          const finalLocalUrl = bridge.getLocalMediaUrl(mediaKey);
+          return { dataUrl: finalLocalUrl, mimeType: 'video/mp4', size: totalDownloaded };
         }
 
         if (totalDownloaded === 0 || chunks.length === 0) {

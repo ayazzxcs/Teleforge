@@ -2,7 +2,7 @@
 // Manages memory cache, IndexedDB persistent cache, and direct MTProto downloads
 // Guarantees crystal-clear profile pictures for users, chats, groups, and channels.
 
-import { telegramDirectClient } from './telegramDirectClient';
+import { telegramDirectClient, setAvatarListener } from './telegramDirectClient';
 
 const DB_NAME = 'teleforge_avatar_cache';
 const STORE_NAME = 'avatars';
@@ -13,6 +13,10 @@ const memoryCache = new Map<string, string>(); // peerId -> base64/blob data URL
 const negativeCache = new Set<string>(); // peerId -> known missing avatar (avoids infinite re-requesting)
 const inflightPromises = new Map<string, Promise<string>>(); // peerId -> Promise
 const subscribers = new Map<string, Set<(url: string) => void>>(); // peerId -> Set of callbacks
+
+setAvatarListener((peerId, dataUrl) => {
+  avatarService.setAvatar(peerId, dataUrl);
+});
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -339,11 +343,9 @@ export const avatarService = {
               notifySubscribers(cleanId, dataUrl);
               resolve(dataUrl);
             } else {
-              negativeCache.add(cleanId);
               resolve('');
             }
           } catch (err) {
-            negativeCache.add(cleanId);
             resolve('');
           }
         });
@@ -360,7 +362,6 @@ export const avatarService = {
    * Preload high-res avatars in the background for a list of dialogs/peers
    */
   preloadAvatars(peerIds: string[]): void {
-    if (isMobileClient) return; // Prevent heavy background crypto storms on mobile
     for (const id of peerIds) {
       if (!id) continue;
       const clean = String(id).trim();

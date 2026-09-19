@@ -62,13 +62,15 @@ export function mapDialogToChat(dialog: TelegramDialog): Chat {
     ? dialog.memberCount
     : (typeof dialog.participantsCount === 'number' ? dialog.participantsCount : undefined);
 
+  const effectiveAvatar = (dialog.avatar && dialog.avatar.length > 0)
+    ? dialog.avatar
+    : (dialog.thumbUrl || avatarService.get(dialog.id) || (!isAndroidApp() ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(dialog.id)}`) : ''));
+
   return {
     id: dialog.id,
     name: chatName || 'Telegram User',
-    avatar: (dialog.avatar && (!dialog.avatar.startsWith('data:image/') || dialog.avatar.length > 5000))
-      ? dialog.avatar
-      : (avatarService.get(dialog.id) || resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(dialog.id)}`)),
-    thumbUrl: dialog.thumbUrl,
+    avatar: effectiveAvatar,
+    thumbUrl: dialog.thumbUrl || effectiveAvatar,
     avatarColor: getAvatarColor(chatName || dialog.id),
     type: chatType,
     verified: dialog.isVerified,

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { avatarService } from '../services/avatarService';
-import { resolveApiUrl } from '../services/telegramApi';
+import { resolveApiUrl, isAndroidApp } from '../services/telegramApi';
 
 interface AvatarProps {
   src?: string;
@@ -34,12 +34,13 @@ export const Avatar: React.FC<AvatarProps> = ({
 }) => {
   const effectivePeerId = peerId || extractPeerIdFromSrc(src) || undefined;
   
-  // Any data URL under 5000 characters is a micro stripped preview thumbnail, not high-res
-  const isMicroThumb = Boolean(src && src.startsWith('data:image/') && src.length < 5000);
-  const directSrc = src && !isMicroThumb ? src : undefined;
-  const effectivePreviewSrc = previewSrc || (isMicroThumb ? src : undefined);
+  // Any data URL or web URL is directly usable as directSrc
+  const isDataUrl = Boolean(src && src.startsWith('data:image/'));
+  const isHttpUrl = Boolean(src && (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('blob:')));
+  const directSrc = isDataUrl || isHttpUrl ? src : undefined;
+  const effectivePreviewSrc = previewSrc || (isDataUrl ? src : undefined);
 
-  const fallbackAvatarUrl = effectivePeerId
+  const fallbackAvatarUrl = (!isAndroidApp() && effectivePeerId)
     ? resolveApiUrl(`/api/telegram/avatar?id=${encodeURIComponent(effectivePeerId)}`)
     : undefined;
 
@@ -132,7 +133,7 @@ export const Avatar: React.FC<AvatarProps> = ({
 
   const hasAnyPhoto = Boolean(activeSrc || effectivePreviewSrc);
 
-  if (!hasAnyPhoto || hasError) {
+  if (!hasAnyPhoto || (hasError && !effectivePreviewSrc)) {
     return (
       <div
         style={bgStyle}
@@ -151,13 +152,13 @@ export const Avatar: React.FC<AvatarProps> = ({
       {/* Fallback colored initials behind image */}
       <span>{getInitials(name)}</span>
 
-      {/* Low-res preview thumbnail (shown while high-res loads) */}
-      {effectivePreviewSrc && !isLoaded && !hasError && (
+      {/* Preview thumbnail (shown while high-res loads or if high-res failed) */}
+      {effectivePreviewSrc && (!isLoaded || hasError) && (
         <img
           src={effectivePreviewSrc}
           alt=""
           aria-hidden="true"
-          className="absolute inset-0 w-full h-full object-cover rounded-full filter blur-[1.5px] scale-105"
+          className="absolute inset-0 w-full h-full object-cover rounded-full"
         />
       )}
 

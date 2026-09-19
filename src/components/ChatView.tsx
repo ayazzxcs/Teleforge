@@ -274,9 +274,20 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
 
   const handlePlayClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+
+    const mediaKey = `${chatId}_${messageId}`;
+    const bridge = typeof window !== 'undefined' ? (window as any).TeleForgeBridge : null;
+    if (bridge?.hasLocalMedia?.(mediaKey)) {
+      const localUrl = bridge.getLocalMediaUrl(mediaKey);
+      setVideoUrl(localUrl);
+      setIsPlaying(true);
+      return;
+    }
+
     const hasPlayableUrl = videoUrl && (
       videoUrl.startsWith('blob:') ||
       videoUrl.startsWith('data:') ||
+      videoUrl.includes('/api/local-media') ||
       (!isAndroidApp() && (videoUrl.startsWith('http') || videoUrl.startsWith('/api/')))
     );
 
@@ -288,6 +299,11 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
     setIsLoading(true);
     mediaService.loadMedia(chatId, messageId, {
       fullVideo: true,
+      onStreamReady: (streamUrl) => {
+        setVideoUrl(streamUrl);
+        setIsPlaying(true);
+        setIsLoading(false);
+      },
       onProgress: (pct, dl, tot) => {
         setDownloadProgress({ pct, dl, tot });
       },
@@ -297,8 +313,6 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
       if (playUrl) {
         setVideoUrl(playUrl);
         setIsPlaying(true);
-      } else {
-        showToast('Could not load video', 'error');
       }
     }).catch(() => {
       setIsLoading(false);

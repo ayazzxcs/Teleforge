@@ -221,6 +221,7 @@ export const mediaService = {
       fullRes?: boolean;
       fullVideo?: boolean;
       onProgress?: (pct: number, dl: number, tot: number) => void;
+      onStreamReady?: (streamUrl: string) => void;
     }
   ): Promise<string> {
     if (!chatId || messageId == null) return '';
@@ -245,11 +246,28 @@ export const mediaService = {
         }
       } catch (e) {}
 
-      // For full video playback, bypass background queue and download immediately with high priority
+      // For full video playback, bypass background queue and stream immediately
       if (options?.fullVideo) {
+        const rawMediaKey = `${chatId}_${messageId}`;
+        const bridge = typeof window !== 'undefined' ? (window as any).TeleForgeBridge : null;
+        if (bridge?.hasLocalMedia?.(rawMediaKey)) {
+          const localUrl = bridge.getLocalMediaUrl(rawMediaKey);
+          if (localUrl) {
+            options?.onStreamReady?.(localUrl);
+            memoryCache.set(key, localUrl);
+            notifySubscribers(key, localUrl);
+            return localUrl;
+          }
+        }
+
         try {
           const res = await telegramDirectClient.downloadMessageMedia(chatId, messageId, {
             ...options,
+            onStreamReady: (streamUrl) => {
+              memoryCache.set(key, streamUrl);
+              notifySubscribers(key, streamUrl);
+              options?.onStreamReady?.(streamUrl);
+            },
             onProgress: (pct, dl, tot) => {
               notifyProgressSubscribers(key, pct, dl, tot);
               options?.onProgress?.(pct, dl, tot);
