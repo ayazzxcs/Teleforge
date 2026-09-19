@@ -289,7 +289,7 @@ class MainActivity : ComponentActivity() {
                                         if (start > 0L) {
                                             // If seeking beyond currently written bytes, wait for chunks
                                             var seekWaited = 0
-                                            while (file.length() < start && file.length() < totalExpected && seekWaited < 60) {
+                                            while (file.length() < start && file.length() < totalExpected && seekWaited < 600) {
                                                 try { Thread.sleep(50) } catch (e: Exception) { break }
                                                 seekWaited++
                                             }
@@ -302,7 +302,7 @@ class MainActivity : ComponentActivity() {
                                             override fun read(): Int {
                                                 if (bytesRemaining <= 0L) return -1
                                                 var waited = 0
-                                                while (raf.filePointer >= file.length() && file.length() < totalExpected && waited < 80) {
+                                                while (raf.filePointer >= file.length() && file.length() < totalExpected && waited < 600) {
                                                     try { Thread.sleep(50) } catch (e: Exception) { break }
                                                     waited++
                                                 }
@@ -314,7 +314,7 @@ class MainActivity : ComponentActivity() {
                                             override fun read(b: ByteArray, off: Int, len: Int): Int {
                                                 if (bytesRemaining <= 0L) return -1
                                                 var waited = 0
-                                                while (raf.filePointer >= file.length() && file.length() < totalExpected && waited < 80) {
+                                                while (raf.filePointer >= file.length() && file.length() < totalExpected && waited < 600) {
                                                     try { Thread.sleep(50) } catch (e: Exception) { break }
                                                     waited++
                                                 }

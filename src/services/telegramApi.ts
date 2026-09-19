@@ -857,6 +857,14 @@ export const telegramApi = {
     return telegramDirectClient.downloadDocumentThumb(doc);
   },
 
+  async downloadStickerThumb(docOrSticker: any): Promise<string | null> {
+    return telegramDirectClient.downloadStickerThumb(docOrSticker);
+  },
+
+  async downloadDocumentBlob(doc: any): Promise<string | null> {
+    return telegramDirectClient.downloadDocumentBlob(doc);
+  },
+
   async sendInlineBotResult(
     chatId: string,
     queryId: string,

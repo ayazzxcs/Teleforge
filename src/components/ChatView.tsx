@@ -297,12 +297,16 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
     }
 
     setIsLoading(true);
+    let hasStartedPlay = false;
     mediaService.loadMedia(chatId, messageId, {
       fullVideo: true,
       onStreamReady: (streamUrl) => {
-        setVideoUrl(streamUrl);
-        setIsPlaying(true);
-        setIsLoading(false);
+        if (!hasStartedPlay) {
+          hasStartedPlay = true;
+          setVideoUrl(streamUrl);
+          setIsPlaying(true);
+          setIsLoading(false);
+        }
       },
       onProgress: (pct, dl, tot) => {
         setDownloadProgress({ pct, dl, tot });
@@ -310,7 +314,7 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
     }).then((url) => {
       setIsLoading(false);
       const playUrl = url || (!isAndroidApp() ? streamUrl : '');
-      if (playUrl) {
+      if (playUrl && !hasStartedPlay) {
         setVideoUrl(playUrl);
         setIsPlaying(true);
       }
@@ -772,6 +776,48 @@ const ChatMediaSticker: React.FC<{
   );
 };
 
+// Individual sticker item within pack modal that fetches real sticker thumbnail on demand
+const PackStickerItem: React.FC<{
+  sticker: TelegramStickerItem;
+  isSelected: boolean;
+  onSelect: (thumb: string) => void;
+}> = ({ sticker, isSelected, onSelect }) => {
+  const [thumb, setThumb] = useState<string>(() => resolveApiUrl(sticker.thumbUrl || sticker.url || ''));
+
+  useEffect(() => {
+    let active = true;
+    if (!thumb) {
+      telegramApi.downloadStickerThumb(sticker).then((t) => {
+        if (t && active) {
+          setThumb(t);
+          sticker.thumbUrl = t;
+          sticker.url = t;
+        }
+      }).catch(() => {});
+    }
+    return () => { active = false; };
+  }, [sticker.id, sticker.documentId, thumb]);
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(thumb)}
+      className={`p-1 rounded-xl transition-all flex flex-col items-center justify-center aspect-square cursor-pointer hover:scale-105 active:scale-95 ${
+        isSelected
+          ? 'bg-teleforge-primary/20 ring-2 ring-teleforge-primary'
+          : 'hover:bg-black/5 dark:hover:bg-white/5'
+      }`}
+      title={sticker.emoji || 'Sticker'}
+    >
+      {thumb ? (
+        <img src={thumb} alt="" className="w-full h-full object-contain" loading="lazy" />
+      ) : (
+        <span className="text-xl">{sticker.emoji || '⭐️'}</span>
+      )}
+    </button>
+  );
+};
+
 // Sticker Preview & Add Sheet Modal with Dual Adding Options (Clicked Sticker + Full Pack)
 const StickerPreviewModal: React.FC<{
   data: {
@@ -890,19 +936,27 @@ const StickerPreviewModal: React.FC<{
     showToast('Sticker sent! 🚀', 'success');
   };
 
+  useEffect(() => {
+    if (!currentAttachment.url && !currentAttachment.thumbUrl && currentAttachment.documentId) {
+      telegramApi.downloadStickerThumb(currentAttachment).then((t) => {
+        if (t) setCurrentAttachment((prev) => ({ ...prev, url: t, thumbUrl: t }));
+      }).catch(() => {});
+    }
+  }, [currentAttachment.documentId]);
+
   const stickerTitle =
     packData?.title ||
     currentAttachment.stickerSet?.title ||
     currentAttachment.name?.replace('Sticker', '').trim() ||
-    'Custom Sticker';
+    'Telegram Sticker';
   const stickerCount = packData?.stickers?.length || (currentAttachment.stickerSet as any)?.count;
   const stickerSub = currentAttachment.stickerSet?.shortName
     ? `@${currentAttachment.stickerSet.shortName}${stickerCount ? ` • ${stickerCount} stickers` : ''}`
     : 'Custom Telegram Sticker';
   const displaySrc =
-    currentAttachment.url.startsWith('/stickers/') || currentAttachment.url.startsWith('/gifs/')
+    currentAttachment.url?.startsWith('/stickers/') || currentAttachment.url?.startsWith('/gifs/')
       ? '.' + currentAttachment.url
-      : resolveApiUrl(currentAttachment.url);
+      : (currentAttachment.url ? resolveApiUrl(currentAttachment.url) : (currentAttachment.thumbUrl ? resolveApiUrl(currentAttachment.thumbUrl) : ''));
 
   return (
     <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-4 animate-in fade-in duration-150">
@@ -917,17 +971,25 @@ const StickerPreviewModal: React.FC<{
 
         {/* Selected Sticker Large Preview */}
         <div className="w-32 h-32 sm:w-36 sm:h-36 flex items-center justify-center my-2 relative">
-          <img
-            src={displaySrc}
-            alt={currentAttachment.name || 'Sticker'}
-            className="w-full h-full object-contain filter drop-shadow-xl"
-            onError={(e) => {
-              if (currentAttachment.thumbUrl && e.currentTarget.src !== currentAttachment.thumbUrl) {
-                e.currentTarget.src = resolveApiUrl(currentAttachment.thumbUrl);
-              }
-            }}
-          />
-          {currentAttachment.stickerEmoji && (
+          {displaySrc ? (
+            <img
+              src={displaySrc}
+              alt={currentAttachment.name || 'Sticker'}
+              className="w-full h-full object-contain filter drop-shadow-xl"
+              onError={() => {
+                if (currentAttachment.documentId) {
+                  telegramApi.downloadStickerThumb(currentAttachment).then((t) => {
+                    if (t) setCurrentAttachment((prev) => ({ ...prev, url: t, thumbUrl: t }));
+                  }).catch(() => {});
+                }
+              }}
+            />
+          ) : (
+            <div className="w-28 h-28 rounded-2xl bg-black/5 dark:bg-white/5 flex items-center justify-center text-4xl">
+              {currentAttachment.stickerEmoji || '⭐️'}
+            </div>
+          )}
+          {currentAttachment.stickerEmoji && displaySrc && (
             <span className="absolute bottom-0 right-0 text-2xl p-1 bg-white/90 dark:bg-black/90 rounded-full shadow-md backdrop-blur-xs">
               {currentAttachment.stickerEmoji}
             </span>
@@ -961,15 +1023,15 @@ const StickerPreviewModal: React.FC<{
             <div className="grid grid-cols-5 gap-1.5 max-h-32 overflow-y-auto p-1 custom-scrollbar">
               {(packData?.stickers || []).map((stk) => {
                 const isSelected = stk.documentId === currentAttachment.documentId || stk.id === currentAttachment.documentId;
-                const finalThumb = resolveApiUrl(stk.thumbUrl || stk.url || '');
                 return (
-                  <button
+                  <PackStickerItem
                     key={stk.id}
-                    type="button"
-                    onClick={() => {
+                    sticker={stk}
+                    isSelected={isSelected}
+                    onSelect={(loadedThumb) => {
                       setCurrentAttachment({
                         type: 'sticker',
-                        url: finalThumb,
+                        url: loadedThumb || stk.url || '',
                         name: stk.emoji ? `Sticker ${stk.emoji}` : 'Telegram Sticker',
                         isSticker: true,
                         documentId: stk.documentId,
@@ -977,22 +1039,10 @@ const StickerPreviewModal: React.FC<{
                         fileReference: stk.fileReference,
                         stickerEmoji: stk.emoji,
                         stickerSet: currentAttachment.stickerSet,
-                        thumbUrl: finalThumb,
+                        thumbUrl: loadedThumb || stk.thumbUrl || '',
                       });
                     }}
-                    className={`p-1 rounded-xl transition-all flex flex-col items-center justify-center aspect-square cursor-pointer hover:scale-105 active:scale-95 ${
-                      isSelected
-                        ? 'bg-teleforge-primary/20 ring-2 ring-teleforge-primary'
-                        : 'hover:bg-black/5 dark:hover:bg-white/5'
-                    }`}
-                    title={stk.emoji || 'Sticker'}
-                  >
-                    {finalThumb ? (
-                      <img src={finalThumb} alt="" className="w-full h-full object-contain" loading="lazy" />
-                    ) : (
-                      <span className="text-xl">{stk.emoji || '⭐️'}</span>
-                    )}
-                  </button>
+                  />
                 );
               })}
 
@@ -1079,12 +1129,17 @@ const OnlineGifTile: React.FC<{
   onSelect: () => void;
 }> = ({ gif, onSelect }) => {
   const [src, setSrc] = useState<string>(() => gif.thumbUrl || gif.url);
+  const [videoSrc, setVideoSrc] = useState<string>(() => {
+    if (gif.url && (gif.url.endsWith('.mp4') || gif.url.includes('mimeType=video/mp4') || gif.url.includes('.mp4?'))) {
+      return gif.url;
+    }
+    return '';
+  });
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
     let active = true;
-    // If the thumbnail is a stripped low-res data URL or we have a raw Telegram document,
-    // asynchronously fetch the high-res thumbnail via MTProto
+    // 1. Asynchronously fetch high-res thumbnail via MTProto if low-res or document
     if (gif.rawItem?.document && (!gif.thumbUrl || gif.thumbUrl.startsWith('data:image/jpeg;base64'))) {
       telegramApi.downloadDocumentThumb(gif.rawItem.document).then((highRes) => {
         if (highRes && active) {
@@ -1092,15 +1147,21 @@ const OnlineGifTile: React.FC<{
         }
       }).catch(() => {});
     }
+
+    // 2. Asynchronously fetch full looping video blob for Telegram documents
+    if (gif.rawItem?.document && !videoSrc) {
+      telegramApi.downloadDocumentBlob(gif.rawItem.document).then((blobUrl) => {
+        if (blobUrl && active) {
+          setVideoSrc(blobUrl);
+          gif.url = blobUrl;
+        }
+      }).catch(() => {});
+    }
+
     return () => {
       active = false;
     };
   }, [gif.id, gif.thumbUrl, gif.rawItem]);
-
-  const isVideo = Boolean(
-    (gif.url && (gif.url.endsWith('.mp4') || gif.url.includes('mimeType=video/mp4') || gif.url.includes('.mp4?'))) ||
-    (gif.thumbUrl && (gif.thumbUrl.endsWith('.mp4') || gif.thumbUrl.includes('mimeType=video/mp4')))
-  );
 
   return (
     <button
@@ -1110,18 +1171,18 @@ const OnlineGifTile: React.FC<{
       title={gif.title}
     >
       {/* 0ms Blurred preview while high-def video/image streams */}
-      {(gif as any).previewThumb && !isLoaded && (
+      {src && !isLoaded && (
         <img
-          src={(gif as any).previewThumb}
+          src={src}
           alt=""
           aria-hidden="true"
           className="absolute inset-0 w-full h-full object-cover filter blur-[2px] scale-105 pointer-events-none"
         />
       )}
 
-      {isVideo ? (
+      {videoSrc ? (
         <video
-          src={gif.url || gif.thumbUrl}
+          src={videoSrc}
           autoPlay
           loop
           muted
@@ -1151,6 +1212,9 @@ const OnlineGifTile: React.FC<{
       <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-1.5">
         <span className="text-[11px] text-white font-medium truncate">{gif.title}</span>
       </div>
+      <span className="absolute bottom-1.5 left-1.5 px-1 py-0.2 rounded bg-black/60 text-[9px] font-bold text-white uppercase backdrop-blur-xs">
+        GIF
+      </span>
     </button>
   );
 };
@@ -1174,8 +1238,8 @@ const TelegramStickerTile: React.FC<{
     if (initial) {
       setSrc(initial);
       setHasError(false);
-    } else if (sticker.rawDoc) {
-      telegramApi.downloadDocumentThumb(sticker.rawDoc).then((dataUrl) => {
+    } else {
+      telegramApi.downloadStickerThumb(sticker).then((dataUrl) => {
         if (dataUrl && active) {
           setSrc(dataUrl);
           setHasError(false);
@@ -1201,24 +1265,101 @@ const TelegramStickerTile: React.FC<{
           className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
           loading="lazy"
           onError={() => {
-            if (sticker.rawDoc) {
-              telegramApi.downloadDocumentThumb(sticker.rawDoc).then((dataUrl) => {
-                if (dataUrl) {
-                  setSrc(dataUrl);
-                  setHasError(false);
-                } else {
-                  setHasError(true);
-                }
-              }).catch(() => setHasError(true));
-            } else {
-              setHasError(true);
-            }
+            telegramApi.downloadStickerThumb(sticker).then((dataUrl) => {
+              if (dataUrl) {
+                setSrc(dataUrl);
+                setHasError(false);
+              } else {
+                setHasError(true);
+              }
+            }).catch(() => setHasError(true));
           }}
         />
       ) : (
         <span className="text-3xl">{sticker.emoji || '⭐️'}</span>
       )}
     </button>
+  );
+};
+
+// Component for Custom Stickers saved by the user
+const CustomStickerItem: React.FC<{
+  sticker: CustomSticker;
+  onSelect: (url: string) => void;
+  onRemove: () => void;
+}> = ({ sticker, onSelect, onRemove }) => {
+  const initialSrc = (sticker.url?.startsWith('/stickers/') || sticker.url?.startsWith('/gifs/'))
+    ? '.' + sticker.url
+    : (sticker.url || sticker.thumbUrl || '');
+  const [src, setSrc] = useState<string>(initialSrc);
+
+  useEffect(() => {
+    let active = true;
+    if (!src && (sticker.documentId || sticker.rawDoc)) {
+      telegramApi.downloadStickerThumb(sticker).then((t) => {
+        if (t && active) {
+          setSrc(t);
+          sticker.url = t;
+          sticker.thumbUrl = t;
+        }
+      }).catch(() => {});
+    }
+    return () => { active = false; };
+  }, [sticker.id, sticker.documentId, src]);
+
+  const handleError = () => {
+    if (sticker.documentId || sticker.rawDoc) {
+      telegramApi.downloadStickerThumb(sticker).then((t) => {
+        if (t) {
+          setSrc(t);
+          sticker.url = t;
+          sticker.thumbUrl = t;
+        }
+      }).catch(() => {});
+    }
+  };
+
+  return (
+    <div
+      className="group relative flex flex-col items-center justify-center p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-all hover:scale-105 active:scale-95 cursor-pointer"
+      title={sticker.name}
+    >
+      <button
+        type="button"
+        onClick={() => onSelect(src)}
+        className="w-full flex flex-col items-center cursor-pointer"
+      >
+        {src ? (
+          <img
+            src={src}
+            alt={sticker.name}
+            className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
+            loading="lazy"
+            onError={handleError}
+          />
+        ) : (
+          <div className="w-14 h-14 rounded-xl bg-black/5 dark:bg-white/5 flex items-center justify-center text-2xl group-hover:scale-110 transition-transform">
+            {sticker.emoji || '⭐️'}
+          </div>
+        )}
+        <span className="text-[10px] text-gray-500 truncate w-full text-center mt-1">
+          {sticker.name}
+        </span>
+      </button>
+
+      {/* Quick Delete from My Stickers */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+        className="absolute top-0.5 right-0.5 p-1 rounded-full bg-black/60 hover:bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-all shadow-xs cursor-pointer"
+        title="Remove from My Stickers"
+      >
+        <X size={10} />
+      </button>
+    </div>
   );
 };
 
@@ -1229,48 +1370,86 @@ const ChatMediaGif: React.FC<{
   messageId: string;
   onOpenMediaModal: (att: Attachment) => void;
 }> = ({ attachment, chatId, messageId, onOpenMediaModal }) => {
-  const [url, setUrl] = useState<string>(() => {
-    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
-      return attachment.url;
-    }
-    return mediaService.get(chatId, messageId, { fullVideo: true }) || attachment.url || '';
+  const isDirectPlayable = Boolean(
+    attachment.url && (
+      attachment.url.startsWith('blob:') ||
+      attachment.url.endsWith('.mp4') ||
+      attachment.url.includes('.mp4') ||
+      attachment.url.includes('video/mp4') ||
+      attachment.url.endsWith('.gif') ||
+      attachment.url.startsWith('data:image/gif')
+    )
+  );
+
+  const [videoUrl, setVideoUrl] = useState<string>(() => {
+    if (isDirectPlayable) return attachment.url;
+    return mediaService.get(chatId, messageId, { fullVideo: true }) || '';
   });
 
+  const [thumbUrl] = useState<string>(() => {
+    return attachment.thumbUrl || (attachment.url && attachment.url.startsWith('data:image') ? attachment.url : '');
+  });
+
+  const [isLoaded, setIsLoaded] = useState(false);
+
   useEffect(() => {
-    if (url && !url.includes('/api/telegram/media')) return;
+    if (videoUrl) return;
     const unsub = mediaService.subscribe(
       chatId,
       messageId,
       (newUrl) => {
-        if (newUrl) setUrl(newUrl);
+        if (newUrl) setVideoUrl(newUrl);
       },
       { fullVideo: true }
     );
     mediaService.loadMedia(chatId, messageId, { fullVideo: true }).then((u) => {
-      if (u) setUrl(u);
+      if (u) setVideoUrl(u);
     }).catch(() => {});
     return unsub;
-  }, [chatId, messageId, url]);
+  }, [chatId, messageId, videoUrl]);
 
-  const normalizedUrl = (url.startsWith('/stickers/') || url.startsWith('/gifs/')) ? '.' + url : url;
+  const normalizedVideoUrl = (videoUrl.startsWith('/stickers/') || videoUrl.startsWith('/gifs/')) ? '.' + videoUrl : videoUrl;
+  const isWebGif = normalizedVideoUrl.endsWith('.gif') || normalizedVideoUrl.startsWith('data:image/gif');
 
   return (
     <div
-      onClick={() => onOpenMediaModal({ ...attachment, url: normalizedUrl, chatId, messageId })}
-      className="relative my-1 max-w-sm rounded-2xl overflow-hidden shadow-md cursor-pointer group bg-black/30"
+      onClick={() => onOpenMediaModal({ ...attachment, url: normalizedVideoUrl || thumbUrl, chatId, messageId })}
+      className="relative my-1 max-w-sm rounded-2xl overflow-hidden shadow-md cursor-pointer group bg-black/30 min-h-[120px] flex items-center justify-center"
     >
-      {normalizedUrl.endsWith('.gif') || normalizedUrl.startsWith('data:image/gif') ? (
-        <img src={normalizedUrl} alt={attachment.name || 'GIF'} className="w-full max-h-72 object-cover" />
-      ) : (
-        <video
-          src={normalizedUrl}
-          playsInline
-          autoPlay
-          loop
-          muted
-          className="w-full max-h-72 object-cover pointer-events-none"
+      {/* 1. Low-res blurred preview or thumbnail while video loads */}
+      {thumbUrl && !isLoaded && (
+        <img
+          src={thumbUrl}
+          alt={attachment.name || 'GIF'}
+          className="absolute inset-0 w-full h-full object-cover filter blur-[1px] scale-105"
         />
       )}
+
+      {/* 2. Playing video / GIF */}
+      {normalizedVideoUrl ? (
+        isWebGif ? (
+          <img
+            src={normalizedVideoUrl}
+            alt={attachment.name || 'GIF'}
+            className="w-full max-h-72 object-cover"
+            onLoad={() => setIsLoaded(true)}
+          />
+        ) : (
+          <video
+            src={normalizedVideoUrl}
+            playsInline
+            autoPlay
+            loop
+            muted
+            onPlaying={() => setIsLoaded(true)}
+            onLoadedData={() => setIsLoaded(true)}
+            className={`w-full max-h-72 object-cover pointer-events-none transition-opacity duration-200 ${
+              isLoaded ? 'opacity-100' : 'opacity-0'
+            }`}
+          />
+        )
+      ) : null}
+
       <span className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded-md bg-black/70 text-[10px] font-extrabold text-white uppercase tracking-wider backdrop-blur-xs">
         GIF
       </span>
@@ -2454,7 +2633,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
 
                 {/* Attachment: Video */}
-                {message.attachment?.type === 'video' && (
+                {message.attachment?.type === 'video' && !message.attachment?.isGif && (
                   <ChatMediaVideo
                     attachment={message.attachment}
                     chatId={chat.id}
@@ -2928,60 +3107,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     {stickerCategory === 'my_stickers' && (
                       <>
                         {filteredCustomStickers.map((stk) => (
-                          <div
+                          <CustomStickerItem
                             key={stk.id}
-                            className="group relative flex flex-col items-center justify-center p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-all hover:scale-105 active:scale-95 cursor-pointer"
-                            title={stk.name}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onSendMessage('', replyingTo || undefined, {
-                                  type: 'sticker',
-                                  url: stk.url,
-                                  name: stk.name,
-                                  isSticker: true,
-                                  documentId: stk.documentId,
-                                  accessHash: stk.accessHash,
-                                  fileReference: stk.fileReference,
-                                  stickerEmoji: stk.emoji,
-                                  stickerSet: stk.stickerSet,
-                                });
-                                setReplyingTo(null);
-                                setShowEmojiPicker(false);
-                              }}
-                              className="w-full flex flex-col items-center cursor-pointer"
-                            >
-                              <img
-                                src={stk.url.startsWith('/stickers/') || stk.url.startsWith('/gifs/') ? '.' + stk.url : stk.url}
-                                alt={stk.name}
-                                className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
-                                loading="lazy"
-                                onError={(e) => {
-                                  if (stk.thumbUrl && e.currentTarget.src !== stk.thumbUrl) {
-                                    e.currentTarget.src = stk.thumbUrl;
-                                  }
-                                }}
-                              />
-                              <span className="text-[10px] text-gray-500 truncate w-full text-center mt-1">
-                                {stk.name}
-                              </span>
-                            </button>
-
-                            {/* Quick Delete from My Stickers */}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                stickerService.removeCustomSticker(stk.id);
-                                showToast('Removed sticker', 'info');
-                              }}
-                              className="absolute top-0.5 right-0.5 p-1 rounded-full bg-black/60 hover:bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-all shadow-xs cursor-pointer"
-                              title="Remove from My Stickers"
-                            >
-                              <X size={10} />
-                            </button>
-                          </div>
+                            sticker={stk}
+                            onSelect={(selectedUrl) => {
+                              onSendMessage('', replyingTo || undefined, {
+                                type: 'sticker',
+                                url: selectedUrl || stk.url,
+                                name: stk.name,
+                                isSticker: true,
+                                documentId: stk.documentId,
+                                accessHash: stk.accessHash,
+                                fileReference: stk.fileReference,
+                                stickerEmoji: stk.emoji,
+                                stickerSet: stk.stickerSet,
+                              });
+                              setReplyingTo(null);
+                              setShowEmojiPicker(false);
+                            }}
+                            onRemove={() => {
+                              stickerService.removeCustomSticker(stk.id);
+                              showToast('Removed sticker', 'info');
+                            }}
+                          />
                         ))}
 
                         {filteredCustomStickers.length === 0 && (

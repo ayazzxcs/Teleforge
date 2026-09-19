@@ -37,6 +37,8 @@ let clientInitPromise: Promise<TelegramClient> | null = null;
 const peerEntityCache = new Map<string, any>();
 const thumbCache = new Map<string, string>(); // peerId -> base64 data URL
 const gifThumbCache = new Map<string, string>(); // docId -> base64 data URL
+const stickerThumbCache = new Map<string, string>(); // docId -> base64 data URL
+const gifBlobCache = new Map<string, string>(); // docId -> blob URL
 const avatarBlobUrlCache = new Map<string, string>(); // peerId -> object URL
 const messageMediaMap = new Map<string, any>(); // `${chatId}_${messageId}` -> media object
 const messageObjectMap = new Map<string, any>(); // `${chatId}_${messageId}` -> full Api.Message object
@@ -250,11 +252,24 @@ function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number,
 
       const mime = (m.media.document?.mimeType || '').toLowerCase();
 
+      const rawDuration = videoAttr?.duration ?? (isVoice || isAudio ? attrs.find((a: any) => (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio'))?.duration : undefined);
+      if (rawDuration != null) {
+        const totalSecs = Math.round(Number(rawDuration));
+        const mins = Math.floor(totalSecs / 60);
+        const secs = totalSecs % 60;
+        durationStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      }
+
+      const isViaGifBot = Boolean(m.viaBotId || m.viaBotName === 'gif');
+      const isGifMime = mime === 'image/gif' || (mime === 'video/mp4' && isGifAttr);
+      const isGifFilename = filenameAttr?.fileName?.toLowerCase()?.endsWith('.gif') || filenameAttr?.fileName?.toLowerCase()?.includes('gif');
+      const isInlineGif = isGifAttr || isGifMime || isViaGifBot || (Boolean(videoAttr && !isRound) && (isGifFilename || (rawDuration != null && rawDuration <= 60 && !filenameAttr)));
+
       if (isSticker || mime === 'image/webp' || mime === 'application/x-tgsticker') {
         mediaType = 'sticker';
       } else if (isRound) {
         mediaType = 'videoNote';
-      } else if (isGifAttr) {
+      } else if (isInlineGif) {
         mediaType = 'gif';
       } else if (videoAttr || mime.startsWith('video/')) {
         mediaType = 'video';
@@ -266,14 +281,6 @@ function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number,
         mediaType = 'photo';
       } else {
         mediaType = 'document';
-      }
-
-      const rawDuration = videoAttr?.duration ?? (isVoice || isAudio ? attrs.find((a: any) => (a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio'))?.duration : undefined);
-      if (rawDuration != null) {
-        const totalSecs = Math.round(Number(rawDuration));
-        const mins = Math.floor(totalSecs / 60);
-        const secs = totalSecs % 60;
-        durationStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
       }
 
       if (m.media.document?.thumbs) {
@@ -1781,22 +1788,47 @@ export const telegramDirectClient = {
         buffer = await client.downloadProfilePhoto(targetPeer || cleanId, { isBig });
       } catch (e) {}
 
-      if ((!buffer || buffer.length < 500) && !isBig) {
+      if (!buffer || buffer.length < 500) {
         try {
-          buffer = await client.downloadProfilePhoto(targetPeer || cleanId, { isBig: true });
-        } catch (e) {}
-      } else if ((!buffer || buffer.length < 500) && isBig) {
-        try {
-          buffer = await client.downloadProfilePhoto(targetPeer || cleanId, { isBig: false });
-        } catch (e) {}
+          // If first attempt failed (often because targetPeer is a plain JSON object and GramJS's `instanceof` check fails),
+          // fetch the real entity instance directly.
+          let realEntity: any = targetPeer;
+          try {
+            realEntity = await client.getEntity(targetPeer || cleanId);
+          } catch (e) {
+            const inputPeer = await resolveInputPeer(client, cleanId);
+            if (inputPeer) realEntity = await client.getEntity(inputPeer);
+          }
+          if (realEntity) {
+            buffer = await client.downloadProfilePhoto(realEntity, { isBig });
+            if ((!buffer || buffer.length < 500) && !isBig) {
+              buffer = await client.downloadProfilePhoto(realEntity, { isBig: true });
+            } else if ((!buffer || buffer.length < 500) && isBig) {
+              buffer = await client.downloadProfilePhoto(realEntity, { isBig: false });
+            }
+          }
+        } catch (fullErr) {}
       }
 
       // Robust fallback: direct InputPeerPhotoFileLocation download via client.downloadFile
       if (!buffer || buffer.length < 500) {
         try {
-          const photo = targetPeer?.photo;
+          let photo = targetPeer?.photo;
+          if (!photo) {
+            try {
+              let realEntity = await client.getEntity(targetPeer || cleanId);
+              photo = realEntity?.photo;
+            } catch (e) {
+              const inputPeer = await resolveInputPeer(client, cleanId);
+              if (inputPeer) {
+                let realEntity: any = await client.getEntity(inputPeer);
+                photo = realEntity?.photo;
+              }
+            }
+          }
           if (photo && (photo.photoId || photo.id)) {
-            const photoId = photo.photoId || photo.id;
+            const photoIdStr = (photo.photoId || photo.id).toString();
+            const photoId = bigInt(photoIdStr);
             const dcId = photo.dcId;
             let inputPeer: any = null;
             try {
@@ -1807,7 +1839,7 @@ export const telegramDirectClient = {
             if (inputPeer) {
               const loc = new Api.InputPeerPhotoFileLocation({
                 peer: inputPeer,
-                photoId: photoId,
+                photoId: photoId as any,
                 big: isBig,
               });
               buffer = await client.downloadFile(loc, { dcId });
@@ -2671,7 +2703,7 @@ export const telegramDirectClient = {
   },
 
   /**
-   * Download a high-res thumbnail for a document (GIF or sticker) via MTProto
+   * Download a high-res thumbnail for a document (GIF) via MTProto
    */
   async downloadDocumentThumb(doc: any): Promise<string | null> {
     if (!doc) return null;
@@ -2685,22 +2717,176 @@ export const telegramDirectClient = {
         t._ === 'photoSize' || t.className === 'PhotoSize' ||
         t._ === 'photoSizeProgressive' || t.className === 'PhotoSizeProgressive'
       );
-      if (normalThumbs.length === 0) return null;
+      if (normalThumbs.length === 0) {
+        const cached = (doc.thumbs || []).find((t: any) => t._ === 'photoCachedSize' || t.className === 'PhotoCachedSize');
+        if (cached?.bytes) {
+          const dataUrl = `data:image/jpeg;base64,${bytesToBase64(cached.bytes)}`;
+          if (docId) gifThumbCache.set(docId, dataUrl);
+          return dataUrl;
+        }
+        return null;
+      }
       const best = normalThumbs[normalThumbs.length - 1];
+      const fileRefBuf = Buffer.isBuffer(doc.fileReference)
+        ? doc.fileReference
+        : (typeof doc.fileReference === 'string' ? Buffer.from(doc.fileReference, 'hex') : Buffer.alloc(0));
+
+      const inputLoc = new Api.InputDocumentFileLocation({
+        id: BigInt(doc.id.toString()) as any,
+        accessHash: BigInt(doc.accessHash.toString()) as any,
+        fileReference: fileRefBuf,
+        thumbSize: best.type || 'm',
+      });
+
       const buffer: any = await withTimeout(
-        client.downloadMedia(doc, {
-          thumb: best.type || (normalThumbs.length - 1),
+        client.downloadFile(inputLoc, {
+          dcId: doc.dcId,
+          fileSize: best.size ? BigInt(best.size) as any : undefined,
         }),
         8000,
         'Thumb download timeout'
       );
       if (buffer && buffer.length > 0) {
-        const dataUrl = `data:image/jpeg;base64,${bytesToBase64(buffer)}`;
+        const isWebp = buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46;
+        const mime = isWebp ? 'image/webp' : 'image/jpeg';
+        const dataUrl = `data:${mime};base64,${bytesToBase64(buffer)}`;
         if (docId) gifThumbCache.set(docId, dataUrl);
         return dataUrl;
       }
       return null;
     } catch (e) {
+      return null;
+    }
+  },
+
+  /**
+   * Download a thumbnail for a sticker via MTProto InputDocumentFileLocation
+   */
+  async downloadStickerThumb(docOrSticker: any): Promise<string | null> {
+    if (!docOrSticker) return null;
+    const doc = docOrSticker.rawDoc || docOrSticker;
+    const docId = doc.id ? doc.id.toString() : (docOrSticker.documentId ? docOrSticker.documentId.toString() : '');
+    if (docId && stickerThumbCache.has(docId)) {
+      return stickerThumbCache.get(docId)!;
+    }
+
+    // 1. Check embedded PhotoCachedSize
+    if (doc.thumbs) {
+      const cached = (doc.thumbs || []).find(
+        (t: any) => t._ === 'photoCachedSize' || t.className === 'PhotoCachedSize'
+      );
+      if (cached?.bytes && cached.bytes.length > 0) {
+        const isWebp = cached.bytes[0] === 0x52 && cached.bytes[1] === 0x49 && cached.bytes[2] === 0x46 && cached.bytes[3] === 0x46;
+        const mime = isWebp ? 'image/webp' : 'image/jpeg';
+        const dataUrl = `data:${mime};base64,${bytesToBase64(cached.bytes)}`;
+        if (docId) stickerThumbCache.set(docId, dataUrl);
+        return dataUrl;
+      }
+
+      // Check PhotoStrippedSize
+      const stripped = (doc.thumbs || []).find(
+        (t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
+      );
+      if (stripped?.bytes) {
+        try {
+          const jpgBuf = strippedPhotoToJpg(stripped.bytes);
+          if (jpgBuf && jpgBuf.length > 0) {
+            const dataUrl = `data:image/jpeg;base64,${bytesToBase64(jpgBuf)}`;
+            if (docId) stickerThumbCache.set(docId, dataUrl);
+            return dataUrl;
+          }
+        } catch (e) {}
+      }
+    }
+
+    const id = doc.id || docOrSticker.documentId;
+    const accessHash = doc.accessHash || docOrSticker.accessHash;
+    const fileReference = doc.fileReference || docOrSticker.fileReference;
+    if (!id || !accessHash) return null;
+
+    try {
+      const client = await getDirectClient();
+      const normalThumbs = (doc.thumbs || []).filter((t: any) =>
+        t._ === 'photoSize' || t.className === 'PhotoSize' ||
+        t._ === 'photoSizeProgressive' || t.className === 'PhotoSizeProgressive'
+      );
+      const thumbType = normalThumbs.length > 0 ? (normalThumbs[0].type || 'm') : (doc.mimeType === 'image/webp' ? '' : 'm');
+
+      const fileRefBuf = Buffer.isBuffer(fileReference)
+        ? fileReference
+        : (typeof fileReference === 'string' ? Buffer.from(fileReference, 'hex') : Buffer.alloc(0));
+
+      const inputLoc = new Api.InputDocumentFileLocation({
+        id: BigInt(id.toString()) as any,
+        accessHash: BigInt(accessHash.toString()) as any,
+        fileReference: fileRefBuf,
+        thumbSize: thumbType,
+      });
+
+      const buffer: any = await withTimeout(
+        client.downloadFile(inputLoc, {
+          dcId: doc.dcId,
+          fileSize: normalThumbs[0]?.size ? BigInt(normalThumbs[0].size) as any : undefined,
+        }),
+        8000,
+        'Sticker thumb download timeout'
+      );
+
+      if (buffer && buffer.length > 0) {
+        const isWebp = buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46;
+        const mime = isWebp ? 'image/webp' : 'image/jpeg';
+        const dataUrl = `data:${mime};base64,${bytesToBase64(buffer)}`;
+        if (docId) stickerThumbCache.set(docId, dataUrl);
+        return dataUrl;
+      }
+      return null;
+    } catch (e: any) {
+      console.warn('[MTProto] downloadStickerThumb error:', e?.message || e);
+      return null;
+    }
+  },
+
+  /**
+   * Download a full document (e.g. GIF MP4) into an in-memory blob URL for instant video playback
+   */
+  async downloadDocumentBlob(doc: any): Promise<string | null> {
+    if (!doc) return null;
+    const docId = doc.id ? doc.id.toString() : '';
+    if (docId && gifBlobCache.has(docId)) {
+      return gifBlobCache.get(docId)!;
+    }
+    const client = await getDirectClient();
+    try {
+      const fileRefBuf = Buffer.isBuffer(doc.fileReference)
+        ? doc.fileReference
+        : (typeof doc.fileReference === 'string' ? Buffer.from(doc.fileReference, 'hex') : Buffer.alloc(0));
+
+      const inputLoc = new Api.InputDocumentFileLocation({
+        id: BigInt(doc.id.toString()) as any,
+        accessHash: BigInt(doc.accessHash.toString()) as any,
+        fileReference: fileRefBuf,
+        thumbSize: '',
+      });
+
+      const buffer: any = await withTimeout(
+        client.downloadFile(inputLoc, {
+          dcId: doc.dcId,
+          fileSize: doc.size ? BigInt(doc.size) as any : undefined,
+        }),
+        15000,
+        'GIF video download timeout'
+      );
+
+      if (buffer && buffer.length > 0) {
+        const mime = doc.mimeType || 'video/mp4';
+        const blob = new Blob([buffer], { type: mime });
+        const blobUrl = URL.createObjectURL(blob);
+        if (docId) gifBlobCache.set(docId, blobUrl);
+        return blobUrl;
+      }
+      return null;
+    } catch (e: any) {
+      console.warn('[MTProto] downloadDocumentBlob error:', e?.message || e);
       return null;
     }
   },
@@ -2843,17 +3029,37 @@ export const telegramDirectClient = {
         const fileRef = doc.fileReference ? Buffer.from(doc.fileReference).toString('hex') : undefined;
         let thumbUrl = '';
 
-        const stripped = (doc.thumbs || []).find(
-          (t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
-        );
-        if (stripped?.bytes) {
-          try {
-            const jpgBuf = strippedPhotoToJpg(stripped.bytes);
-            if (jpgBuf) {
-              thumbUrl = `data:image/jpeg;base64,${bytesToBase64(jpgBuf)}`;
-            }
-          } catch (e) {}
+        if (dId && stickerThumbCache.has(dId)) {
+          thumbUrl = stickerThumbCache.get(dId)!;
         }
+
+        if (!thumbUrl && doc.thumbs) {
+          const cached = (doc.thumbs || []).find(
+            (t: any) => t._ === 'photoCachedSize' || t.className === 'PhotoCachedSize'
+          );
+          if (cached?.bytes && cached.bytes.length > 0) {
+            const isWebp = cached.bytes[0] === 0x52 && cached.bytes[1] === 0x49 && cached.bytes[2] === 0x46 && cached.bytes[3] === 0x46;
+            const mime = isWebp ? 'image/webp' : 'image/jpeg';
+            thumbUrl = `data:${mime};base64,${bytesToBase64(cached.bytes)}`;
+            if (dId) stickerThumbCache.set(dId, thumbUrl);
+          }
+        }
+
+        if (!thumbUrl && doc.thumbs) {
+          const stripped = (doc.thumbs || []).find(
+            (t: any) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize'
+          );
+          if (stripped?.bytes) {
+            try {
+              const jpgBuf = strippedPhotoToJpg(stripped.bytes);
+              if (jpgBuf && jpgBuf.length > 0) {
+                thumbUrl = `data:image/jpeg;base64,${bytesToBase64(jpgBuf)}`;
+                if (dId) stickerThumbCache.set(dId, thumbUrl);
+              }
+            } catch (e) {}
+          }
+        }
+
         if (!thumbUrl && dId && !isAndroidApp()) {
           thumbUrl = resolveApiUrl(`/api/telegram/document?id=${dId}&thumb=m`);
         }
