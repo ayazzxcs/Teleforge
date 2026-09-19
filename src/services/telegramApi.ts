@@ -266,7 +266,7 @@ function initRealtimeUpdates() {
   }
 
   // 2. Server-Sent Events (SSE) from backend (for Web browser mode)
-  if (typeof window !== 'undefined' && 'EventSource' in window) {
+  if (!isAndroidApp() && typeof window !== 'undefined' && 'EventSource' in window) {
     if (sseEventSource) return;
 
     const connectSse = () => {

@@ -490,11 +490,12 @@ export const App: React.FC = () => {
     return unsubscribe;
   }, [authStatus.authorized]);
 
-  // Active chat polling (every 6 seconds, paused in background to preserve MTProto connection)
+  // Active chat polling (paused in background, relaxed on mobile where MTProto pushes live updates)
   useEffect(() => {
     if (!authStatus.authorized || !activeChatId || activeChatId === 'saved-messages') return;
 
     let isCancelled = false;
+    const pollMs = isAndroidApp() ? 25000 : 8000;
     const interval = setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       try {
@@ -523,7 +524,7 @@ export const App: React.FC = () => {
           return prevChats.map((c) => (c.id === activeChatId ? { ...c, messages: merged } : c));
         });
       } catch (err) {}
-    }, 6000);
+    }, pollMs);
 
     return () => {
       isCancelled = true;
@@ -531,14 +532,15 @@ export const App: React.FC = () => {
     };
   }, [authStatus.authorized, activeChatId]);
 
-  // Periodic dialogs sync (every 18 seconds, paused when backgrounded)
+  // Periodic dialogs sync (relaxed on mobile to avoid constant re-rendering)
   useEffect(() => {
     if (!authStatus.authorized) return;
 
+    const dialogPollMs = isAndroidApp() ? 45000 : 20000;
     const interval = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
       loadTelegramDialogs();
-    }, 18000);
+    }, dialogPollMs);
 
     return () => clearInterval(interval);
   }, [authStatus.authorized, loadTelegramDialogs]);

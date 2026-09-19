@@ -91,18 +91,11 @@
    MOBILE & TOUCH GPU PERFORMANCE ENHANCEMENTS
    ========================================================================= */
 
-/* On mobile/touch screens, disable expensive multi-pass Gaussian backdrop-filter readbacks */
 @media (hover: none) and (pointer: coarse) {
-  [class*="backdrop-blur"] {
-    backdrop-filter: none !important;
-    -webkit-backdrop-filter: none !important;
-  }
-  
   /* Use hardware accelerated compositor scrolling */
   .overflow-y-auto,
   .overflow-x-auto {
     -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
   }
 }
 

@@ -2267,7 +2267,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div
               key={message.id}
               id={`message-${message.id}`}
-              style={{ contentVisibility: 'auto', containIntrinsicSize: '0 48px' }}
               onMouseEnter={() => setHoveredMessageId(message.id)}
               onMouseLeave={() => {
                 setHoveredMessageId(null);
