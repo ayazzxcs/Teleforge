@@ -9,7 +9,8 @@ const STORE_NAME = 'avatars';
 const DB_VERSION = 1;
 
 // In-memory cache for 0ms lookups
-const memoryCache = new Map<string, string>(); // peerId -> base64 data URL
+const memoryCache = new Map<string, string>(); // peerId -> base64/blob data URL
+const negativeCache = new Set<string>(); // peerId -> known missing avatar (avoids infinite re-requesting)
 const inflightPromises = new Map<string, Promise<string>>(); // peerId -> Promise
 const subscribers = new Map<string, Set<(url: string) => void>>(); // peerId -> Set of callbacks
 
@@ -81,7 +82,8 @@ function notifySubscribers(peerId: string, url: string): void {
 // Concurrency queue for background avatar downloads
 const downloadQueue: Array<() => Promise<void>> = [];
 let activeWorkers = 0;
-const MAX_CONCURRENT_DOWNLOADS = 3;
+const isMobileClient = typeof window !== 'undefined' && Boolean((window as any).TeleForgeBridge || window.innerWidth < 768);
+const MAX_CONCURRENT_DOWNLOADS = isMobileClient ? 1 : 2;
 
 function enqueueDownload(fn: () => Promise<void>) {
   downloadQueue.push(fn);
@@ -274,6 +276,11 @@ export const avatarService = {
     if (!peerId) return '';
     const cleanId = String(peerId).trim();
 
+    // 0. Known missing avatar check (<0ms)
+    if (negativeCache.has(cleanId)) {
+      return '';
+    }
+
     // 1. In-memory cache (0ms)
     const cached = this.get(cleanId);
     if (cached) {
@@ -332,9 +339,11 @@ export const avatarService = {
               notifySubscribers(cleanId, dataUrl);
               resolve(dataUrl);
             } else {
+              negativeCache.add(cleanId);
               resolve('');
             }
           } catch (err) {
+            negativeCache.add(cleanId);
             resolve('');
           }
         });
@@ -351,10 +360,11 @@ export const avatarService = {
    * Preload high-res avatars in the background for a list of dialogs/peers
    */
   preloadAvatars(peerIds: string[]): void {
+    if (isMobileClient) return; // Prevent heavy background crypto storms on mobile
     for (const id of peerIds) {
       if (!id) continue;
       const clean = String(id).trim();
-      if (!memoryCache.has(clean)) {
+      if (!memoryCache.has(clean) && !negativeCache.has(clean)) {
         this.loadAvatar(clean, false).catch(() => {});
       }
     }

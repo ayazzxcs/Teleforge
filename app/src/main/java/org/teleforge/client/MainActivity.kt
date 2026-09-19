@@ -133,7 +133,9 @@ class MainActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(Color.parseColor("#0C1017"))
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            // Allow Chromium's internal multi-threaded GPU compositor to manage tiled rasterization
+            // (Avoids allocating giant single textures that cause 10-15 FPS scroll stutter)
+            setLayerType(View.LAYER_TYPE_NONE, null)
         }
 
         // Loading ProgressBar
@@ -197,6 +199,11 @@ class MainActivity : ComponentActivity() {
         settings.mediaPlaybackRequiresUserGesture = false
         settings.setSupportMultipleWindows(false)
         settings.cacheMode = WebSettings.LOAD_DEFAULT
+
+        // Mobile performance optimizations
+        settings.offscreenPreRaster = true
+        settings.loadWithOverviewMode = true
+        settings.useWideViewPort = true
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW

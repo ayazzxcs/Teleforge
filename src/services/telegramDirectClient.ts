@@ -1761,7 +1761,13 @@ export const telegramDirectClient = {
       }
 
       if (buffer && buffer.length > 200) {
-        const dataUrl = `data:image/jpeg;base64,${Buffer.from(buffer).toString('base64')}`;
+        let dataUrl = '';
+        if (typeof window !== 'undefined' && window.URL && window.Blob) {
+          const blob = new Blob([buffer], { type: 'image/jpeg' });
+          dataUrl = URL.createObjectURL(blob);
+        } else {
+          dataUrl = `data:image/jpeg;base64,${Buffer.from(buffer).toString('base64')}`;
+        }
         avatarBlobUrlCache.set(cleanId, dataUrl);
         return dataUrl;
       }

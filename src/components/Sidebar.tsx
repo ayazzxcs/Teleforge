@@ -537,6 +537,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             return (
               <div
                 key={chat.id}
+                style={{ contentVisibility: 'auto', containIntrinsicSize: '0 64px' }}
                 onClick={() => onSelectChat(chat.id)}
                 onTouchStart={(e) => handleTouchStart(e, chat.id)}
                 onTouchEnd={(e) => handleTouchEnd(e, chat.id)}

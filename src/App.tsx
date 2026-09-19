@@ -384,13 +384,13 @@ export const App: React.FC = () => {
       const realMsgs = await telegramApi.getMessages(chatId, 50);
 
       const incomingSenders = realMsgs.filter((m) => !m.out && m.senderId).map((m) => m.senderId!);
-      if (incomingSenders.length > 0) {
+      if (incomingSenders.length > 0 && !isAndroidApp()) {
         avatarService.preloadAvatars(incomingSenders);
       }
 
       const mediaItems = realMsgs.filter((m) => m.hasMedia && m.id && m.mediaType === 'photo').map((m) => ({ chatId, messageId: m.id }));
-      if (mediaItems.length > 0) {
-        mediaService.preloadMedia(mediaItems.slice(0, 10));
+      if (mediaItems.length > 0 && !isAndroidApp()) {
+        mediaService.preloadMedia(mediaItems.slice(0, 5));
       }
 
       setChats((prev) => {
