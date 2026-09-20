@@ -11,10 +11,14 @@ import {
   getDialogsList,
   getMessagesForPeer,
   sendPeerMessage,
+  sendBotCallbackAnswer,
   sendPeerReaction,
+  getMessageReactionsList,
+  toggleChatMute,
   editPeerMessage,
   deletePeerMessages,
   pinPeerMessage,
+  forwardPeerMessages,
   downloadMessageMedia,
   downloadDocumentMedia,
   downloadPeerAvatar,
@@ -27,6 +31,7 @@ import {
   markPeerAsRead,
   searchGlobalPeers,
   joinChatOrChannel,
+  checkChatInvitePreview,
   getUserProfile,
   updateUserProfile,
   uploadProfilePhoto,
@@ -51,6 +56,7 @@ import {
   getClient,
   searchMessagesInPeer,
   getMessagesAroundMessage,
+  addBotToChat,
 } from './telegramBackend.js';
 
 // Helper to read JSON request body
@@ -206,8 +212,32 @@ export function telegramMiddleware() {
         if (!chatId) {
           return sendError(res, 400, 'chatId is required');
         }
-        const result = await joinChatOrChannel(chatId);
-        return sendJson(res, 200, result);
+        try {
+          const result = await joinChatOrChannel(chatId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendJson(res, 200, { success: false, error: err.message || 'Failed to join chat' });
+        }
+      }
+
+      // 8f. GET or POST /api/telegram/check-invite — preview invite or public username
+      if (pathname === '/api/telegram/check-invite') {
+        let hashOrUsername = parsedUrl.query.hash || parsedUrl.query.username || parsedUrl.query.hashOrUsername || '';
+        if (req.method === 'POST') {
+          try {
+            const body = await readJsonBody(req);
+            hashOrUsername = body.hashOrUsername || body.hash || body.chatId || hashOrUsername;
+          } catch (e) {}
+        }
+        if (!hashOrUsername) {
+          return sendError(res, 400, 'hash or username is required');
+        }
+        try {
+          const result = await checkChatInvitePreview(hashOrUsername);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendJson(res, 200, { success: false, error: err.message || 'Failed to check invite' });
+        }
       }
 
       // 9. GET /api/telegram/messages
@@ -255,6 +285,48 @@ export function telegramMiddleware() {
         return sendJson(res, 200, { success: true, message });
       }
 
+      // 10a. POST /api/telegram/bot/callback
+      if (req.method === 'POST' && pathname === '/api/telegram/bot/callback') {
+        const body = await readJsonBody(req);
+        if (!body.chatId || !body.messageId) {
+          return sendError(res, 400, 'chatId and messageId are required');
+        }
+        try {
+          const result = await sendBotCallbackAnswer(body.chatId, body.messageId, body.data, Boolean(body.game));
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to send callback answer');
+        }
+      }
+
+      // 10b. POST /api/telegram/bot/add-to-chat
+      if (req.method === 'POST' && pathname === '/api/telegram/bot/add-to-chat') {
+        const body = await readJsonBody(req);
+        if (!body.chatId || !body.botUsername) {
+          return sendError(res, 400, 'chatId and botUsername are required');
+        }
+        try {
+          const result = await addBotToChat(body.chatId, body.botUsername, body.startParam);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to add bot to chat');
+        }
+      }
+
+      // 10c. POST /api/telegram/chat/mute
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/mute') {
+        const body = await readJsonBody(req);
+        if (!body.chatId) {
+          return sendError(res, 400, 'chatId is required');
+        }
+        try {
+          const result = await toggleChatMute(body.chatId, body.mute !== undefined ? Boolean(body.mute) : true);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to update mute settings');
+        }
+      }
+
       // 10b. POST /api/telegram/messages/react
       if (req.method === 'POST' && pathname === '/api/telegram/messages/react') {
         const body = await readJsonBody(req);
@@ -266,6 +338,22 @@ export function telegramMiddleware() {
           return sendJson(res, 200, { success: true });
         } catch (err) {
           return sendError(res, 500, err.message || 'Failed to send reaction');
+        }
+      }
+
+      // 10b-2. GET /api/telegram/messages/reactions-list
+      if (req.method === 'GET' && pathname === '/api/telegram/messages/reactions-list') {
+        const chatId = query.chatId;
+        const messageId = query.messageId;
+        const limit = query.limit ? parseInt(query.limit, 10) : 50;
+        if (!chatId || !messageId) {
+          return sendError(res, 400, 'chatId and messageId are required');
+        }
+        try {
+          const result = await getMessageReactionsList(chatId, messageId, limit);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch reactions list');
         }
       }
 
@@ -308,6 +396,23 @@ export function telegramMiddleware() {
           return sendJson(res, 200, result);
         } catch (err) {
           return sendError(res, 500, err.message || 'Failed to pin message');
+        }
+      }
+
+      // 10g. POST /api/telegram/messages/forward
+      if (req.method === 'POST' && pathname === '/api/telegram/messages/forward') {
+        const body = await readJsonBody(req);
+        if (!body.fromChatId || !body.toChatId || !body.messageIds) {
+          return sendError(res, 400, 'fromChatId, toChatId, and messageIds are required');
+        }
+        try {
+          const result = await forwardPeerMessages(body.fromChatId, body.toChatId, body.messageIds, {
+            silent: body.silent,
+            dropAuthor: body.dropAuthor,
+          });
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to forward messages');
         }
       }
 

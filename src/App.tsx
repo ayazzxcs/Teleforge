@@ -6,6 +6,9 @@ import { ChatView } from './components/ChatView';
 import { ChatInfoDrawer } from './components/ChatInfoDrawer';
 import { SettingsModal } from './components/SettingsModal';
 import { NewChatModal } from './components/NewChatModal';
+import { AddBotToChatModal } from './components/AddBotToChatModal';
+import { JoinPreviewModal } from './components/JoinPreviewModal';
+import { parseTelegramUrl } from './utils/telegramLinks';
 import { MediaModal } from './components/MediaModal';
 import { FolderManagerModal } from './components/FolderManagerModal';
 import { ThemeStudioModal } from './components/ThemeStudioModal';
@@ -81,6 +84,19 @@ export const App: React.FC = () => {
   }, [isSettingsOpen]);
 
   const [isNewChatOpen, setIsNewChatOpen] = useState(false);
+  const [addBotModalData, setAddBotModalData] = useState<{ botUsername: string; startParam?: string } | null>(null);
+  const [joinPreviewData, setJoinPreviewData] = useState<{
+    title: string;
+    about?: string;
+    participantsCount?: number;
+    photo?: string;
+    isChannel?: boolean;
+    isGroup?: boolean;
+    alreadyJoined?: boolean;
+    chatId?: string;
+    joinHash: string; // original hash/username to pass to joinChat
+  } | null>(null);
+  const [isJoiningFromPreview, setIsJoiningFromPreview] = useState(false);
   const [mediaModalAttachment, setMediaModalAttachment] = useState<Attachment | null>(null);
   const [isBotTyping, setIsBotTyping] = useState(false);
   const [mobileShowChat, setMobileShowChat] = useState(false);
@@ -441,7 +457,9 @@ export const App: React.FC = () => {
         if (chatIdx >= 0) {
           const chat = prevChats[chatIdx];
           const exists = chat.messages.some((m) => String(m.id) === String(newMsg.id));
-          const updatedMessages = exists ? chat.messages : [...chat.messages, mappedMsg];
+          const updatedMessages = exists
+            ? chat.messages.map((m) => (String(m.id) === String(newMsg.id) ? mappedMsg : m))
+            : [...chat.messages, mappedMsg];
 
           const updatedChat: Chat = {
             ...chat,
@@ -487,7 +505,25 @@ export const App: React.FC = () => {
       }
     });
 
-    return unsubscribe;
+    const unsubReactions = telegramApi.onReactionUpdate(({ chatId, messageId, reactions }) => {
+      setChats((prevChats) =>
+        prevChats.map((c) => {
+          if (c.id !== chatId) return c;
+          return {
+            ...c,
+            messages: c.messages.map((m) => {
+              if (String(m.id) !== String(messageId)) return m;
+              return { ...m, reactions };
+            }),
+          };
+        })
+      );
+    });
+
+    return () => {
+      unsubscribe();
+      unsubReactions();
+    };
   }, [authStatus.authorized]);
 
   // Active chat polling (paused in background, relaxed on mobile where MTProto pushes live updates)
@@ -722,21 +758,262 @@ export const App: React.FC = () => {
     handleSelectChat(userId);
   };
 
+  const handleOpenTelegramLink = async (url: string) => {
+    const parsed = parseTelegramUrl(url);
+    if (!parsed.isTelegramUrl) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    // 1. Bot startgroup links -> Open in-app group selector
+    if (parsed.type === 'startgroup' && parsed.username) {
+      setAddBotModalData({
+        botUsername: parsed.username,
+        startParam: parsed.startGroupParam,
+      });
+      return;
+    }
+
+    // 2. Open chat or start command
+    if ((parsed.type === 'open_chat' || parsed.type === 'start') && parsed.username) {
+      const clean = parsed.username.toLowerCase().replace(/^@+/, '');
+      
+      // Check local dialogs first — if found here, user is already a member
+      let targetChat = chats.find(
+        (c) => c.username && c.username.toLowerCase().replace(/^@+/, '') === clean
+      );
+
+      if (targetChat) {
+        const targetChatId = targetChat.id;
+        setChats((prev) => {
+          const exists = prev.some((c) => c.id === targetChatId);
+          return exists ? prev : [targetChat!, ...prev];
+        });
+        activeChatIdRef.current = targetChatId;
+        setActiveChatId(targetChatId);
+        setMobileShowChat(true);
+        loadMessagesForChat(targetChatId);
+
+        if (parsed.type === 'start' && parsed.startParam) {
+          setTimeout(() => {
+            handleSendMessage(`/start ${parsed.startParam}`, undefined, undefined, targetChatId);
+          }, 400);
+        }
+        return;
+      }
+
+      // Not in local dialogs — check invite/entity to show preview for channels/groups
+      // For 'start' commands (bot DMs), always navigate directly
+      if (parsed.type === 'start') {
+        // Bot DM — search and navigate
+        try {
+          const searchRes = await telegramApi.searchGlobal(clean, 5);
+          const match = (searchRes.globalResults || [])
+            .concat(searchRes.myResults || [])
+            .find((r) => r.username && r.username.toLowerCase().replace(/^@+/, '') === clean);
+          if (match) {
+            targetChat = mapDialogToChat({ ...match, isJoined: true });
+            const targetChatId = targetChat.id;
+            setChats((prev) => {
+              const exists = prev.some((c) => c.id === targetChatId);
+              return exists ? prev : [targetChat!, ...prev];
+            });
+            activeChatIdRef.current = targetChatId;
+            setActiveChatId(targetChatId);
+            setMobileShowChat(true);
+            loadMessagesForChat(targetChatId);
+            if (parsed.startParam) {
+              setTimeout(() => {
+                handleSendMessage(`/start ${parsed.startParam}`, undefined, undefined, targetChatId);
+              }, 400);
+            }
+            return;
+          }
+        } catch (e) {
+          console.warn('[handleOpenTelegramLink] Failed to search username:', e);
+        }
+        showToast(`Could not find bot @${parsed.username}`, 'info');
+        return;
+      }
+
+      // open_chat type — preview unjoined channel/group or open DM
+      try {
+        showToast('Loading preview...', 'info');
+        const preview = await telegramApi.checkInvite(`@${clean}`);
+        if (preview.success) {
+          // If it's a channel or group, open the channel in preview mode (stalk mode)
+          if (preview.isChannel || preview.isGroup) {
+            const rawId = preview.chatId ? preview.chatId.toString() : clean;
+            const fullId = rawId.startsWith('-100') || rawId.startsWith('-') ? rawId : `-100${rawId}`;
+
+            const previewChat: Chat = {
+              id: fullId,
+              name: preview.title || clean,
+              username: clean.startsWith('@') ? clean : `@${clean}`,
+              avatar: preview.photo || '',
+              avatarColor: 'bg-teleforge-primary',
+              type: preview.isChannel ? 'channel' : 'group',
+              isJoined: preview.alreadyJoined === true,
+              memberCount: preview.participantsCount,
+              unreadCount: 0,
+              description: preview.about || '',
+              messages: [],
+            };
+
+            setChats((prev) => {
+              const exists = prev.some((c) => c.id === fullId || (c.username && c.username.toLowerCase().replace(/^@+/, '') === clean.toLowerCase()));
+              if (exists) {
+                return prev.map((c) => (c.id === fullId || (c.username && c.username.toLowerCase().replace(/^@+/, '') === clean.toLowerCase()))
+                  ? { ...c, ...previewChat, isJoined: preview.alreadyJoined !== undefined ? preview.alreadyJoined : c.isJoined }
+                  : c
+                );
+              }
+              return [previewChat, ...prev];
+            });
+
+            activeChatIdRef.current = fullId;
+            setActiveChatId(fullId);
+            setMobileShowChat(true);
+            loadMessagesForChat(fullId);
+            return;
+          }
+          // It's a user or bot DM — navigate directly
+          if (preview.chatId) {
+            try {
+              const searchRes = await telegramApi.searchGlobal(clean, 5);
+              const match = (searchRes.globalResults || [])
+                .concat(searchRes.myResults || [])
+                .find((r) => r.username && r.username.toLowerCase().replace(/^@+/, '') === clean);
+              if (match) {
+                targetChat = mapDialogToChat({ ...match, isJoined: true });
+                const targetChatId = targetChat.id;
+                setChats((prev) => {
+                  const exists = prev.some((c) => c.id === targetChatId);
+                  return exists ? prev : [targetChat!, ...prev];
+                });
+                activeChatIdRef.current = targetChatId;
+                setActiveChatId(targetChatId);
+                setMobileShowChat(true);
+                loadMessagesForChat(targetChatId);
+                return;
+              }
+            } catch {}
+          }
+        } else if (preview.error) {
+          showToast(preview.error, 'error');
+          return;
+        }
+      } catch (err: any) {
+        console.warn('[handleOpenTelegramLink] preview error:', err);
+      }
+      showToast(`Could not find Telegram user or channel @${parsed.username}`, 'info');
+      return;
+    }
+
+    // 3. Join chat links — open in chat preview mode
+    if (parsed.type === 'join' && parsed.joinHash) {
+      try {
+        showToast('Loading preview...', 'info');
+        const preview = await telegramApi.checkInvite(parsed.joinHash);
+        if (preview.success) {
+          const rawId = preview.chatId ? preview.chatId.toString() : parsed.joinHash;
+          const fullId = rawId.startsWith('-100') || rawId.startsWith('-') ? rawId : `-100${rawId}`;
+
+          const previewChat: Chat = {
+            id: fullId,
+            name: preview.title || 'Telegram Group',
+            username: parsed.joinHash, // stored so handleJoinChat can invoke joinChat with it
+            avatar: preview.photo || '',
+            avatarColor: 'bg-teleforge-primary',
+            type: preview.isChannel ? 'channel' : 'group',
+            isJoined: preview.alreadyJoined === true,
+            memberCount: preview.participantsCount,
+            unreadCount: 0,
+            description: preview.about || '',
+            messages: [],
+          };
+
+          setChats((prev) => {
+            const exists = prev.some((c) => c.id === fullId);
+            if (exists) {
+              return prev.map((c) => (c.id === fullId ? { ...c, ...previewChat, isJoined: preview.alreadyJoined || c.isJoined } : c));
+            }
+            return [previewChat, ...prev];
+          });
+
+          activeChatIdRef.current = fullId;
+          setActiveChatId(fullId);
+          setMobileShowChat(true);
+          loadMessagesForChat(fullId);
+          return;
+        } else {
+          showToast(preview.error || 'Failed to load invite preview', 'error');
+        }
+      } catch (err: any) {
+        showToast(err.message || 'Failed to load invite preview', 'error');
+      }
+      return;
+    }
+
+    // 4. Message jump links
+    if (parsed.type === 'message') {
+      if (parsed.chatId && parsed.messageId) {
+        handleJumpToMessage(parsed.chatId, parsed.messageId);
+        return;
+      }
+    }
+
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
   const handleChatJoined = (chatId: string) => {
     setChats((prev) =>
       prev.map((c) => (c.id === chatId ? { ...c, isJoined: true } : c))
     );
   };
 
-  const handleSendMessage = async (text: string, replyTo?: Message, attachment?: Attachment) => {
-    if (!activeChatId) return;
+  const handleJoinFromPreview = async () => {
+    if (!joinPreviewData) return;
+    setIsJoiningFromPreview(true);
+    try {
+      const res = await telegramApi.joinChat(joinPreviewData.joinHash);
+      if (res.success) {
+        showToast(res.message || (res.alreadyJoined ? 'Already joined this chat' : 'Joined successfully!'), 'success');
+        setJoinPreviewData(null);
+        await loadTelegramDialogs();
+        if (res.chat?.id) {
+          const rawId = res.chat.id.toString();
+          const fullId = rawId.startsWith('-100') || rawId.startsWith('-') ? rawId : `-100${rawId}`;
+          handleSelectChat(fullId);
+        }
+      } else {
+        showToast(res.error || 'Failed to join', 'error');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to join', 'error');
+    } finally {
+      setIsJoiningFromPreview(false);
+    }
+  };
+
+  const handleOpenChatFromPreview = () => {
+    if (!joinPreviewData?.chatId) return;
+    const rawId = joinPreviewData.chatId;
+    const fullId = rawId.startsWith('-100') || rawId.startsWith('-') ? rawId : `-100${rawId}`;
+    setJoinPreviewData(null);
+    handleSelectChat(fullId);
+  };
+
+  const handleSendMessage = async (text: string, replyTo?: Message, attachment?: Attachment, targetChatId?: string) => {
+    const destChatId = targetChatId || activeChatIdRef.current || activeChatId;
+    if (!destChatId) return;
 
     const tempId = `temp-${Date.now()}`;
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
     const localMsg: Message = {
       id: tempId,
-      chatId: activeChatId,
+      chatId: destChatId,
       senderId: 'user-me',
       senderName: user.name,
       text,
@@ -758,7 +1035,7 @@ export const App: React.FC = () => {
     // Optimistically update UI
     setChats((prev) =>
       prev.map((c) => {
-        if (c.id === activeChatId) {
+        if (c.id === destChatId) {
           return {
             ...c,
             messages: [...c.messages, localMsg],
@@ -781,7 +1058,7 @@ export const App: React.FC = () => {
 
         if (attachment?.type === 'gif' && attachment.inlineResult) {
           const res = await telegramApi.sendInlineBotResult(
-            activeChatId,
+            destChatId,
             attachment.inlineResult.queryId,
             attachment.inlineResult.id,
             replyToId
@@ -789,7 +1066,7 @@ export const App: React.FC = () => {
           sentTelegramId = res.messageId;
         } else if (attachment?.type === 'sticker' && attachment.documentId && attachment.accessHash) {
           const res = await telegramApi.sendStickerDocument(
-            activeChatId,
+            destChatId,
             {
               documentId: attachment.documentId,
               accessHash: attachment.accessHash,
@@ -799,14 +1076,14 @@ export const App: React.FC = () => {
           );
           sentTelegramId = res.id;
         } else {
-          const sentTelegramMsg = await telegramApi.sendMessage(activeChatId, text, replyToId);
+          const sentTelegramMsg = await telegramApi.sendMessage(destChatId, text, replyToId);
           sentTelegramId = sentTelegramMsg.id;
         }
 
         // Update with real Telegram message ID and mark sent
         setChats((prev) =>
           prev.map((c) => {
-            if (c.id === activeChatId) {
+            if (c.id === destChatId) {
               return {
                 ...c,
                 messages: c.messages.map((m) =>
@@ -828,7 +1105,7 @@ export const App: React.FC = () => {
         // Mark failed or keep sent
         setChats((prev) =>
           prev.map((c) => {
-            if (c.id === activeChatId) {
+            if (c.id === destChatId) {
               return {
                 ...c,
                 messages: c.messages.map((m) =>
@@ -976,6 +1253,63 @@ export const App: React.FC = () => {
       handleSendMessage(`[Forwarded from ${message.senderName}]: ${message.text}`);
       showToast('Saved to Saved Messages', 'success');
     }, 120);
+  };
+
+  const handleForwardMessage = async (message: Message, targetChatIds: string[]) => {
+    if (!activeChat || targetChatIds.length === 0) return;
+    const sourceChatId = activeChat.id;
+
+    for (const targetChatId of targetChatIds) {
+      try {
+        await telegramApi.forwardMessages(sourceChatId, targetChatId, [message.id]);
+      } catch (err: any) {
+        console.warn('[Forward] MTProto forward error, falling back locally:', err?.message || err);
+      }
+
+      const targetChat = chats.find((c) => c.id === targetChatId);
+      const isSelfForward = targetChatId === 'saved_messages' || targetChat?.isSelf;
+
+      const fwdMsg: Message = {
+        id: `fwd_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        chatId: targetChatId,
+        senderId: 'self',
+        senderName: 'You',
+        text: message.text || '',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        date: new Date().toISOString(),
+        rawDate: Math.floor(Date.now() / 1000),
+        isOutgoing: true,
+        status: 'sent',
+        attachment: message.attachment,
+        forwardFrom: {
+          id: message.forwardFrom?.id || (message.isOutgoing ? undefined : activeChat.id),
+          name: message.forwardFrom?.name || message.senderName || activeChat.name || 'Forwarded message',
+          avatar: message.forwardFrom?.avatar || activeChat.avatar,
+          thumbUrl: message.forwardFrom?.thumbUrl || activeChat.thumbUrl,
+          isChannel: activeChat.type === 'channel',
+        },
+      };
+
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id === targetChatId) {
+            return {
+              ...c,
+              lastMessage: {
+                text: fwdMsg.text || (fwdMsg.attachment ? `[${fwdMsg.attachment.type}]` : 'Forwarded message'),
+                timestamp: fwdMsg.timestamp,
+                isOutgoing: true,
+              },
+              messages: [...c.messages, fwdMsg],
+            };
+          }
+          return c;
+        })
+      );
+
+      const targetName = targetChat?.name || (isSelfForward ? 'Saved Messages' : 'Chat');
+      showToast(`Forwarded to ${targetName}`, 'success');
+    }
   };
 
   const handleToggleMute = (chatId: string) => {
@@ -1143,6 +1477,9 @@ export const App: React.FC = () => {
           onSelectChat={handleSelectChat}
           onOpenDirectChat={handleOpenDirectChat}
           onJumpToMessage={handleJumpToMessage}
+          onOpenTelegramLink={handleOpenTelegramLink}
+          availableChats={chats}
+          onForwardMessage={handleForwardMessage}
         />
       </div>
 
@@ -1282,6 +1619,35 @@ export const App: React.FC = () => {
         isOpen={isNewChatOpen}
         onClose={() => setIsNewChatOpen(false)}
         onCreateChat={handleCreateChat}
+      />
+
+      {addBotModalData && (
+        <AddBotToChatModal
+          isOpen={Boolean(addBotModalData)}
+          onClose={() => setAddBotModalData(null)}
+          botUsername={addBotModalData.botUsername}
+          startParam={addBotModalData.startParam}
+          groups={chats.filter((c) => c.type === 'group' || c.type === 'channel')}
+          onBotAdded={(groupId) => {
+            setAddBotModalData(null);
+            handleSelectChat(groupId);
+          }}
+        />
+      )}
+
+      <JoinPreviewModal
+        isOpen={Boolean(joinPreviewData)}
+        onClose={() => { setJoinPreviewData(null); setIsJoiningFromPreview(false); }}
+        onJoin={handleJoinFromPreview}
+        onOpenChat={handleOpenChatFromPreview}
+        title={joinPreviewData?.title || ''}
+        about={joinPreviewData?.about}
+        participantsCount={joinPreviewData?.participantsCount}
+        photo={joinPreviewData?.photo}
+        isChannel={joinPreviewData?.isChannel}
+        isGroup={joinPreviewData?.isGroup}
+        alreadyJoined={joinPreviewData?.alreadyJoined}
+        isJoining={isJoiningFromPreview}
       />
 
       <MediaModal

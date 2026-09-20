@@ -282,6 +282,9 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
           if (data?.tracks && data.tracks.length > 0) {
             setAudioTracks(data.tracks);
           }
+          if (data?.duration && isFinite(data.duration) && data.duration > 0) {
+            setDuration((prev) => (!prev || prev <= 0 || !isFinite(prev) ? data.duration : prev));
+          }
         })
         .catch(() => {});
     }
@@ -581,8 +584,22 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
           updateBuffered();
         }}
         onTimeUpdate={() => {
-          if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+          if (videoRef.current) {
+            setCurrentTime(videoRef.current.currentTime);
+            const d = videoRef.current.duration;
+            if (isFinite(d) && d > 0) {
+              setDuration((prev) => (!prev || prev <= 0 || Math.abs(prev - d) > 1 ? d : prev));
+            }
+          }
           updateBuffered();
+        }}
+        onDurationChange={() => {
+          if (videoRef.current) {
+            const d = videoRef.current.duration;
+            if (isFinite(d) && d > 0) {
+              setDuration(d);
+            }
+          }
         }}
         onLoadedMetadata={() => {
           if (videoRef.current) {
@@ -592,6 +609,14 @@ export const TeleForgeVideoPlayer: React.FC<TeleForgeVideoPlayerProps> = ({
             }
             inspectAudioTracks();
             updateBuffered();
+          }
+        }}
+        onLoadedData={() => {
+          if (videoRef.current) {
+            const d = videoRef.current.duration;
+            if (isFinite(d) && d > 0) {
+              setDuration((prev) => (!prev || prev <= 0 ? d : prev));
+            }
           }
         }}
         onProgress={updateBuffered}

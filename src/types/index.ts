@@ -64,6 +64,30 @@ export interface Attachment {
   };
 }
 
+export type TelegramButtonType = 'url' | 'callback' | 'switch_inline' | 'web_view' | 'buy' | 'game' | 'auth' | 'text' | 'unknown';
+
+export interface TelegramKeyboardButton {
+  text: string;
+  type: TelegramButtonType;
+  url?: string;
+  data?: string;
+  query?: string;
+  samePeer?: boolean;
+  requiresPassword?: boolean;
+}
+
+export interface TelegramReplyMarkup {
+  type: 'inline' | 'reply' | 'hide' | 'force_reply';
+  rows: {
+    buttons: TelegramKeyboardButton[];
+  }[];
+  resize?: boolean;
+  singleUse?: boolean;
+  selective?: boolean;
+  persistent?: boolean;
+  placeholder?: string;
+}
+
 export interface Message {
   id: string;
   chatId: string;
@@ -93,6 +117,7 @@ export interface Message {
     thumbUrl?: string;
     isChannel?: boolean;
   };
+  replyMarkup?: TelegramReplyMarkup;
 }
 
 export interface Chat {
@@ -113,6 +138,7 @@ export interface Chat {
   isMuted?: boolean;
   isPinned?: boolean;
   isJoined?: boolean;
+  isSelf?: boolean;
   unreadCount: number;
   lastMessage?: {
     text: string;

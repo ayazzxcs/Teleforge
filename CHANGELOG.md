@@ -3,6 +3,23 @@
 All notable changes to the **TeleForge** client are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.3] - 2026-09-20
+
+### 🚀 TeleForge 1.0.3 (Reactions & Message Forwarding)
+
+#### Real-Time Reactions & Reactor Identities
+- **Other People's Reactions**: Upgraded `ReactionDetailsModal` to fetch and display the exact list of users who reacted to any message (`messages.getMessageReactionsList`), including reactor avatars, display names, @usernames, reaction emojis, and timestamps.
+- **Direct Chat Navigation**: Tap any reactor in the reaction list to view their user profile or open a direct chat immediately.
+- **Live MTProto Reaction Updates**: Implemented real-time `UpdateMessageReactions` event handling across both direct MTProto and backend SSE connections so incoming reactions from other people appear instantaneously without page refreshes.
+- **Expanded Reaction Palette**: Added "More reactions" expand button in message action bar containing popular Telegram reactions (🔥, 🥰, 👏, 🤩, 😱, 💩, 🙏, 👌, 💯, 🤣, etc.) and quick `+` reaction trigger directly on message reaction pills.
+
+#### Message Forwarding & Attribution
+- **Native MTProto Forwarding**: Enabled forwarding messages to any destination chat, group, channel, or Saved Messages via `messages.forwardMessages`.
+- **Forwarded From Header**: Styled attribution banner showing forward source (channel or user) with clickable navigation to the original source.
+
+#### Media & Video Streaming Improvements
+- **Accurate Video Duration**: Enhanced `TeleForgeVideoPlayer` and backend audio/video stream probing to discover and display full video durations reliably during progressive playback.
+
 ---
 
 ## [1.0.0] - 2026-09-15

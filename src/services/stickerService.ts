@@ -1,7 +1,7 @@
 // Service for managing custom stickers and Telegram sticker packs in TeleForge
 // Persists user-added custom stickers to localStorage and notifies listeners in real-time.
 
-import { telegramDirectClient } from './telegramDirectClient';
+import { telegramApi } from './telegramApi';
 
 const CUSTOM_STICKERS_KEY = 'teleforge_custom_stickers';
 
@@ -117,9 +117,9 @@ export const stickerService = {
     // Sync with Telegram cloud MTProto if available
     try {
       if (item.stickerSet?.id && item.stickerSet?.accessHash) {
-        telegramDirectClient.installStickerSet(item.stickerSet).catch(() => {});
+        telegramApi.installStickerSet(item.stickerSet).catch(() => {});
       } else if (item.documentId && item.accessHash) {
-        telegramDirectClient.faveSticker(item.documentId, item.accessHash, item.fileReference).catch(() => {});
+        telegramApi.faveSticker(item.documentId, item.accessHash, item.fileReference).catch(() => {});
       }
     } catch (e) {}
 
@@ -155,16 +155,25 @@ export const stickerService = {
     const existingUrls = new Set(current.map((s) => s.url).filter(Boolean));
 
     const toAdd: CustomSticker[] = [];
+    let updatedExisting = false;
 
     for (const item of items) {
       const effectiveId = item.id || item.documentId || `stk-batch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const effectiveUrl = item.url || item.thumbUrl || '';
 
-      if (
-        existingIds.has(effectiveId) ||
-        (item.documentId && existingDocs.has(item.documentId)) ||
-        (effectiveUrl && existingUrls.has(effectiveUrl))
-      ) {
+      // Check if this sticker is already in the collection
+      const existingIdx = current.findIndex(
+        (s) => (item.documentId && s.documentId === item.documentId) || s.id === effectiveId || (effectiveUrl && s.url === effectiveUrl)
+      );
+      if (existingIdx !== -1) {
+        // Enrich existing sticker with stickerSet metadata if missing
+        if (item.stickerSet && (!current[existingIdx].stickerSet || !current[existingIdx].stickerSet?.id)) {
+          current[existingIdx].stickerSet = {
+            ...current[existingIdx].stickerSet,
+            ...item.stickerSet,
+          };
+          updatedExisting = true;
+        }
         continue;
       }
 
@@ -187,7 +196,7 @@ export const stickerService = {
       });
     }
 
-    if (toAdd.length > 0) {
+    if (toAdd.length > 0 || updatedExisting) {
       cachedStickers = [...toAdd, ...current];
       saveToStorage(cachedStickers);
     }
@@ -206,37 +215,50 @@ export const stickerService = {
     stickers?: Array<any>;
   }): Promise<{ addedCount: number; success: boolean }> {
     try {
-      if (pack.id || pack.shortName) {
-        await telegramDirectClient.installStickerSet({
-          id: pack.id,
-          accessHash: pack.accessHash,
-          shortName: pack.shortName,
+      const packId = pack.id ? String(pack.id).trim() : '';
+      const packAccessHash = pack.accessHash ? String(pack.accessHash).trim() : '';
+      const packShortName = pack.shortName ? String(pack.shortName).trim() : '';
+      const packTitle = pack.title || 'Sticker Pack';
+
+      // 1. Sync with Telegram cloud via unified API (works on both Android and Web backend)
+      if (packId || packShortName) {
+        telegramApi.installStickerSet({
+          id: packId,
+          accessHash: packAccessHash,
+          shortName: packShortName,
         }).catch(() => {});
       }
 
-      let stickers = pack.stickers || [];
-      if (stickers.length === 0 && (pack.id || pack.shortName)) {
-        const full = await telegramDirectClient.getStickerSet({
-          id: pack.id,
-          accessHash: pack.accessHash,
-          shortName: pack.shortName,
-        });
-        if (full?.stickers) {
-          stickers = full.stickers;
-        }
+      // 2. Resolve stickers array
+      let stickers: Array<any> = Array.isArray(pack.stickers) && pack.stickers.length > 0 ? [...pack.stickers] : [];
+      if (stickers.length === 0 && (packId || packShortName)) {
+        try {
+          const full = await telegramApi.getStickerSet({
+            id: packId,
+            accessHash: packAccessHash,
+            shortName: packShortName,
+          });
+          if (full?.stickers && full.stickers.length > 0) {
+            stickers = full.stickers;
+          }
+        } catch (e) {}
+      }
+
+      if (stickers.length === 0) {
+        return { addedCount: 0, success: false };
       }
 
       const mapped = stickers.map((stk: any) => ({
         id: stk.documentId || stk.id,
-        name: stk.emoji ? `${pack.title || 'Sticker'} ${stk.emoji}` : (pack.title || 'Sticker'),
+        name: stk.emoji ? `${packTitle} ${stk.emoji}` : packTitle,
         emoji: stk.emoji,
         url: stk.thumbUrl || stk.url || '',
         thumbUrl: stk.thumbUrl || stk.url || '',
         stickerSet: {
-          id: pack.id,
-          accessHash: pack.accessHash,
-          shortName: pack.shortName,
-          title: pack.title,
+          id: packId,
+          accessHash: packAccessHash,
+          shortName: packShortName,
+          title: packTitle,
         },
         documentId: stk.documentId || stk.id,
         accessHash: stk.accessHash,
@@ -245,7 +267,7 @@ export const stickerService = {
       }));
 
       const addedCount = this.addCustomStickersBatch(mapped);
-      return { addedCount, success: true };
+      return { addedCount: addedCount > 0 ? addedCount : mapped.length, success: true };
     } catch (e) {
       console.warn('[StickerService] Failed to add sticker pack:', e);
       return { addedCount: 0, success: false };
@@ -253,29 +275,41 @@ export const stickerService = {
   },
 
   /**
-   * Check if an entire sticker pack is already saved
+   * Check if an entire sticker pack is already saved (by pack ID or shortName)
    */
-  isPackSaved(packIdOrShortName?: string): boolean {
-    if (!packIdOrShortName) return false;
+  isPackSaved(packId?: string, shortName?: string): boolean {
+    if (!packId && !shortName) return false;
     const current = this.getCustomStickers();
-    return current.some(
-      (s) =>
-        s.stickerSet?.id === packIdOrShortName ||
-        s.stickerSet?.shortName === packIdOrShortName
-    );
+    const idStr = packId ? String(packId).trim() : '';
+    const nameStr = shortName ? String(shortName).trim().toLowerCase() : '';
+
+    return current.some((s) => {
+      const sId = s.stickerSet?.id ? String(s.stickerSet.id).trim() : '';
+      const sName = s.stickerSet?.shortName ? String(s.stickerSet.shortName).trim().toLowerCase() : '';
+      return Boolean(
+        (idStr && (sId === idStr || sName === idStr.toLowerCase())) ||
+        (nameStr && (sName === nameStr || sId === nameStr))
+      );
+    });
   },
 
   /**
    * Remove all stickers belonging to a pack
    */
-  removeStickerPack(packIdOrShortName: string): void {
-    if (!packIdOrShortName) return;
+  removeStickerPack(packId?: string, shortName?: string): void {
+    if (!packId && !shortName) return;
     const current = this.getCustomStickers();
-    const filtered = current.filter(
-      (s) =>
-        s.stickerSet?.id !== packIdOrShortName &&
-        s.stickerSet?.shortName !== packIdOrShortName
-    );
+    const idStr = packId ? String(packId).trim() : '';
+    const nameStr = shortName ? String(shortName).trim().toLowerCase() : '';
+
+    const filtered = current.filter((s) => {
+      const sId = s.stickerSet?.id ? String(s.stickerSet.id).trim() : '';
+      const sName = s.stickerSet?.shortName ? String(s.stickerSet.shortName).trim().toLowerCase() : '';
+      const matchesId = Boolean(idStr && (sId === idStr || sName === idStr.toLowerCase()));
+      const matchesName = Boolean(nameStr && (sName === nameStr || sId === nameStr));
+      return !matchesId && !matchesName;
+    });
+
     cachedStickers = filtered;
     saveToStorage(cachedStickers);
   },

@@ -2,8 +2,10 @@
 // In Android APK and mobile environments, routes directly to telegramDirectClient (GramJS WSS).
 // In web dev mode, routes to /api/telegram local backend with seamless telegramDirectClient fallback.
 
-import { TeleForgeDialogFilter } from '../types';
+import { TeleForgeDialogFilter, TelegramReplyMarkup, TelegramKeyboardButton, TelegramButtonType } from '../types';
 import { telegramDirectClient } from './telegramDirectClient';
+
+export type { TelegramReplyMarkup, TelegramKeyboardButton, TelegramButtonType };
 
 export interface TelegramUser {
   id: string;
@@ -37,6 +39,7 @@ export interface TelegramDialog {
   unreadMentionsCount: number;
   pinned: boolean;
   isJoined?: boolean;
+  isMuted?: boolean;
   memberCount?: number;
   participantsCount?: number;
   date: number;
@@ -82,9 +85,11 @@ export interface TelegramMessage {
   accessHash?: string;
   fileReference?: string;
   actionText?: string;
+  editDate?: number;
   webPage?: { title?: string; description?: string; url?: string; siteName?: string };
   poll?: { question: string; totalVoters?: number; closed?: boolean };
   forwardFrom?: { id?: string; name: string; avatar?: string; thumbUrl?: string; isChannel?: boolean };
+  replyMarkup?: TelegramReplyMarkup;
 }
 
 export interface OnlineGifItem {
@@ -227,6 +232,7 @@ export async function probeBackendServer(): Promise<string> {
 
 type MessageListener = (event: { chatId: string; message: TelegramMessage }) => void;
 const messageListeners = new Set<MessageListener>();
+const reactionListeners = new Set<(event: { chatId: string; messageId: string; reactions: any[] }) => void>();
 const seenMessageKeys = new Set<string>();
 
 let sseEventSource: EventSource | null = null;
@@ -235,7 +241,7 @@ let directUnsubscribe: (() => void) | null = null;
 
 function dispatchIncomingMessage(chatId: string, message: TelegramMessage) {
   if (!chatId || !message || message.id == null) return;
-  const key = `${chatId}_${message.id}`;
+  const key = `${chatId}_${message.id}_${message.editDate || message.date}_${(message.text || '').slice(0, 32)}_${message.replyMarkup ? JSON.stringify(message.replyMarkup).length : 0}`;
   if (seenMessageKeys.has(key)) return;
   seenMessageKeys.add(key);
   if (seenMessageKeys.size > 2000) {
@@ -255,12 +261,27 @@ function dispatchIncomingMessage(chatId: string, message: TelegramMessage) {
   });
 }
 
+function dispatchReactionUpdate(chatId: string, messageId: string, reactions: any[]) {
+  if (!chatId || !messageId) return;
+  reactionListeners.forEach((listener) => {
+    try {
+      listener({ chatId, messageId, reactions });
+    } catch (e) {
+      console.warn('[telegramApi] Reaction listener error:', e);
+    }
+  });
+}
+
 function initRealtimeUpdates() {
   // 1. Direct MTProto client listener (for Android or Direct WSS mode)
   if (!directUnsubscribe) {
     try {
-      directUnsubscribe = telegramDirectClient.onNewMessage(({ chatId, message }) => {
-        dispatchIncomingMessage(chatId, message);
+      directUnsubscribe = telegramDirectClient.onNewMessage((evt: any) => {
+        if (evt.type === 'message_reactions' && evt.chatId && evt.messageId) {
+          dispatchReactionUpdate(evt.chatId, evt.messageId, evt.reactions);
+        } else if (evt.chatId && evt.message) {
+          dispatchIncomingMessage(evt.chatId, evt.message);
+        }
       });
     } catch (e) {}
   }
@@ -287,6 +308,8 @@ function initRealtimeUpdates() {
             const data = JSON.parse(event.data);
             if (data.type === 'new_message' && data.chatId && data.message) {
               dispatchIncomingMessage(data.chatId, data.message);
+            } else if (data.type === 'message_reactions' && data.chatId && data.messageId) {
+              dispatchReactionUpdate(data.chatId, data.messageId, data.reactions);
             }
           } catch (err) {}
         };
@@ -515,6 +538,38 @@ export const telegramApi = {
     return telegramDirectClient.sendReaction(chatId, messageId, emoji);
   },
 
+  async getMessageReactionsList(chatId: string, messageId: string, limit = 50): Promise<{
+    count: number;
+    reactions: Array<{
+      peerId: string | null;
+      user: {
+        id: string;
+        name: string;
+        username?: string;
+        avatar?: string;
+        isSelf?: boolean;
+      };
+      emoji: string;
+      date: number;
+      isSelf: boolean;
+    }>;
+    nextOffset: string | null;
+  }> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.getMessageReactionsList(chatId, messageId, limit);
+    }
+    try {
+      const res = await fetchWithTimeout(
+        `${getApiBase()}/messages/reactions-list?chatId=${encodeURIComponent(chatId)}&messageId=${encodeURIComponent(messageId)}&limit=${limit}`,
+        {},
+        5000
+      );
+      const data = await res.json();
+      if (res.ok && data) return data;
+    } catch (e) {}
+    return telegramDirectClient.getMessageReactionsList(chatId, messageId, limit);
+  },
+
   async editMessage(chatId: string, messageId: string, text: string): Promise<{ success: boolean; message: any }> {
     if (isAndroidApp()) {
       return telegramDirectClient.editMessage(chatId, messageId, text);
@@ -561,6 +616,33 @@ export const telegramApi = {
       if (res.ok) return data;
     } catch (e) {}
     return telegramDirectClient.pinMessage(chatId, messageId, silent);
+  },
+
+  async forwardMessages(
+    fromChatId: string,
+    toChatId: string,
+    messageIds: string[] | number[],
+    options: { silent?: boolean; dropAuthor?: boolean } = {}
+  ): Promise<{ success: boolean; count?: number }> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.forwardMessages(fromChatId, toChatId, messageIds, options);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/messages/forward`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fromChatId,
+          toChatId,
+          messageIds,
+          silent: options.silent,
+          dropAuthor: options.dropAuthor,
+        }),
+      }, 8000);
+      const data = await res.json();
+      if (res.ok) return data;
+    } catch (e) {}
+    return telegramDirectClient.forwardMessages(fromChatId, toChatId, messageIds, options);
   },
 
   async getContacts(): Promise<TelegramUser[]> {
@@ -697,7 +779,39 @@ export const telegramApi = {
     return telegramDirectClient.searchGlobal(q, limit);
   },
 
-  async joinChat(chatId: string): Promise<{ success: boolean; error?: string }> {
+  async checkInvite(hashOrUsername: string): Promise<{
+    success: boolean;
+    title?: string;
+    about?: string;
+    participantsCount?: number;
+    photo?: string;
+    isChannel?: boolean;
+    isGroup?: boolean;
+    alreadyJoined?: boolean;
+    chatId?: string;
+    error?: string;
+  }> {
+    if (isAndroidApp()) {
+      return telegramDirectClient.checkInvite(hashOrUsername);
+    }
+    try {
+      const res = await fetchWithTimeout(`${getApiBase()}/check-invite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hashOrUsername }),
+      }, 12000);
+      const data = await res.json();
+      return data;
+    } catch (e: any) {
+      try {
+        return await telegramDirectClient.checkInvite(hashOrUsername);
+      } catch (err: any) {
+        return { success: false, error: e?.message || 'Failed to check invite' };
+      }
+    }
+  },
+
+  async joinChat(chatId: string): Promise<{ success: boolean; chat?: any; alreadyJoined?: boolean; requestSent?: boolean; message?: string; error?: string }> {
     if (isAndroidApp()) {
       return telegramDirectClient.joinChat(chatId);
     }
@@ -706,11 +820,12 @@ export const telegramApi = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chatId }),
-      }, 6000);
+      }, 12000);
       const data = await res.json();
-      if (res.ok) return data;
-    } catch (e) {}
-    return telegramDirectClient.joinChat(chatId);
+      return data;
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to join chat' };
+    }
   },
 
   async getProfile(): Promise<{ success: boolean; user: TelegramUser }> {
@@ -854,10 +969,31 @@ export const telegramApi = {
   },
 
   async downloadDocumentThumb(doc: any): Promise<string | null> {
+    if (!doc) return null;
+    if (!isAndroidApp()) {
+      const docId = doc.id?.toString() || doc.documentId;
+      if (docId) return resolveApiUrl(`/api/telegram/document?id=${docId}&thumb=m`);
+    }
     return telegramDirectClient.downloadDocumentThumb(doc);
   },
 
   async downloadStickerThumb(docOrSticker: any): Promise<string | null> {
+    if (!docOrSticker) return null;
+    if (docOrSticker.thumbUrl && (docOrSticker.thumbUrl.startsWith('data:') || docOrSticker.thumbUrl.startsWith('blob:') || docOrSticker.thumbUrl.startsWith('http'))) {
+      return docOrSticker.thumbUrl;
+    }
+    if (!isAndroidApp()) {
+      if (docOrSticker.thumbUrl) {
+        return resolveApiUrl(docOrSticker.thumbUrl);
+      }
+      if (docOrSticker.url) {
+        return resolveApiUrl(docOrSticker.url);
+      }
+      const docId = docOrSticker.documentId || docOrSticker.id;
+      if (docId) {
+        return resolveApiUrl(`/api/telegram/document?id=${docId}&thumb=m`);
+      }
+    }
     return telegramDirectClient.downloadStickerThumb(docOrSticker);
   },
 
@@ -1020,6 +1156,14 @@ export const telegramApi = {
     return registerMessageListener(listener);
   },
 
+  onReactionUpdate(listener: (event: { chatId: string; messageId: string; reactions: any[] }) => void): () => void {
+    reactionListeners.add(listener);
+    initRealtimeUpdates();
+    return () => {
+      reactionListeners.delete(listener);
+    };
+  },
+
   async getChatSharedMedia(
     chatId: string,
     type: 'photos' | 'videos' | 'files' | 'audio',
@@ -1041,5 +1185,83 @@ export const telegramApi = {
       } catch (e) {}
     }
     return telegramDirectClient.getChatSharedMedia(chatId, type, limit);
+  },
+
+  async sendBotCallbackAnswer(
+    chatId: string,
+    messageId: number,
+    data?: string,
+    game = false
+  ): Promise<{ message?: string; alert?: boolean; url?: string }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/bot/callback`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId, messageId, data, game }),
+          },
+          12000
+        );
+        if (res.ok) {
+          return await res.json();
+        }
+        const errJson = await res.json().catch(() => ({}));
+        return { message: errJson.error || 'Action failed' };
+      } catch (e: any) {
+        return { message: e?.message || 'Callback timed out' };
+      }
+    }
+    return telegramDirectClient.sendBotCallbackAnswer(chatId, messageId, data, game);
+  },
+
+  async addBotToChat(
+    chatId: string,
+    botUsername: string,
+    startParam?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/bot/add-to-chat`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId, botUsername, startParam }),
+          },
+          15000
+        );
+        if (res.ok) {
+          return await res.json();
+        }
+        const errJson = await res.json().catch(() => ({}));
+        return { success: false, error: errJson.error || `HTTP ${res.status}` };
+      } catch (e: any) {}
+    }
+    return telegramDirectClient.addBotToChat(chatId, botUsername, startParam);
+  },
+
+  async toggleChatMute(
+    chatId: string,
+    mute = true
+  ): Promise<{ success: boolean; isMuted: boolean }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/chat/mute`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId, mute }),
+          },
+          10000
+        );
+        if (res.ok) {
+          return await res.json();
+        }
+      } catch (e: any) {}
+    }
+    return telegramDirectClient.toggleChatMute(chatId, mute);
   },
 };

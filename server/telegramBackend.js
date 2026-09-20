@@ -4,7 +4,7 @@ import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
-import { strippedPhotoToJpg } from 'telegram/Utils.js';
+import { strippedPhotoToJpg, getInputPeer } from 'telegram/Utils.js';
 import { CustomFile } from 'telegram/client/uploads.js';
 import bigInt from 'big-integer';
 
@@ -92,7 +92,12 @@ export async function resolveInputPeer(chatId) {
   }
 
   for (const v of variations) {
-    if (inputPeerCache.has(v)) return inputPeerCache.get(v);
+    if (inputPeerCache.has(v)) {
+      const ip = inputPeerCache.get(v);
+      if (ip && (ip._?.startsWith('input') || ip.className?.startsWith('Input'))) {
+        return ip;
+      }
+    }
   }
 
   for (const v of variations) {
@@ -101,22 +106,52 @@ export async function resolveInputPeer(chatId) {
       if (ent?._?.startsWith('input') || ent?.className?.startsWith('Input')) {
         return ent;
       }
+      try {
+        const ip = getInputPeer(ent);
+        if (ip && (ip._?.startsWith('input') || ip.className?.startsWith('Input'))) {
+          inputPeerCache.set(v, ip);
+          inputPeerCache.set(idStr, ip);
+          return ip;
+        }
+      } catch (e) {}
     }
   }
 
   try {
-    await getDialogsList(100);
+    const client = await getClient();
     for (const v of variations) {
-      if (inputPeerCache.has(v)) return inputPeerCache.get(v);
+      try {
+        const ent = await client.getInputEntity(v);
+        if (ent) {
+          const ip = getInputPeer(ent);
+          if (ip && (ip._?.startsWith('input') || ip.className?.startsWith('Input'))) {
+            inputPeerCache.set(idStr, ip);
+            return ip;
+          }
+        }
+      } catch (e) {}
+      try {
+        const ent = await client.getInputEntity(BigInt(v));
+        if (ent) {
+          const ip = getInputPeer(ent);
+          if (ip && (ip._?.startsWith('input') || ip.className?.startsWith('Input'))) {
+            inputPeerCache.set(idStr, ip);
+            return ip;
+          }
+        }
+      } catch (e) {}
     }
   } catch (e) {}
 
   try {
     const client = await getClient();
-    const ent = await client.getInputEntity(chatId);
+    const ent = await client.getEntity(chatId).catch(async () => await client.getEntity(BigInt(chatId))).catch(() => null);
     if (ent) {
-      for (const v of variations) inputPeerCache.set(v, ent);
-      return ent;
+      const ip = getInputPeer(ent);
+      if (ip && (ip._?.startsWith('input') || ip.className?.startsWith('Input'))) {
+        inputPeerCache.set(idStr, ip);
+        return ip;
+      }
     }
   } catch (e) {}
 
@@ -675,6 +710,11 @@ export async function getDialogsList(limit = 40, forceRefresh = false) {
       }
     }
 
+    const isMuted = Boolean(
+      (d.dialog?.notifySettings?.muteUntil && d.dialog.notifySettings.muteUntil > Math.floor(Date.now() / 1000)) ||
+      d.dialog?.notifySettings?.silent
+    );
+
     return {
       id: peerIdStr,
       title,
@@ -689,6 +729,7 @@ export async function getDialogsList(limit = 40, forceRefresh = false) {
       unreadCount: d.unreadCount || 0,
       unreadMentionsCount: d.unreadMentionsCount || 0,
       pinned: Boolean(d.pinned),
+      isMuted,
       participantsCount,
       memberCount: participantsCount,
       date: d.date ? d.date * 1000 : Date.now(),
@@ -747,6 +788,87 @@ setInterval(() => {
   }
 }, 25000);
 
+export function extractReplyMarkup(markup) {
+  if (!markup) return undefined;
+  const cls = markup.className || markup._ || '';
+  const isInline = cls.includes('ReplyInlineMarkup');
+  const isReply = cls.includes('ReplyKeyboardMarkup');
+  const isHide = cls.includes('ReplyKeyboardHide');
+  const isForceReply = cls.includes('ReplyKeyboardForceReply');
+
+  if (isHide) {
+    return { type: 'hide', rows: [] };
+  }
+  if (isForceReply) {
+    return { type: 'force_reply', rows: [], placeholder: markup.placeholder || undefined };
+  }
+  if (!isInline && !isReply) return undefined;
+
+  const rawRows = markup.rows || [];
+  const rows = rawRows.map((r) => {
+    const rawButtons = r.buttons || [];
+    const buttons = rawButtons.map((btn) => {
+      const btnCls = btn.className || btn._ || '';
+      let type = 'unknown';
+      let url = undefined;
+      let data = undefined;
+      let query = undefined;
+      let samePeer = undefined;
+
+      if (btnCls.includes('KeyboardButtonUrlAuth')) {
+        type = 'auth';
+        url = btn.url || undefined;
+      } else if (btnCls.includes('KeyboardButtonUrl')) {
+        type = 'url';
+        url = btn.url || undefined;
+      } else if (btnCls.includes('KeyboardButtonCallback')) {
+        type = 'callback';
+        if (btn.data) {
+          try {
+            data = Buffer.isBuffer(btn.data) || btn.data instanceof Uint8Array
+              ? Buffer.from(btn.data).toString('base64')
+              : String(btn.data);
+          } catch (e) {}
+        }
+      } else if (btnCls.includes('KeyboardButtonSwitchInline')) {
+        type = 'switch_inline';
+        query = btn.query || '';
+        samePeer = Boolean(btn.samePeer);
+      } else if (btnCls.includes('KeyboardButtonWebView') || btnCls.includes('KeyboardButtonSimpleWebView')) {
+        type = 'web_view';
+        url = btn.url || undefined;
+      } else if (btnCls.includes('KeyboardButtonBuy')) {
+        type = 'buy';
+      } else if (btnCls.includes('KeyboardButtonGame')) {
+        type = 'game';
+      } else if (btnCls.includes('KeyboardButton')) {
+        type = 'text';
+      }
+
+      return {
+        text: btn.text || '',
+        type,
+        url,
+        data,
+        query,
+        samePeer,
+        requiresPassword: Boolean(btn.requiresPassword),
+      };
+    });
+    return { buttons };
+  }).filter((row) => row.buttons.length > 0);
+
+  return {
+    type: isInline ? 'inline' : 'reply',
+    rows,
+    resize: Boolean(markup.resize),
+    singleUse: Boolean(markup.singleUse),
+    selective: Boolean(markup.selective),
+    persistent: Boolean(markup.persistent),
+    placeholder: markup.placeholder || undefined,
+  };
+}
+
 export function mapBackendMessage(m, fallbackPeerId = null, batchMessagesMap = null) {
   if (!m) return null;
   let senderIdStr = m.senderId ? m.senderId.toString() : (m.fromId ? extractPeerId(m.fromId) : null);
@@ -796,6 +918,34 @@ export function mapBackendMessage(m, fallbackPeerId = null, batchMessagesMap = n
     senderAvatar = `/api/telegram/avatar?id=${encodeURIComponent(senderIdStr)}`;
   }
 
+  let forwardFrom = undefined;
+  if (m.fwdFrom) {
+    let fromPeerId = null;
+    if (m.fwdFrom.fromId) {
+      fromPeerId = extractPeerId(m.fwdFrom.fromId);
+    }
+    const fwdEntity = fromPeerId ? peerEntityCache.get(String(fromPeerId)) : null;
+    let fwdName = '';
+    if (fwdEntity) {
+      fwdName = fwdEntity.title || [fwdEntity.firstName, fwdEntity.lastName].filter(Boolean).join(' ');
+    }
+    if (!fwdName && m.fwdFrom.fromName) {
+      fwdName = m.fwdFrom.fromName;
+    }
+    if (!fwdName && m.fwdFrom.postAuthor) {
+      fwdName = m.fwdFrom.postAuthor;
+    }
+    if (!fwdName) {
+      fwdName = 'Forwarded message';
+    }
+    forwardFrom = {
+      id: fromPeerId ? String(fromPeerId) : undefined,
+      name: fwdName,
+      avatar: fromPeerId ? `/api/telegram/avatar?id=${encodeURIComponent(String(fromPeerId))}` : undefined,
+      isChannel: Boolean(m.fwdFrom.channelPost),
+    };
+  }
+
   let hasMedia = Boolean(m.media);
   let mediaType = null;
   let mediaThumb = undefined;
@@ -822,7 +972,7 @@ export function mapBackendMessage(m, fallbackPeerId = null, batchMessagesMap = n
         );
         if (strippedObj?.bytes) strippedBytes = strippedObj.bytes;
       }
-      if (strippedBytes) {
+      if (strippedBytes && strippedPhotoToJpg) {
         try {
           const thumbBuf = strippedPhotoToJpg(strippedBytes);
           if (thumbBuf && thumbBuf.length > 0) {
@@ -898,9 +1048,12 @@ export function mapBackendMessage(m, fallbackPeerId = null, batchMessagesMap = n
       const rawDuration = videoAttr?.duration ?? (isVoice || isAudio ? attrs.find((a) => a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio')?.duration : undefined);
       if (rawDuration != null) {
         const totalSecs = Math.round(Number(rawDuration));
-        const mins = Math.floor(totalSecs / 60);
+        const hrs = Math.floor(totalSecs / 3600);
+        const mins = Math.floor((totalSecs % 3600) / 60);
         const secs = totalSecs % 60;
-        durationStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+        durationStr = hrs > 0
+          ? `${hrs}:${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`
+          : `${mins}:${secs < 10 ? '0' : ''}${secs}`;
       }
 
       if (m.media.document?.thumbs) {
@@ -987,6 +1140,7 @@ export function mapBackendMessage(m, fallbackPeerId = null, batchMessagesMap = n
     fileName,
     fileSize,
     duration: durationStr,
+    forwardFrom,
     isRound,
     isSticker,
     isGif,
@@ -1027,6 +1181,8 @@ export function mapBackendMessage(m, fallbackPeerId = null, batchMessagesMap = n
     })(),
     reactions,
     actionText,
+    editDate: m.editDate ? m.editDate * 1000 : undefined,
+    replyMarkup: extractReplyMarkup(m.replyMarkup),
   };
 }
 
@@ -1038,7 +1194,7 @@ function handleSingleBackendUpdate(u) {
   let msgObj = null;
   let chatId = null;
 
-  if (u.message && (cls.includes('UpdateNewMessage') || cls.includes('UpdateNewChannelMessage'))) {
+  if (u.message && (cls.includes('UpdateNewMessage') || cls.includes('UpdateNewChannelMessage') || cls.includes('UpdateEditMessage') || cls.includes('UpdateEditChannelMessage'))) {
     msgObj = u.message;
     chatId = msgObj.peerId ? extractPeerId(msgObj.peerId) : null;
   } else if (cls.includes('UpdateShortChatMessage')) {
@@ -1068,6 +1224,32 @@ function handleSingleBackendUpdate(u) {
         type: 'new_message',
         chatId: chatId.toString(),
         message: mapped,
+      });
+    }
+  } else if (cls.includes('UpdateMessageReactions') || cls.includes('UpdateBotMessageReaction')) {
+    const pId = u.peer ? extractPeerId(u.peer) : null;
+    if (pId && u.msgId) {
+      let mappedReactions = [];
+      if (u.reactions && Array.isArray(u.reactions.results)) {
+        mappedReactions = u.reactions.results.map((r) => {
+          let emojiStr = '👍';
+          if (r.reaction && r.reaction.emoticon) {
+            emojiStr = r.reaction.emoticon;
+          } else if (typeof r.reaction === 'string') {
+            emojiStr = r.reaction;
+          }
+          return {
+            emoji: emojiStr,
+            count: r.count || 1,
+            userReacted: Boolean(r.chosenOrder !== undefined && r.chosenOrder !== null),
+          };
+        });
+      }
+      broadcastUpdate({
+        type: 'message_reactions',
+        chatId: pId.toString(),
+        messageId: u.msgId.toString(),
+        reactions: mappedReactions,
       });
     }
   }
@@ -1241,6 +1423,170 @@ export async function sendPeerMessage(peerId, messageText, replyToMsgId) {
   };
 }
 
+export async function sendBotCallbackAnswer(peerId, messageId, data, game = false) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  const numMsgId = typeof messageId === 'number' ? messageId : parseInt(String(messageId), 10);
+  if (!numMsgId || isNaN(numMsgId) || numMsgId <= 0) {
+    return { message: 'Invalid message ID' };
+  }
+
+  let targetPeer = await resolveInputPeer(peerId);
+  if (!targetPeer || typeof targetPeer === 'string' || !targetPeer.className?.startsWith('Input')) {
+    const idStr = String(peerId).trim();
+    const variations = [idStr];
+    if (idStr.startsWith('-100')) {
+      variations.push(idStr.slice(4));
+      variations.push(`-${idStr.slice(4)}`);
+    } else if (idStr.startsWith('-')) {
+      variations.push(idStr.slice(1));
+      variations.push(`-100${idStr.slice(1)}`);
+    } else {
+      variations.push(`-100${idStr}`);
+      variations.push(`-${idStr}`);
+    }
+
+    let ent = null;
+    for (const v of variations) {
+      if (peerEntityCache.has(v)) {
+        ent = peerEntityCache.get(v);
+        break;
+      }
+    }
+
+    if (!ent) {
+      try {
+        ent = await client.getEntity(peerId);
+      } catch (e) {
+        try {
+          ent = await client.getEntity(BigInt(peerId));
+        } catch (e2) {}
+      }
+    }
+
+    if (ent) {
+      try {
+        targetPeer = getInputPeer(ent);
+      } catch (e) {
+        targetPeer = ent;
+      }
+    }
+  }
+
+  if (!targetPeer || typeof targetPeer === 'string' || !targetPeer.className?.startsWith('Input')) {
+    try {
+      const ent = await client.getInputEntity(peerId);
+      targetPeer = getInputPeer(ent);
+    } catch (e) {
+      try {
+        const ent = await client.getInputEntity(BigInt(peerId));
+        targetPeer = getInputPeer(ent);
+      } catch (e2) {}
+    }
+  }
+
+  if (!targetPeer || typeof targetPeer === 'string' || !targetPeer.className?.startsWith('Input')) {
+    const idStr = String(peerId).trim();
+    try {
+      if (idStr.startsWith('-100')) {
+        targetPeer = new Api.InputPeerChannel({ channelId: BigInt(idStr.slice(4)), accessHash: BigInt(0) });
+      } else if (idStr.startsWith('-')) {
+        targetPeer = new Api.InputPeerChat({ chatId: BigInt(idStr.slice(1)) });
+      } else {
+        targetPeer = new Api.InputPeerUser({ userId: BigInt(idStr), accessHash: BigInt(0) });
+      }
+    } catch (e) {}
+  }
+
+  let rawData = undefined;
+  if (data !== undefined && data !== null && data !== '') {
+    if (Buffer.isBuffer(data)) {
+      rawData = data;
+    } else if (typeof data === 'string') {
+      try {
+        const buf = Buffer.from(data, 'base64');
+        if (buf.length > 0 && buf.toString('base64') === data) {
+          rawData = buf;
+        } else {
+          rawData = Buffer.from(data, 'utf8');
+        }
+      } catch (e) {
+        rawData = Buffer.from(data, 'utf8');
+      }
+    }
+  } else {
+    rawData = Buffer.alloc(0);
+  }
+
+  const req = new Api.messages.GetBotCallbackAnswer({
+    peer: targetPeer,
+    msgId: numMsgId,
+    data: rawData,
+    game,
+  });
+
+  try {
+    const res = await client.invoke(req);
+    return {
+      message: res?.message || undefined,
+      alert: Boolean(res?.alert),
+      url: res?.url || undefined,
+    };
+  } catch (err) {
+    if (err?.errorMessage === 'BOT_RESPONSE_TIMEOUT') {
+      return { message: 'Bot did not respond in time.' };
+    }
+    if (err?.errorMessage === 'MESSAGE_ID_INVALID') {
+      console.warn('[MTProto Backend] Message ID is no longer valid or expired:', messageId);
+      return { message: 'This button is no longer active or has expired.' };
+    }
+    console.warn('[MTProto Backend] sendBotCallbackAnswer error:', err.message || err);
+    return { message: err.message || 'Action failed' };
+  }
+}
+
+export async function toggleChatMute(chatId, mute = true) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  let targetPeer = await resolveInputPeer(chatId);
+  if (targetPeer) {
+    try {
+      targetPeer = getInputPeer(targetPeer);
+    } catch (e) {}
+  }
+
+  if (!targetPeer || typeof targetPeer === 'string' || !targetPeer.className?.startsWith('Input')) {
+    try {
+      const ent = await client.getInputEntity(chatId);
+      targetPeer = getInputPeer(ent);
+    } catch (e) {
+      try {
+        const ent = await client.getInputEntity(BigInt(chatId));
+        targetPeer = getInputPeer(ent);
+      } catch (e2) {}
+    }
+  }
+
+  const req = new Api.account.UpdateNotifySettings({
+    peer: new Api.InputNotifyPeer({ peer: targetPeer }),
+    settings: new Api.InputPeerNotifySettings({
+      muteUntil: mute ? 2147483647 : 0,
+      silent: Boolean(mute),
+    }),
+  });
+
+  await client.invoke(req);
+  return { success: true, isMuted: Boolean(mute) };
+}
+
 export async function sendPeerReaction(peerId, messageId, emoji) {
   const client = await getClient();
   const isAuth = await client.isUserAuthorized();
@@ -1278,6 +1624,128 @@ export async function sendPeerReaction(peerId, messageId, emoji) {
   } catch (err) {
     console.error('[MTProto] Error sending reaction:', err.message);
     throw err;
+  }
+}
+
+export async function getMessageReactionsList(peerId, messageId, limit = 50) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  const targetPeer = await resolveInputPeer(peerId);
+  const msgIdNum = parseInt(messageId, 10);
+  if (isNaN(msgIdNum)) {
+    throw new Error('Invalid message ID');
+  }
+
+  try {
+    const res = await client.invoke(
+      new Api.messages.GetMessageReactionsList({
+        peer: targetPeer,
+        id: msgIdNum,
+        limit: Math.min(limit, 100),
+      })
+    );
+
+    if (res.users && Array.isArray(res.users)) {
+      for (const u of res.users) {
+        if (u && u.id) {
+          const uIdStr = u.id.toString();
+          peerEntityCache.set(uIdStr, u);
+          if (u.photo?.strippedThumb) {
+            try {
+              const tb = strippedPhotoToJpg(u.photo.strippedThumb);
+              if (tb && tb.length > 0) thumbMemoryCache.set(uIdStr, tb);
+            } catch (e) {}
+          }
+        }
+      }
+    }
+    if (res.chats && Array.isArray(res.chats)) {
+      for (const c of res.chats) {
+        if (c && c.id) {
+          const cIdStr = c.id.toString();
+          peerEntityCache.set(cIdStr, c);
+          peerEntityCache.set(`-${cIdStr}`, c);
+          peerEntityCache.set(`-100${cIdStr}`, c);
+        }
+      }
+    }
+
+    const userMap = new Map();
+    if (Array.isArray(res.users)) {
+      for (const u of res.users) {
+        const idStr = u.id?.toString();
+        const firstName = u.firstName || '';
+        const lastName = u.lastName || '';
+        const name = [firstName, lastName].filter(Boolean).join(' ') || 'Telegram User';
+        userMap.set(idStr, {
+          id: idStr,
+          name,
+          username: u.username || '',
+          avatar: `/api/telegram/avatar?id=${encodeURIComponent(idStr)}`,
+          isSelf: Boolean(u.self),
+        });
+      }
+    }
+
+    const chatMap = new Map();
+    if (Array.isArray(res.chats)) {
+      for (const c of res.chats) {
+        const idStr = c.id?.toString();
+        chatMap.set(idStr, {
+          id: idStr,
+          name: c.title || 'Telegram Group',
+          avatar: `/api/telegram/avatar?id=${encodeURIComponent(idStr)}`,
+        });
+      }
+    }
+
+    const reactions = (res.reactions || []).map((r) => {
+      const pId = r.peerId ? extractPeerId(r.peerId) : null;
+      let peerInfo = pId ? (userMap.get(pId) || chatMap.get(pId)) : null;
+      if (!peerInfo && pId) {
+        const cached = peerEntityCache.get(pId);
+        if (cached) {
+          peerInfo = {
+            id: pId,
+            name: cached.title || [cached.firstName, cached.lastName].filter(Boolean).join(' ') || 'Telegram User',
+            username: cached.username || '',
+            avatar: `/api/telegram/avatar?id=${encodeURIComponent(pId)}`,
+          };
+        }
+      }
+
+      let emoji = '👍';
+      if (r.reaction && r.reaction.emoticon) {
+        emoji = r.reaction.emoticon;
+      } else if (typeof r.reaction === 'string') {
+        emoji = r.reaction;
+      }
+
+      return {
+        peerId: pId,
+        user: peerInfo || {
+          id: pId || '',
+          name: 'Telegram User',
+          avatar: pId ? `/api/telegram/avatar?id=${encodeURIComponent(pId)}` : undefined,
+        },
+        emoji,
+        date: r.date ? r.date * 1000 : Date.now(),
+        isSelf: Boolean(r.my),
+      };
+    });
+
+    return {
+      count: res.count || reactions.length,
+      reactions,
+      nextOffset: res.nextOffset || null,
+    };
+  } catch (err) {
+    console.warn('[MTProto Backend] getMessageReactionsList error:', err.message);
+    return { count: 0, reactions: [], nextOffset: null };
   }
 }
 
@@ -1355,6 +1823,49 @@ export async function pinPeerMessage(peerId, messageId, silent = false) {
   return { success: true, id: msgIdNum };
 }
 
+export async function forwardPeerMessages(fromChatId, toChatId, messageIds, options = {}) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  let fromPeer = peerEntityCache.get(fromChatId?.toString());
+  if (!fromPeer) {
+    try {
+      fromPeer = await client.getInputEntity(fromChatId);
+    } catch (e) {
+      fromPeer = fromChatId;
+    }
+  }
+
+  let toPeer = peerEntityCache.get(toChatId?.toString());
+  if (!toPeer) {
+    try {
+      toPeer = await client.getInputEntity(toChatId);
+    } catch (e) {
+      toPeer = toChatId;
+    }
+  }
+
+  const ids = (Array.isArray(messageIds) ? messageIds : [messageIds])
+    .map((id) => parseInt(id, 10))
+    .filter((id) => !isNaN(id));
+
+  if (ids.length === 0) {
+    throw new Error('No valid messageIds provided to forward');
+  }
+
+  const result = await client.forwardMessages(toPeer, {
+    messages: ids,
+    fromPeer: fromPeer,
+    silent: Boolean(options.silent),
+    dropAuthor: Boolean(options.dropAuthor),
+  });
+
+  return { success: true, count: ids.length, result: Boolean(result) };
+}
+
 
 // Document Cache for MTProto Documents (GIFs, Stickers, Videos)
 const documentCache = new Map(); // idStr -> doc
@@ -1366,6 +1877,8 @@ export function cacheDocument(doc) {
     documentCache.set(idStr, doc);
   }
 }
+
+const docThumbCache = new Map(); // `${idStr}_${thumb}` -> { buffer, mimeType }
 
 export async function downloadDocumentMedia(id, options = {}) {
   const client = await getClient();
@@ -1379,9 +1892,31 @@ export async function downloadDocumentMedia(id, options = {}) {
   let mimeType = options.mimeType || doc.mimeType || 'application/octet-stream';
 
   if (options.thumb) {
+    const cacheKey = `${idStr}_${options.thumb}`;
+    const cached = docThumbCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const thumbs = doc.thumbs || [];
     const normalThumbs = thumbs.filter((t) => t.className === 'PhotoSize' || t._ === 'photoSize');
     const videoThumbs = doc.videoThumbs || [];
+
+    // Check stripped thumbnail first for 0ms conversion
+    const stripped = thumbs.find((t) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize');
+    if (stripped?.bytes && strippedPhotoToJpg) {
+      try {
+        const jpgBuf = strippedPhotoToJpg(stripped.bytes);
+        if (jpgBuf) {
+          buffer = Buffer.from(jpgBuf);
+          mimeType = 'image/jpeg';
+          const resObj = { buffer, mimeType };
+          if (docThumbCache.size > 2000) docThumbCache.clear();
+          docThumbCache.set(cacheKey, resObj);
+          return resObj;
+        }
+      } catch (e) {}
+    }
 
     if (normalThumbs.length > 0) {
       const best = normalThumbs[normalThumbs.length - 1];
@@ -1390,23 +1925,18 @@ export async function downloadDocumentMedia(id, options = {}) {
         mimeType = 'image/jpeg';
       } catch (e) {}
     }
-    if (!buffer && strippedPhotoToJpg) {
-      const stripped = thumbs.find((t) => t._ === 'photoStrippedSize' || t.className === 'PhotoStrippedSize');
-      if (stripped?.bytes) {
-        try {
-          const jpgBuf = strippedPhotoToJpg(stripped.bytes);
-          if (jpgBuf) {
-            buffer = Buffer.from(jpgBuf);
-            mimeType = 'image/jpeg';
-          }
-        } catch (e) {}
-      }
-    }
     if (!buffer && videoThumbs.length > 0) {
       try {
         buffer = await client.downloadMedia(doc, { thumb: videoThumbs[0].type });
         mimeType = 'image/jpeg';
       } catch (e) {}
+    }
+
+    if (buffer) {
+      const resObj = { buffer, mimeType };
+      if (docThumbCache.size > 2000) docThumbCache.clear();
+      docThumbCache.set(cacheKey, resObj);
+      return resObj;
     }
   }
 
@@ -1433,9 +1963,27 @@ export async function downloadMessageMedia(chatId, messageId, options = {}) {
     return mediaThumbCache.get(cacheKey);
   }
 
-  // Check persistent disk cache for full video / audio / document media
+  // Disk cache paths for thumbnails and full media
+  const diskThumbBinPath = path.join(MEDIA_CACHE_DIR, `${cleanChat}_${cleanMsg}_thumb.bin`);
+  const diskThumbMetaPath = path.join(MEDIA_CACHE_DIR, `${cleanChat}_${cleanMsg}_thumb.json`);
   const diskBinPath = path.join(MEDIA_CACHE_DIR, `${cleanChat}_${cleanMsg}.bin`);
   const diskMetaPath = path.join(MEDIA_CACHE_DIR, `${cleanChat}_${cleanMsg}.json`);
+
+  if (isThumb && fs.existsSync(diskThumbBinPath) && fs.existsSync(diskThumbMetaPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(diskThumbMetaPath, 'utf-8'));
+      const buffer = fs.readFileSync(diskThumbBinPath);
+      if (buffer && buffer.length > 0) {
+        const cached = {
+          buffer,
+          mimeType: meta.mimeType || 'image/jpeg',
+        };
+        mediaThumbCache.set(cacheKey, cached);
+        return cached;
+      }
+    } catch (e) {}
+  }
+
   if (!isThumb && fs.existsSync(diskBinPath) && fs.existsSync(diskMetaPath)) {
     try {
       const meta = JSON.parse(fs.readFileSync(diskMetaPath, 'utf-8'));
@@ -1522,9 +2070,19 @@ export async function downloadMessageMedia(chatId, messageId, options = {}) {
           }
         } else if (isPhoto) {
           try {
-            buffer = await client.downloadMedia(media, { thumb: 'm' });
+            const photoSizes = media.photo?.sizes || [];
+            const preferredSize = photoSizes.find((s) => s.type === 'x') ||
+                                  photoSizes.find((s) => s.type === 'm') ||
+                                  photoSizes.find((s) => s.className === 'PhotoSize' || s._ === 'photoSize');
+            const thumbType = preferredSize ? preferredSize.type : 'm';
+            buffer = await client.downloadMedia(media, { thumb: thumbType });
             mimeType = 'image/jpeg';
-          } catch (e) {}
+          } catch (e) {
+            try {
+              buffer = await client.downloadMedia(media, { thumb: 'm' });
+              mimeType = 'image/jpeg';
+            } catch (e2) {}
+          }
         }
       }
 
@@ -1554,11 +2112,16 @@ export async function downloadMessageMedia(chatId, messageId, options = {}) {
       };
 
       if (isThumb) {
-        if (mediaThumbCache.size > 200) {
+        if (mediaThumbCache.size > 1000) {
           const first = mediaThumbCache.keys().next().value;
           mediaThumbCache.delete(first);
         }
         mediaThumbCache.set(cacheKey, result);
+        // Persist thumbnail to disk cache so future loads across reloads serve in 0ms!
+        try {
+          fs.writeFileSync(diskThumbBinPath, buffer);
+          fs.writeFileSync(diskThumbMetaPath, JSON.stringify({ mimeType, size: buffer.length }));
+        } catch (e) {}
       } else {
         // Cache full media to disk asynchronously so subsequent range requests serve in 0ms!
         try {
@@ -2295,46 +2858,425 @@ export async function searchGlobalPeers(query, limit = 20) {
 }
 
 /**
- * Join a public channel or group
+ * Helper with timeout to prevent hanging on MTProto media downloads
  */
-export async function joinChatOrChannel(peerId) {
+function withTimeoutMs(promise, ms = 3000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Media download timeout')), ms)),
+  ]);
+}
+
+/**
+ * Preview/check a chat invite link or public username without joining.
+ */
+export async function checkChatInvitePreview(hashOrUsername) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    return { success: false, error: 'Not authorized' };
+  }
+
+  const raw = String(hashOrUsername || '').trim();
+  if (!raw) return { success: false, error: 'Empty hash or username' };
+
+  console.log(`[MTProto] Checking invite / preview for: "${raw}"`);
+
+  // Determine if it's an invite hash
+  let inviteHash = '';
+  if (raw.startsWith('+')) {
+    inviteHash = raw.slice(1);
+  } else if (raw.startsWith('joinchat/')) {
+    inviteHash = raw.slice(9);
+  } else if (raw.includes('t.me/+')) {
+    inviteHash = raw.split('t.me/+')[1]?.split(/[?#/]/)[0] || '';
+  } else if (raw.includes('t.me/joinchat/')) {
+    inviteHash = raw.split('t.me/joinchat/')[1]?.split(/[?#/]/)[0] || '';
+  } else if (!raw.startsWith('@') && (raw.includes('-') || raw.includes('_') || raw.length >= 10)) {
+    inviteHash = raw;
+  }
+
+  if (inviteHash) {
+    const cleanHash = inviteHash.replace(/^(\+|joinchat\/)/, '').trim();
+    try {
+      const checkRes = await client.invoke(new Api.messages.CheckChatInvite({ hash: cleanHash }));
+      // ChatInviteAlready — user already joined
+      if (checkRes?.chat) {
+        const ch = checkRes.chat;
+        const idStr = ch.id?.toString();
+        let photo = '';
+        try {
+          const buf = await withTimeoutMs(client.downloadProfilePhoto(ch, { isBig: false }), 2500);
+          if (buf && buf.length > 0) {
+            photo = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+          }
+        } catch (photoErr) {
+          console.log('[MTProto] Preview photo download skipped/timed out');
+        }
+        return {
+          success: true,
+          alreadyJoined: true,
+          chatId: idStr,
+          title: ch.title || '',
+          about: '',
+          participantsCount: ch.participantsCount || 0,
+          photo,
+          isChannel: ch.broadcast === true,
+          isGroup: !ch.broadcast,
+        };
+      }
+      // ChatInvite — not joined yet
+      if (checkRes?.title) {
+        let photo = '';
+        if (checkRes.photo && checkRes.photo.className !== 'ChatPhotoEmpty') {
+          try {
+            const buf = await withTimeoutMs(client.downloadMedia(checkRes.photo, {}), 2500);
+            if (buf && buf.length > 0) {
+              photo = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+            }
+          } catch (mediaErr) {
+            console.log('[MTProto] Preview media download skipped/timed out');
+          }
+        }
+        return {
+          success: true,
+          alreadyJoined: false,
+          title: checkRes.title || '',
+          about: checkRes.about || '',
+          participantsCount: checkRes.participantsCount || 0,
+          photo,
+          isChannel: checkRes.broadcast === true || checkRes.channel === true,
+          isGroup: !checkRes.broadcast && !checkRes.channel,
+        };
+      }
+      return { success: false, error: 'Could not parse invite info' };
+    } catch (err) {
+      const errMsg = err?.errorMessage || err?.message || '';
+      console.warn(`[MTProto] CheckChatInvite error for hash "${cleanHash}":`, errMsg);
+      if (errMsg.includes('INVITE_HASH_EXPIRED')) return { success: false, error: 'This invite link has expired.' };
+      if (!errMsg.includes('INVITE_HASH_INVALID')) {
+        return { success: false, error: errMsg };
+      }
+      // If INVITE_HASH_INVALID, fall through and try as username/entity
+    }
+  }
+
+  // Public username / entity lookup
+  const clean = raw.replace(/^@+/, '').replace(/^https?:\/\/t\.me\//, '').replace(/^\/+/, '').split(/[?#/]/)[0].trim();
+  try {
+    const entity = await client.getEntity(clean);
+    if (entity) {
+      const idStr = entity.id?.toString();
+      let photo = '';
+      try {
+        const buf = await withTimeoutMs(client.downloadProfilePhoto(entity, { isBig: false }), 2500);
+        if (buf && buf.length > 0) {
+          photo = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+        }
+      } catch (photoErr) {
+        console.log('[MTProto] Profile photo download skipped/timed out');
+      }
+
+      let alreadyJoined = false;
+      if (entity.className === 'Channel' || entity.className === 'Chat') {
+        alreadyJoined = entity.left === false || entity.left === undefined;
+      }
+      let about = '';
+      let participantsCount = entity.participantsCount || 0;
+      try {
+        if (entity.className === 'Channel') {
+          const full = await client.invoke(new Api.channels.GetFullChannel({ channel: entity }));
+          about = full?.fullChat?.about || '';
+          if (full?.fullChat?.participantsCount) {
+            participantsCount = full.fullChat.participantsCount;
+          }
+        }
+      } catch {}
+
+      return {
+        success: true,
+        alreadyJoined,
+        chatId: idStr,
+        title: entity.title || entity.firstName || clean,
+        about,
+        participantsCount,
+        photo,
+        isChannel: entity.broadcast === true,
+        isGroup: entity.className === 'Chat' || (entity.className === 'Channel' && !entity.broadcast),
+      };
+    }
+  } catch (entErr) {
+    console.warn(`[MTProto] getEntity failed for "${clean}":`, entErr?.message);
+  }
+
+  // Last attempt: try CheckChatInvite if not tried yet
+  if (!inviteHash && clean) {
+    try {
+      const checkRes = await client.invoke(new Api.messages.CheckChatInvite({ hash: clean }));
+      if (checkRes?.title) {
+        return {
+          success: true,
+          alreadyJoined: false,
+          title: checkRes.title || '',
+          about: checkRes.about || '',
+          participantsCount: checkRes.participantsCount || 0,
+          isChannel: checkRes.broadcast === true || checkRes.channel === true,
+          isGroup: !checkRes.broadcast && !checkRes.channel,
+        };
+      }
+    } catch {}
+  }
+
+  return { success: false, error: 'Could not find chat or channel' };
+}
+
+/**
+ * Join a public channel/group or private invite link
+ */
+export async function joinChatOrChannel(peerIdOrHash) {
   const client = await getClient();
   const isAuth = await client.isUserAuthorized();
   if (!isAuth) {
     throw new Error('Not authorized with Telegram MTProto');
   }
 
-  let entity = peerEntityCache.get(String(peerId));
-  if (!entity) entity = peerEntityCache.get(`-100${peerId}`);
-  if (!entity) entity = peerEntityCache.get(`-${peerId}`);
-  if (!entity) {
+  const rawStr = String(peerIdOrHash || '').trim();
+  if (!rawStr) {
+    throw new Error('Chat ID or invite link is required');
+  }
+
+  // 1. Check if input is a Telegram private invite link or invite hash
+  // e.g. "ja4W2WsO-q9iZjdl", "+ja4W2WsO-q9iZjdl", "joinchat/...", "https://t.me/+..."
+  let inviteHash = '';
+  if (rawStr.startsWith('+')) {
+    inviteHash = rawStr.slice(1);
+  } else if (rawStr.startsWith('joinchat/')) {
+    inviteHash = rawStr.slice(9);
+  } else if (rawStr.includes('t.me/+')) {
+    inviteHash = rawStr.split('t.me/+')[1]?.split(/[?#/]/)[0] || '';
+  } else if (rawStr.includes('t.me/joinchat/')) {
+    inviteHash = rawStr.split('t.me/joinchat/')[1]?.split(/[?#/]/)[0] || '';
+  } else if (!/^-?\d+$/.test(rawStr) && !peerEntityCache.has(rawStr) && (rawStr.includes('-') || rawStr.includes('_') || rawStr.length >= 16)) {
+    inviteHash = rawStr;
+  }
+
+  if (inviteHash) {
+    const cleanHash = inviteHash.replace(/^(\+|joinchat\/)/, '').trim();
     try {
-      entity = await client.getEntity(peerId);
-    } catch (e) {
-      try {
-        entity = await client.getEntity(BigInt(peerId));
-      } catch (e2) {
-        throw new Error(`Could not resolve entity for chat ${peerId}`);
+      console.log(`[MTProto] Attempting to import chat invite hash: ${cleanHash}`);
+      const updates = await client.invoke(new Api.messages.ImportChatInvite({ hash: cleanHash }));
+      let joinedChat = null;
+      if (updates?.chats && Array.isArray(updates.chats) && updates.chats.length > 0) {
+        joinedChat = updates.chats[0];
+        const idStr = joinedChat.id.toString();
+        peerEntityCache.set(idStr, joinedChat);
+        peerEntityCache.set(`-100${idStr}`, joinedChat);
+        peerEntityCache.set(`-${idStr}`, joinedChat);
+      }
+      return { success: true, chat: joinedChat ? { id: joinedChat.id.toString(), title: joinedChat.title } : undefined };
+    } catch (invErr) {
+      const errMsg = invErr?.errorMessage || invErr?.message || '';
+      console.warn(`[MTProto] ImportChatInvite error for hash ${cleanHash}:`, errMsg);
+
+      if (errMsg.includes('USER_ALREADY_PARTICIPANT')) {
+        try {
+          const checkRes = await client.invoke(new Api.messages.CheckChatInvite({ hash: cleanHash }));
+          if (checkRes?.chat) {
+            const ch = checkRes.chat;
+            const idStr = ch.id.toString();
+            peerEntityCache.set(idStr, ch);
+            peerEntityCache.set(`-100${idStr}`, ch);
+            return { success: true, alreadyJoined: true, chat: { id: idStr, title: ch.title } };
+          }
+        } catch (cErr) {}
+        return { success: true, alreadyJoined: true };
+      }
+      if (errMsg.includes('INVITE_REQUEST_SENT')) {
+        return { success: true, requestSent: true, message: 'Join request sent to group admins.' };
+      }
+      if (errMsg.includes('INVITE_HASH_EXPIRED')) {
+        return { success: false, error: 'This invite link has expired.' };
+      }
+      if (!errMsg.includes('INVITE_HASH_INVALID')) {
+        return { success: false, error: errMsg };
       }
     }
   }
 
-  try {
-    if (entity.className === 'Channel') {
-      await client.invoke(new Api.channels.JoinChannel({ channel: entity }));
-      console.log(`[MTProto] Joined channel ${peerId}`);
-      return { success: true };
-    } else if (entity.className === 'Chat') {
-      await client.invoke(new Api.messages.AddChatUser({ chatId: entity.id, userId: 'me', fwdLimit: 100 }));
-      console.log(`[MTProto] Joined chat ${peerId}`);
-      return { success: true };
-    } else {
-      return { success: true };
+  // 2. Normal public username or numeric ID lookup
+  let entity = peerEntityCache.get(rawStr);
+  if (!entity) entity = peerEntityCache.get(`-100${rawStr}`);
+  if (!entity) entity = peerEntityCache.get(`-${rawStr}`);
+  if (!entity) {
+    const clean = rawStr.replace(/^@+/, '').trim();
+    try {
+      entity = await client.getEntity(clean);
+    } catch (e) {
+      try {
+        entity = await client.getEntity(BigInt(clean));
+      } catch (e2) {
+        // As a last resort, try ImportChatInvite in case the clean string is a hash without dashes
+        try {
+          const updates = await client.invoke(new Api.messages.ImportChatInvite({ hash: clean }));
+          if (updates?.chats?.length > 0) {
+            const ch = updates.chats[0];
+            peerEntityCache.set(ch.id.toString(), ch);
+            return { success: true, chat: { id: ch.id.toString(), title: ch.title } };
+          }
+        } catch (invFinalErr) {
+          const m = invFinalErr?.errorMessage || invFinalErr?.message || '';
+          if (m.includes('USER_ALREADY_PARTICIPANT')) return { success: true, alreadyJoined: true };
+          if (m.includes('INVITE_REQUEST_SENT')) return { success: true, requestSent: true, message: 'Join request sent to group admins.' };
+        }
+        return { success: false, error: `Could not resolve chat or invite link for "${peerIdOrHash}"` };
+      }
     }
-  } catch (err) {
-    console.error(`[MTProto] Join error for ${peerId}:`, err.message);
-    throw err;
   }
+
+  if (entity) {
+    const idStr = entity.id?.toString();
+    if (idStr) {
+      peerEntityCache.set(idStr, entity);
+      peerEntityCache.set(`-100${idStr}`, entity);
+    }
+
+    try {
+      if (entity.className === 'Channel') {
+        await client.invoke(new Api.channels.JoinChannel({ channel: entity }));
+        console.log(`[MTProto] Joined channel ${peerIdOrHash}`);
+        return { success: true, chat: { id: idStr, title: entity.title } };
+      } else if (entity.className === 'Chat') {
+        await client.invoke(new Api.messages.AddChatUser({ chatId: entity.id, userId: 'me', fwdLimit: 100 }));
+        console.log(`[MTProto] Joined chat ${peerIdOrHash}`);
+        return { success: true, chat: { id: idStr, title: entity.title } };
+      } else {
+        return { success: true };
+      }
+    } catch (joinErr) {
+      const errMsg = joinErr?.errorMessage || joinErr?.message || '';
+      if (errMsg.includes('USER_ALREADY_PARTICIPANT')) {
+        return { success: true, alreadyJoined: true, chat: { id: idStr, title: entity.title } };
+      }
+      console.error(`[MTProto] Join error for ${peerIdOrHash}:`, errMsg);
+      return { success: false, error: errMsg };
+    }
+  }
+
+  return { success: false, error: 'Could not find chat' };
+}
+
+/**
+ * Add a bot to a group or channel, and optionally send a start parameter command
+ */
+export async function addBotToChat(chatId, botUsernameOrId, startParam) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  // 1. Resolve bot entity
+  const cleanBot = String(botUsernameOrId).replace(/^@+/, '').trim();
+  let botEntity = peerEntityCache.get(cleanBot) || peerEntityCache.get(String(botUsernameOrId));
+  if (!botEntity) {
+    try {
+      botEntity = await client.getEntity(cleanBot);
+    } catch (e) {
+      try {
+        botEntity = await client.getEntity(botUsernameOrId);
+      } catch (e2) {
+        throw new Error(`Could not find bot @${cleanBot}`);
+      }
+    }
+  }
+
+  // 2. Resolve target chat entity
+  let chatEntity = peerEntityCache.get(String(chatId));
+  if (!chatEntity) chatEntity = peerEntityCache.get(`-100${chatId}`);
+  if (!chatEntity) chatEntity = peerEntityCache.get(`-${chatId}`);
+  if (!chatEntity) {
+    try {
+      chatEntity = await client.getEntity(chatId);
+    } catch (e) {
+      try {
+        chatEntity = await client.getEntity(BigInt(chatId));
+      } catch (e2) {
+        throw new Error(`Could not resolve group ${chatId}`);
+      }
+    }
+  }
+
+  // 3. Add bot to chat (with fallback to administrator if channel or requires admin rights)
+  try {
+    if (chatEntity.className === 'Channel') {
+      try {
+        await client.invoke(
+          new Api.channels.InviteToChannel({
+            channel: chatEntity,
+            users: [botEntity],
+          })
+        );
+      } catch (inviteErr) {
+        const errMsg = String(inviteErr.message || '');
+        if (
+          errMsg.includes('USER_BOT_REQUIRED') ||
+          errMsg.includes('CHAT_ADMIN_REQUIRED') ||
+          errMsg.includes('BOT_METHOD_INVALID') ||
+          chatEntity.broadcast
+        ) {
+          const adminRights = new Api.ChatAdminRights({
+            changeInfo: true,
+            postMessages: true,
+            editMessages: true,
+            deleteMessages: true,
+            banUsers: true,
+            inviteUsers: true,
+            pinMessages: true,
+            addAdmins: false,
+            anonymous: false,
+            manageCall: true,
+            other: true,
+          });
+          await client.invoke(
+            new Api.channels.EditAdmin({
+              channel: chatEntity,
+              userId: botEntity,
+              adminRights,
+              rank: 'bot',
+            })
+          );
+        } else {
+          throw inviteErr;
+        }
+      }
+    } else if (chatEntity.className === 'Chat') {
+      await client.invoke(
+        new Api.messages.AddChatUser({
+          chatId: chatEntity.id,
+          userId: botEntity,
+          fwdLimit: 100,
+        })
+      );
+    } else {
+      throw new Error('Target is not a group or channel');
+    }
+  } catch (addErr) {
+    console.error(`[MTProto] Failed to add bot @${cleanBot} to chat ${chatId}:`, addErr.message);
+    throw addErr;
+  }
+
+  // 4. Send start parameter command if specified (e.g. /start botstart)
+  if (startParam) {
+    try {
+      const botUname = botEntity.username ? `@${botEntity.username}` : '';
+      const startCmd = `/start${botUname ? `${botUname} ` : ' '}${startParam}`.trim();
+      await sendMessage(chatId, startCmd);
+    } catch (msgErr) {
+      console.warn('[addBotToChat] Failed to send start parameter message:', msgErr.message);
+    }
+  }
+
+  return { success: true };
 }
 
 /**
@@ -2872,14 +3814,18 @@ export async function getStickerSet(stickerset) {
   const client = await getClient();
   try {
     let inputSet;
-    if (stickerset.id && stickerset.accessHash) {
+    const hasId = stickerset.id && String(stickerset.id).trim() && stickerset.id !== 'undefined' && stickerset.id !== 'null';
+    const hasHash = stickerset.accessHash && String(stickerset.accessHash).trim() && stickerset.accessHash !== 'undefined' && stickerset.accessHash !== 'null';
+    const hasShortName = stickerset.shortName && String(stickerset.shortName).trim() && stickerset.shortName !== 'undefined' && stickerset.shortName !== 'null';
+
+    if (hasId && hasHash) {
       inputSet = new Api.InputStickerSetID({
         id: BigInt(stickerset.id),
         accessHash: BigInt(stickerset.accessHash),
       });
-    } else if (stickerset.shortName) {
+    } else if (hasShortName) {
       inputSet = new Api.InputStickerSetShortName({
-        shortName: stickerset.shortName,
+        shortName: String(stickerset.shortName).trim(),
       });
     } else {
       return null;
@@ -2960,14 +3906,18 @@ export async function installStickerSet(stickerset) {
   const client = await getClient();
   try {
     let inputSet;
-    if (stickerset.id && stickerset.accessHash) {
+    const hasId = stickerset.id && String(stickerset.id).trim() && stickerset.id !== 'undefined' && stickerset.id !== 'null';
+    const hasHash = stickerset.accessHash && String(stickerset.accessHash).trim() && stickerset.accessHash !== 'undefined' && stickerset.accessHash !== 'null';
+    const hasShortName = stickerset.shortName && String(stickerset.shortName).trim() && stickerset.shortName !== 'undefined' && stickerset.shortName !== 'null';
+
+    if (hasId && hasHash) {
       inputSet = new Api.InputStickerSetID({
         id: BigInt(stickerset.id),
         accessHash: BigInt(stickerset.accessHash),
       });
-    } else if (stickerset.shortName) {
+    } else if (hasShortName) {
       inputSet = new Api.InputStickerSetShortName({
-        shortName: stickerset.shortName,
+        shortName: String(stickerset.shortName).trim(),
       });
     } else {
       return false;
@@ -2982,6 +3932,9 @@ export async function installStickerSet(stickerset) {
     return true;
   } catch (e) {
     console.warn('[MTProto Backend] installStickerSet error:', e.message);
+    if (e.message && (e.message.includes('ALREADY') || e.message.includes('installed'))) {
+      return true;
+    }
     return false;
   }
 }
@@ -3187,9 +4140,12 @@ export function formatBackendMessage(m, chatId) {
       const rawDuration = videoAttr?.duration ?? (isVoice || isAudio ? attrs.find((a) => a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio')?.duration : undefined);
       if (rawDuration != null) {
         const totalSecs = Math.round(Number(rawDuration));
-        const mins = Math.floor(totalSecs / 60);
+        const hrs = Math.floor(totalSecs / 3600);
+        const mins = Math.floor((totalSecs % 3600) / 60);
         const secs = totalSecs % 60;
-        durationStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+        durationStr = hrs > 0
+          ? `${hrs}:${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`
+          : `${mins}:${secs < 10 ? '0' : ''}${secs}`;
       }
 
       if (m.media.document?.thumbs) {
@@ -3213,6 +4169,34 @@ export function formatBackendMessage(m, chatId) {
       if (filenameAttr) fileName = filenameAttr.fileName;
       fileSize = m.media.document?.size ? formatBytes(Number(m.media.document.size)) : null;
     }
+  }
+
+  let forwardFrom = undefined;
+  if (m.fwdFrom) {
+    let fromPeerId = null;
+    if (m.fwdFrom.fromId) {
+      fromPeerId = extractPeerId(m.fwdFrom.fromId);
+    }
+    const fwdEntity = fromPeerId ? peerEntityCache.get(String(fromPeerId)) : null;
+    let fwdName = '';
+    if (fwdEntity) {
+      fwdName = fwdEntity.title || [fwdEntity.firstName, fwdEntity.lastName].filter(Boolean).join(' ');
+    }
+    if (!fwdName && m.fwdFrom.fromName) {
+      fwdName = m.fwdFrom.fromName;
+    }
+    if (!fwdName && m.fwdFrom.postAuthor) {
+      fwdName = m.fwdFrom.postAuthor;
+    }
+    if (!fwdName) {
+      fwdName = 'Forwarded message';
+    }
+    forwardFrom = {
+      id: fromPeerId ? String(fromPeerId) : undefined,
+      name: fwdName,
+      avatar: fromPeerId ? `/api/telegram/avatar?id=${encodeURIComponent(String(fromPeerId))}` : undefined,
+      isChannel: Boolean(m.fwdFrom.channelPost),
+    };
   }
 
   let reactions = [];
@@ -3247,6 +4231,7 @@ export function formatBackendMessage(m, chatId) {
     fileName,
     fileSize,
     duration: durationStr,
+    forwardFrom,
     isRound,
     isSticker,
     isGif,
@@ -3459,6 +4444,26 @@ export async function streamMediaResponse(chatId, messageId, req, res) {
 
   const isTranscodeParam = req.url.includes('transcode=1') || req.url.includes('compat=1');
   const startSec = parseFloat(req.url.match(/[?&](?:ss|start|t)=(\d+(?:\.\d+)?)/)?.[1] || '0');
+
+  // 0. Fast-path: Check persistent disk cache for already downloaded media
+  if (fs.existsSync(diskBinPath) && fs.existsSync(diskMetaPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(diskMetaPath, 'utf-8'));
+      const mimeType = meta.mimeType || 'application/octet-stream';
+      // If photo or non-video document, serve immediately from disk (0ms, no MTProto RPC)
+      if (!isTranscodeParam && targetAudioTrack === 0 && (mimeType.startsWith('image/') || (!mimeType.startsWith('video/') && !isTranscodeParam))) {
+        const buffer = fs.readFileSync(diskBinPath);
+        if (buffer && buffer.length > 0) {
+          res.statusCode = 200;
+          res.setHeader('Accept-Ranges', 'bytes');
+          res.setHeader('Content-Length', buffer.length);
+          res.setHeader('Content-Type', mimeType);
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          return res.end(buffer);
+        }
+      }
+    } catch (e) {}
+  }
 
   // 1. Fetch message metadata from Telegram MTProto
   const client = await getClient();
@@ -3939,6 +4944,7 @@ export async function getMediaAudioTracks(chatId, messageId) {
     } catch (e) {}
   }
 
+  let mediaDuration = undefined;
   if (!headerBuf) {
     try {
       const client = await getClient();
@@ -3947,6 +4953,11 @@ export async function getMediaAudioTracks(chatId, messageId) {
       const msg = messages?.[0];
       const doc = msg?.media?.document;
       if (doc) {
+        const videoAttr = (doc.attributes || []).find((a) => a._ === 'documentAttributeVideo' || a.className === 'DocumentAttributeVideo');
+        const audioAttr = (doc.attributes || []).find((a) => a._ === 'documentAttributeAudio' || a.className === 'DocumentAttributeAudio');
+        if (videoAttr?.duration) mediaDuration = Number(videoAttr.duration);
+        else if (audioAttr?.duration) mediaDuration = Number(audioAttr.duration);
+
         const loc = new Api.InputDocumentFileLocation({
           id: doc.id,
           accessHash: doc.accessHash,
@@ -3970,7 +4981,7 @@ export async function getMediaAudioTracks(chatId, messageId) {
   }
 
   const tracks = headerBuf ? parseAudioTracksFromBuffer(headerBuf) : [];
-  const result = { tracks };
+  const result = { tracks, duration: mediaDuration };
   mediaTracksCache.set(cacheKey, result);
   return result;
 }

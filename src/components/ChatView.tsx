@@ -40,12 +40,21 @@ import {
   Download,
   Maximize2,
   Package,
+  ExternalLink,
+  CornerUpRight,
+  LayoutGrid,
+  Bell,
+  BellOff,
+  Terminal,
+  Edit3,
+  Forward,
 } from 'lucide-react';
-import { Chat, Message, Reaction, Attachment } from '../types';
+import { Chat, Message, Reaction, Attachment, TelegramKeyboardButton, TelegramReplyMarkup } from '../types';
 import { AudioPlayer } from './AudioPlayer';
 import { Avatar } from './Avatar';
 import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
 import { UserProfileModal, UserProfileDetails } from './UserProfileModal';
+import { ChatPickerModal } from './ChatPickerModal';
 import { mediaService } from '../services/mediaService';
 import { downloadFileToDevice } from '../utils/fileDownloader';
 import { getAvatarColor } from '../utils/telegramAdapter';
@@ -61,6 +70,7 @@ import {
 import { ChatCustomizationModal } from './ChatCustomizationModal';
 import { ReactionDetailsModal } from './ReactionDetailsModal';
 import { showToast } from './Toast';
+import { isTelegramUrl } from '../utils/telegramLinks';
 import { telegramApi, resolveApiUrl, isAndroidApp, OnlineGifItem, TelegramStickerSet, TelegramStickerItem } from '../services/telegramApi';
 import { stickerService, CustomSticker } from '../services/stickerService';
 
@@ -77,18 +87,22 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
   messageId,
   onOpenMediaModal,
 }) => {
+  const thumbApiUrl = !isAndroidApp()
+    ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}&thumb=1`)
+    : '';
+
   const [mediaUrl, setMediaUrl] = useState<string>(() => {
     const cached = mediaService.get(chatId, messageId);
     if (cached) return cached;
     if (attachment.url && !attachment.url.includes('/api/telegram/media')) return attachment.url;
-    return '';
+    return thumbApiUrl;
   });
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
-    if (mediaUrl) return;
+    if (mediaUrl && !isAndroidApp()) return;
     let mounted = true;
     const unsub = mediaService.subscribe(chatId, messageId, (url) => {
       if (url && mounted) {
@@ -103,20 +117,20 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
         if (url) {
           setMediaUrl(url);
           setFailed(false);
-        } else {
+        } else if (!thumbApiUrl) {
           setFailed(true);
         }
       })
       .catch(() => {
-        if (mounted) setFailed(true);
+        if (mounted && !thumbApiUrl) setFailed(true);
       });
     return () => {
       mounted = false;
       unsub();
     };
-  }, [chatId, messageId, mediaUrl, retryCount]);
+  }, [chatId, messageId, mediaUrl, retryCount, thumbApiUrl]);
 
-  const displayUrl = mediaUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '') || '';
+  const displayUrl = mediaUrl || thumbApiUrl || attachment.url || '';
   const thumbUrl = attachment.thumbUrl;
 
   const handleClick = (e: React.MouseEvent) => {
@@ -126,16 +140,19 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
       setRetryCount((c) => c + 1);
       return;
     }
+    const fullResUrl = !isAndroidApp()
+      ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}`)
+      : (displayUrl || thumbUrl || '');
     onOpenMediaModal({
       ...attachment,
-      url: displayUrl || thumbUrl || '',
+      url: fullResUrl,
     });
   };
 
   return (
     <div
       onClick={handleClick}
-      className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/20 min-h-[140px] max-h-80 flex items-center justify-center select-none"
+      className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/40 w-full aspect-video min-h-[160px] max-h-80 flex items-center justify-center select-none"
     >
       {/* 1. Instant blurred preview if thumbUrl is available (0ms) */}
       {thumbUrl && (
@@ -153,8 +170,23 @@ const ChatMediaImage: React.FC<ChatMediaImageProps> = ({
         <img
           src={displayUrl}
           alt={attachment.name || 'Photo'}
+          loading="lazy"
           onLoad={() => setLoaded(true)}
-          className={`relative z-10 max-h-80 w-full object-cover transition-opacity duration-300 ${
+          onError={() => {
+            if (!isAndroidApp() && !failed) {
+              mediaService.loadMedia(chatId, messageId, { fullRes: false }).then((url) => {
+                if (url) {
+                  setMediaUrl(url);
+                  setFailed(false);
+                } else {
+                  setFailed(true);
+                }
+              }).catch(() => setFailed(true));
+            } else {
+              setFailed(true);
+            }
+          }}
+          className={`absolute inset-0 w-full h-full object-cover z-10 transition-opacity duration-300 ${
             loaded || !thumbUrl ? 'opacity-100' : 'opacity-0'
           }`}
         />
@@ -363,8 +395,8 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   if (isPlaying && videoUrl) {
     return (
       <div
-        className={`mb-2 rounded-xl relative bg-black ${
-          isPlayerFullscreen ? 'overflow-visible z-50' : 'overflow-hidden shadow-xs max-h-80'
+        className={`mb-2 rounded-xl relative bg-black w-full ${
+          isPlayerFullscreen ? 'overflow-visible z-50' : 'overflow-hidden shadow-xs aspect-video max-h-80'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
@@ -373,7 +405,8 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
           poster={thumbUrl || attachment.thumbUrl}
           title={attachment.name}
           autoPlay={true}
-          maxHeightClass={isPlayerFullscreen ? 'max-h-screen' : 'max-h-80'}
+          className="w-full h-full aspect-video"
+          maxHeightClass={isPlayerFullscreen ? 'max-h-screen' : 'max-h-80 aspect-video'}
           initialDuration={initialDurSecs}
           onFullscreenChange={setIsPlayerFullscreen}
         />
@@ -384,7 +417,7 @@ const ChatMediaVideo: React.FC<ChatMediaVideoProps> = ({
   return (
     <div
       onClick={handleOpenFull}
-      className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/20 min-h-[160px] max-h-80 flex items-center justify-center select-none"
+      className="mb-2 cursor-pointer rounded-xl overflow-hidden shadow-xs hover:opacity-95 transition-opacity relative group bg-black/40 w-full aspect-video min-h-[160px] max-h-80 flex items-center justify-center select-none"
     >
       {/* 1. Low-res blurred preview while high-res thumbnail loads */}
       {attachment.thumbUrl && !highResThumbLoaded && (
@@ -840,9 +873,10 @@ const StickerPreviewModal: React.FC<{
     stickerService.isStickerSaved(currentAttachment.url) ||
     Boolean(currentAttachment.documentId && stickerService.isStickerSaved(currentAttachment.documentId));
 
-  const packId = currentAttachment.stickerSet?.id || currentAttachment.stickerSet?.shortName;
+  const packId = packData?.id || currentAttachment.stickerSet?.id;
+  const packShortName = packData?.shortName || currentAttachment.stickerSet?.shortName;
   const [isPackSaved, setIsPackSaved] = useState(() =>
-    Boolean(packId && stickerService.isPackSaved(packId))
+    Boolean((packId || packShortName) && stickerService.isPackSaved(packId, packShortName))
   );
 
   useEffect(() => {
@@ -864,11 +898,18 @@ const StickerPreviewModal: React.FC<{
 
   useEffect(() => {
     const unsub = stickerService.subscribe(() => {
-      const pid = currentAttachment.stickerSet?.id || currentAttachment.stickerSet?.shortName;
-      setIsPackSaved(Boolean(pid && stickerService.isPackSaved(pid)));
+      const pId = packData?.id || currentAttachment.stickerSet?.id;
+      const pName = packData?.shortName || currentAttachment.stickerSet?.shortName;
+      setIsPackSaved(Boolean((pId || pName) && stickerService.isPackSaved(pId, pName)));
     });
     return unsub;
-  }, [currentAttachment.stickerSet]);
+  }, [currentAttachment.stickerSet, packData]);
+
+  useEffect(() => {
+    const pId = packData?.id || currentAttachment.stickerSet?.id;
+    const pName = packData?.shortName || currentAttachment.stickerSet?.shortName;
+    setIsPackSaved(Boolean((pId || pName) && stickerService.isPackSaved(pId, pName)));
+  }, [packData, currentAttachment.stickerSet]);
 
   const handleToggleSingleSticker = () => {
     setIsSavingSticker(true);
@@ -900,24 +941,34 @@ const StickerPreviewModal: React.FC<{
   };
 
   const handleTogglePack = async () => {
-    if (!currentAttachment.stickerSet) return;
+    const ss = currentAttachment.stickerSet;
+    const targetPackId = packData?.id || ss?.id;
+    const targetShortName = packData?.shortName || ss?.shortName;
+    const targetAccessHash = packData?.accessHash || ss?.accessHash;
+    const targetTitle = packData?.title || ss?.title || 'Sticker Pack';
+    const targetStickers = packData?.stickers && packData.stickers.length > 0 ? packData.stickers : undefined;
+
+    if (!targetPackId && !targetShortName) {
+      showToast('Sticker pack information not found', 'error');
+      return;
+    }
+
     setIsSavingPack(true);
     try {
       if (isPackSaved) {
-        const pid = currentAttachment.stickerSet.id || currentAttachment.stickerSet.shortName;
-        if (pid) {
-          stickerService.removeStickerPack(pid);
-          showToast('Removed sticker pack from your collection', 'info');
-        }
+        stickerService.removeStickerPack(targetPackId, targetShortName);
+        setIsPackSaved(false);
+        showToast('Removed sticker pack from your collection', 'info');
       } else {
         const res = await stickerService.addStickerPack({
-          id: currentAttachment.stickerSet.id,
-          accessHash: currentAttachment.stickerSet.accessHash,
-          shortName: currentAttachment.stickerSet.shortName,
-          title: packData?.title || currentAttachment.stickerSet.title || 'Sticker Pack',
-          stickers: packData?.stickers,
+          id: targetPackId,
+          accessHash: targetAccessHash,
+          shortName: targetShortName,
+          title: targetTitle,
+          stickers: targetStickers,
         });
         if (res.success) {
+          setIsPackSaved(true);
           showToast(`Sticker pack added (${res.addedCount} stickers)! 📦`, 'success');
         } else {
           showToast('Failed to add sticker pack', 'error');
@@ -1082,11 +1133,11 @@ const StickerPreviewModal: React.FC<{
           </button>
 
           {/* Option B: Add/Install Full Sticker Pack (with all other stickers included) */}
-          {currentAttachment.stickerSet && (
+          {(currentAttachment.stickerSet || packData) && (
             <button
               type="button"
               onClick={handleTogglePack}
-              disabled={isSavingPack || loadingPack}
+              disabled={isSavingPack}
               className={`w-full py-2.5 rounded-2xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
                 isPackSaved
                   ? 'bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800/50 hover:bg-red-500/10 hover:text-red-500'
@@ -1225,9 +1276,8 @@ const TelegramStickerTile: React.FC<{
   onSelect: () => void;
 }> = ({ sticker, onSelect }) => {
   const getInitialSrc = () => {
-    if (sticker.thumbUrl && !sticker.thumbUrl.includes('/api/telegram/')) return sticker.thumbUrl;
-    if (sticker.url && !sticker.url.includes('/api/telegram/')) return sticker.url;
-    return '';
+    const raw = sticker.thumbUrl || sticker.url || '';
+    return raw ? resolveApiUrl(raw) : '';
   };
   const [src, setSrc] = useState<string>(getInitialSrc);
   const [hasError, setHasError] = useState(false);
@@ -1249,7 +1299,7 @@ const TelegramStickerTile: React.FC<{
     return () => {
       active = false;
     };
-  }, [sticker.id, sticker.thumbUrl, sticker.url, sticker.rawDoc]);
+  }, [sticker.id, sticker.thumbUrl, sticker.url, sticker.rawDoc, sticker.documentId]);
 
   return (
     <button
@@ -1261,12 +1311,12 @@ const TelegramStickerTile: React.FC<{
       {src && !hasError ? (
         <img
           src={src}
-          alt=""
+          alt={sticker.emoji || 'Sticker'}
           className="w-14 h-14 object-contain filter drop-shadow-xs group-hover:scale-110 transition-transform"
           loading="lazy"
           onError={() => {
             telegramApi.downloadStickerThumb(sticker).then((dataUrl) => {
-              if (dataUrl) {
+              if (dataUrl && dataUrl !== src) {
                 setSrc(dataUrl);
                 setHasError(false);
               } else {
@@ -1290,7 +1340,7 @@ const CustomStickerItem: React.FC<{
 }> = ({ sticker, onSelect, onRemove }) => {
   const initialSrc = (sticker.url?.startsWith('/stickers/') || sticker.url?.startsWith('/gifs/'))
     ? '.' + sticker.url
-    : (sticker.url || sticker.thumbUrl || '');
+    : resolveApiUrl(sticker.url || sticker.thumbUrl || '');
   const [src, setSrc] = useState<string>(initialSrc);
 
   useEffect(() => {
@@ -1414,7 +1464,7 @@ const ChatMediaGif: React.FC<{
   return (
     <div
       onClick={() => onOpenMediaModal({ ...attachment, url: normalizedVideoUrl || thumbUrl, chatId, messageId })}
-      className="relative my-1 max-w-sm rounded-2xl overflow-hidden shadow-md cursor-pointer group bg-black/30 min-h-[120px] flex items-center justify-center"
+      className="relative my-1 w-full aspect-video rounded-2xl overflow-hidden shadow-md cursor-pointer group bg-black/40 min-h-[160px] max-h-80 flex items-center justify-center"
     >
       {/* 1. Low-res blurred preview or thumbnail while video loads */}
       {thumbUrl && !isLoaded && (
@@ -1526,6 +1576,9 @@ interface ChatViewProps {
   onSelectChat?: (chatId: string) => void;
   onOpenDirectChat?: (userId: string, userName: string, userAvatar?: string, userThumbUrl?: string) => void;
   onJumpToMessage?: (chatId: string, messageId: string) => Promise<boolean>;
+  onOpenTelegramLink?: (url: string) => void;
+  availableChats?: Chat[];
+  onForwardMessage?: (message: Message, targetChatIds: string[]) => Promise<void>;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -1546,13 +1599,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onChatJoined,
   onLoadOlderMessages,
   isLoadingOlderMessages = false,
-  hasMoreOlderMessages,
+  hasMoreOlderMessages = true,
   onSelectChat,
   onOpenDirectChat,
   onJumpToMessage,
+  onOpenTelegramLink,
+  availableChats = [],
+  onForwardMessage,
 }) => {
   const [inputText, setInputText] = useState('');
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [isForwardPickerOpen, setIsForwardPickerOpen] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiPickerTab, setEmojiPickerTab] = useState<'emoji' | 'stickers' | 'gifs'>('emoji');
@@ -1672,9 +1730,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (!chat) return;
     setIsJoining(true);
     try {
-      await telegramApi.joinChat(chat.id);
-      onChatJoined?.(chat.id);
-      showToast(`Successfully joined ${chat.name}!`, 'success');
+      const targetJoin = chat.username?.replace(/^@+/, '') || chat.id;
+      const res = await telegramApi.joinChat(targetJoin);
+      if (res.success) {
+        onChatJoined?.(chat.id);
+        showToast(res.message || (res.alreadyJoined ? `Already a member of ${chat.name}` : `Successfully joined ${chat.name}!`), 'success');
+      } else {
+        showToast(res.error || 'Failed to join chat', 'error');
+      }
     } catch (err: any) {
       showToast(err.message || 'Failed to join chat', 'error');
     } finally {
@@ -1708,6 +1771,123 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // Editing Message State
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+
+  // Bot & Channel Buttons State
+  const [loadingButtonKey, setLoadingButtonKey] = useState<string | null>(null);
+  const [botAlertMessage, setBotAlertMessage] = useState<{ text: string; isAlert?: boolean } | null>(null);
+  const [showReplyKeyboard, setShowReplyKeyboard] = useState(false);
+
+  // Mute & Channel/Bot Bottom Controls State
+  const [isMuted, setIsMuted] = useState(Boolean(chat?.isMuted));
+  const [isTogglingMute, setIsTogglingMute] = useState(false);
+  const [showChannelComposer, setShowChannelComposer] = useState(false);
+
+  useEffect(() => {
+    setIsMuted(Boolean(chat?.isMuted));
+    setShowChannelComposer(false);
+  }, [chat?.id, chat?.isMuted]);
+
+  const handleToggleMute = async () => {
+    if (!chat || isTogglingMute) return;
+    setIsTogglingMute(true);
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+    try {
+      await telegramApi.toggleChatMute(chat.id, nextMuted);
+      showToast(nextMuted ? 'Notifications muted' : 'Notifications unmuted', 'info');
+    } catch (err: any) {
+      console.warn('[ChatView] toggleMute error:', err);
+    } finally {
+      setIsTogglingMute(false);
+    }
+  };
+
+  // Active Reply Keyboard for this chat (latest message with reply keyboard)
+  const activeReplyKeyboard = useMemo(() => {
+    if (!chat || !chat.messages || chat.messages.length === 0) return null;
+    for (let i = chat.messages.length - 1; i >= 0; i--) {
+      const m = chat.messages[i];
+      if (m.replyMarkup) {
+        if (m.replyMarkup.type === 'reply' && m.replyMarkup.rows && m.replyMarkup.rows.length > 0) {
+          return m.replyMarkup;
+        }
+        if (m.replyMarkup.type === 'hide') {
+          return null;
+        }
+      }
+    }
+    return null;
+  }, [chat?.messages]);
+
+  const handleBotButtonClick = async (message: Message, btn: TelegramKeyboardButton, key: string) => {
+    if (btn.type === 'url' || btn.type === 'web_view' || btn.type === 'auth') {
+      if (btn.url) {
+        if (isTelegramUrl(btn.url) && onOpenTelegramLink) {
+          onOpenTelegramLink(btn.url);
+        } else {
+          window.open(btn.url, '_blank', 'noopener,noreferrer');
+        }
+      }
+      return;
+    }
+
+    if (btn.type === 'switch_inline') {
+      const botUsername = chat?.username ? chat.username.replace('@', '') : '';
+      setInputText(`@${botUsername} ${btn.query || ''}`);
+      return;
+    }
+
+    if (btn.type === 'text') {
+      onSendMessage(btn.text);
+      return;
+    }
+
+    if (btn.type === 'callback') {
+      setLoadingButtonKey(key);
+      try {
+        const effectiveChatId = message.chatId || chat!.id;
+        const effectiveMsgId = typeof message.id === 'number' ? message.id : parseInt(String(message.id), 10);
+        const res = await telegramApi.sendBotCallbackAnswer(
+          effectiveChatId,
+          effectiveMsgId,
+          btn.data
+        );
+        if (res) {
+          if (res.alert && res.message) {
+            alert(res.message);
+          } else if (res.message) {
+            setBotAlertMessage({ text: res.message, isAlert: false });
+            setTimeout(() => setBotAlertMessage(null), 4000);
+          }
+          if (res.url) {
+            if (isTelegramUrl(res.url) && onOpenTelegramLink) {
+              onOpenTelegramLink(res.url);
+            } else {
+              window.open(res.url, '_blank', 'noopener,noreferrer');
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn('[BotButton] Callback error:', err);
+      } finally {
+        setLoadingButtonKey(null);
+      }
+    }
+  };
+
+  // Keep reply keyboard hidden by default until the user explicitly clicks the square button
+  useEffect(() => {
+    setShowReplyKeyboard(false);
+  }, [chat?.id]);
+
+  const handleReplyKeyboardButtonClick = (btn: TelegramKeyboardButton) => {
+    if (btn.text) {
+      onSendMessage(btn.text);
+      if (activeReplyKeyboard?.singleUse) {
+        setShowReplyKeyboard(false);
+      }
+    }
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1967,6 +2147,86 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return msgs;
   }, [chat?.messages, isSearchOpen, searchQuery, searchCategory]);
 
+  const renderMessageContent = (text: string) => {
+    if (!text) return null;
+    // Combined regex: URLs (http/https/tg://), bare t.me links, and /bot_commands
+    const tokenRegex = /(https?:\/\/[^\s]+|tg:\/\/[^\s]+|t\.me\/[^\s]+|\/[a-zA-Z][a-zA-Z0-9_]{0,63}(?:@[a-zA-Z0-9_]+)?)/g;
+    const parts = text.split(tokenRegex);
+    if (parts.length === 1) {
+      return text;
+    }
+    return parts.map((part, i) => {
+      // Check if it's a URL (http/https/tg://)
+      if (/^(https?:\/\/|tg:\/\/)/.test(part)) {
+        const isTg = isTelegramUrl(part);
+        return (
+          <a
+            key={i}
+            href={part}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (isTg && onOpenTelegramLink) {
+                onOpenTelegramLink(part);
+              } else {
+                window.open(part, '_blank', 'noopener,noreferrer');
+              }
+            }}
+            className="underline hover:opacity-80 transition-opacity font-medium break-all cursor-pointer"
+            style={{ color: '#3b82f6' }}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {part}
+          </a>
+        );
+      }
+      // Check if it's a bare t.me/ link
+      if (/^t\.me\//.test(part)) {
+        const fullUrl = 'https://' + part;
+        return (
+          <a
+            key={i}
+            href={fullUrl}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (onOpenTelegramLink) {
+                onOpenTelegramLink(fullUrl);
+              } else {
+                window.open(fullUrl, '_blank', 'noopener,noreferrer');
+              }
+            }}
+            className="underline hover:opacity-80 transition-opacity font-medium break-all cursor-pointer"
+            style={{ color: '#3b82f6' }}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {part}
+          </a>
+        );
+      }
+      // Check if it's a /bot_command
+      if (/^\/[a-zA-Z]/.test(part)) {
+        return (
+          <span
+            key={i}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setInputText(part);
+            }}
+            className="font-medium cursor-pointer hover:underline"
+            style={{ color: '#3b82f6' }}
+          >
+            {part}
+          </span>
+        );
+      }
+      return part;
+    });
+  };
+
   if (!chat) {
     return (
       <div className="flex-1 h-full flex flex-col items-center justify-center telegram-chat-pattern select-none p-6 text-center">
@@ -2198,6 +2458,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         {/* Header Right Actions */}
         <div className="flex items-center gap-1 text-gray-500 dark:text-gray-400">
+          {/* Mute / Unmute Notifications Toggle */}
+          <button
+            onClick={handleToggleMute}
+            disabled={isTogglingMute}
+            className={`p-2 rounded-full transition-colors cursor-pointer ${
+              isMuted
+                ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
+                : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+            }`}
+            title={isMuted ? 'Unmute notifications' : 'Mute notifications'}
+          >
+            {isMuted ? <BellOff size={18} /> : <Bell size={18} />}
+          </button>
+
           {/* In-Chat Search Button */}
           <button
             onClick={() => setIsSearchOpen(!isSearchOpen)}
@@ -2248,6 +2522,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   >
                     <Palette size={16} className="text-teleforge-primary dark:text-rose-400" />
                     <span>TeleForge Customization</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setIsHeaderMenuOpen(false);
+                      handleToggleMute();
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800/80 transition-colors font-medium"
+                  >
+                    {isMuted ? <Bell size={16} className="text-gray-400" /> : <BellOff size={16} className="text-gray-400" />}
+                    <span>{isMuted ? 'Unmute Notifications' : 'Mute Notifications'}</span>
                   </button>
 
                   <button
@@ -2471,6 +2756,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
           const cornerClass = getCornerRadiusClass(chatConfig.cornerRounding, isOut);
           const isSticker = message.attachment?.type === 'sticker' || message.attachment?.isSticker;
           const isVideoNote = message.attachment?.type === 'videoNote' || message.attachment?.isRound;
+          const hasMedia = Boolean(
+            message.attachment && (
+              message.attachment.type === 'video' ||
+              message.attachment.type === 'image' ||
+              message.attachment.type === 'gif' ||
+              message.attachment.isGif
+            )
+          );
+          const hasInlineButtons = Boolean(message.replyMarkup?.type === 'inline' && message.replyMarkup?.rows?.length);
 
           return (
             <div
@@ -2518,11 +2812,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               {/* Message Bubble Container */}
               <div
-                className={`max-w-[85%] md:max-w-[70%] relative transition-all group ${
+                className={`relative transition-all group ${
+                  hasMedia
+                    ? 'w-[320px] sm:w-[380px] max-w-[85vw]'
+                    : hasInlineButtons
+                    ? 'w-[300px] sm:w-[360px] max-w-[85vw]'
+                    : 'min-w-[100px] max-w-[85%] md:max-w-[70%]'
+                } ${
                   isSticker
-                    ? 'bg-transparent border-transparent shadow-none p-0'
+                    ? 'bg-transparent border-transparent shadow-none p-0 !w-auto'
                     : isVideoNote
-                    ? 'p-0 bg-transparent border-transparent shadow-none'
+                    ? 'p-0 bg-transparent border-transparent shadow-none !w-auto'
                     : `${isCompact ? 'py-1.5 px-2.5' : 'p-3'} shadow-xs ${cornerClass} border`
                 }`}
                 style={
@@ -2558,26 +2858,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
 
                 {/* Forwarded Header */}
-                {message.forwardFrom && !isSticker && (
+                {message.forwardFrom && (
                   <div
-                    className="mb-1.5 text-xs font-semibold flex items-center gap-1.5 opacity-90 cursor-pointer"
-                    style={{ color: chatConfig.chatAccent || 'var(--tf-primary)' }}
+                    className={`mb-1 text-xs font-semibold flex items-center gap-1.5 cursor-pointer select-none transition-opacity ${
+                      isSticker
+                        ? 'px-2.5 py-0.5 mb-1.5 rounded-full bg-black/60 text-white backdrop-blur-xs w-fit shadow-xs'
+                        : 'opacity-90 hover:opacity-100'
+                    }`}
+                    style={isSticker ? {} : { color: chatConfig.chatAccent || 'var(--tf-primary)' }}
                     onClick={(e) => {
                       if (message.forwardFrom?.id) {
                         e.stopPropagation();
-                        setUserProfileModalData({
-                          id: message.forwardFrom.id,
-                          name: message.forwardFrom.name,
-                          avatar: message.forwardFrom.avatar,
-                          thumbUrl: message.forwardFrom.thumbUrl,
-                          online: false,
-                          isBot: false,
-                        });
+                        if (message.forwardFrom.isChannel && onSelectChat) {
+                          onSelectChat(message.forwardFrom.id);
+                        } else {
+                          setUserProfileModalData({
+                            id: message.forwardFrom.id,
+                            name: message.forwardFrom.name,
+                            avatar: message.forwardFrom.avatar,
+                            thumbUrl: message.forwardFrom.thumbUrl,
+                            online: false,
+                            isBot: false,
+                          });
+                        }
                       }
                     }}
+                    title={`Forwarded from ${message.forwardFrom.name}`}
                   >
-                    <span>↪ Forwarded from</span>
-                    <span className="font-bold underline">{message.forwardFrom.name}</span>
+                    <Forward size={12} className="shrink-0 stroke-[2.5]" />
+                    <span>Forwarded from</span>
+                    <span className="font-bold underline underline-offset-2">{message.forwardFrom.name}</span>
                   </div>
                 )}
 
@@ -2702,8 +3012,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                 {/* Message Text */}
                 {(!isSticker || (message.text && !message.text.startsWith('⭐️') && !message.text.startsWith('Duck') && !message.text.startsWith('[Sticker]'))) && message.text && (
-                  <div className={`whitespace-pre-wrap break-words leading-relaxed ${fontSizeClass}`}>
-                    {message.text}
+                  <div className={`whitespace-pre-wrap break-words leading-relaxed ${fontSizeClass} ${hasMedia ? 'w-full px-0.5 mt-1.5' : ''}`}>
+                    {renderMessageContent(message.text)}
                   </div>
                 )}
 
@@ -2762,6 +3072,63 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <span className="text-[11px] font-bold">{r.count}</span>
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setReactionDetailsData({
+                          messageId: message.id,
+                          reactions: message.reactions || [],
+                          text: message.text,
+                        });
+                      }}
+                      className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-black/5 dark:bg-white/10 hover:bg-teleforge-primary/20 hover:text-teleforge-primary text-gray-500 dark:text-gray-400 text-xs shadow-2xs border border-black/5 dark:border-white/5 transition-transform hover:scale-110 cursor-pointer"
+                      title="View all reactions or react"
+                    >
+                      <Plus size={11} />
+                    </button>
+                  </div>
+                )}
+
+                {/* =====================================================================
+                    BOT & CHANNEL INLINE KEYBOARD BUTTONS
+                   ===================================================================== */}
+                {message.replyMarkup && message.replyMarkup.type === 'inline' && message.replyMarkup.rows && message.replyMarkup.rows.length > 0 && (
+                  <div className="flex flex-col gap-1.5 mt-2 w-full pt-1">
+                    {message.replyMarkup.rows.map((row, rIdx) => (
+                      <div key={rIdx} className="flex gap-1.5 w-full">
+                        {row.buttons.map((btn, bIdx) => {
+                          const btnKey = `${message.id}_${rIdx}_${bIdx}`;
+                          const isLoading = loadingButtonKey === btnKey;
+                          return (
+                            <button
+                              key={bIdx}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleBotButtonClick(message, btn, btnKey);
+                              }}
+                              disabled={isLoading}
+                              className={`flex-1 min-h-[34px] py-1.5 px-3 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer select-none text-center shadow-2xs active:scale-[0.98] disabled:opacity-60 ${
+                                isOut
+                                  ? 'bg-white/20 hover:bg-white/30 text-white border border-white/20'
+                                  : 'bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 border border-black/10 dark:border-white/10 text-gray-900 dark:text-gray-100'
+                              }`}
+                              title={btn.text}
+                            >
+                              {isLoading && <Loader2 size={12} className="animate-spin shrink-0" />}
+                              <span className="truncate">{btn.text}</span>
+                              {(btn.type === 'url' || btn.type === 'web_view' || btn.type === 'auth') && (
+                                <ExternalLink size={11} className="opacity-60 shrink-0" />
+                              )}
+                              {btn.type === 'switch_inline' && (
+                                <CornerUpRight size={11} className="opacity-60 shrink-0" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -2776,7 +3143,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   }`}
                 >
                   {/* Quick Reactions Bar */}
-                  <div className="flex items-center gap-0.5">
+                  <div className="flex items-center gap-0.5 relative">
                     {quickReactions.slice(0, 5).map((emoji) => (
                       <button
                         key={emoji}
@@ -2787,6 +3154,51 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         {emoji}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveReactionPickerId(activeReactionPickerId === message.id ? null : message.id);
+                      }}
+                      className={`p-0.5 rounded-full transition-all cursor-pointer ${
+                        activeReactionPickerId === message.id
+                          ? 'bg-teleforge-primary text-white'
+                          : 'text-gray-400 hover:text-teleforge-primary hover:bg-black/5 dark:hover:bg-white/10'
+                      }`}
+                      title="More reactions"
+                    >
+                      <ChevronDown size={13} />
+                    </button>
+
+                    {/* Popover of other reactions */}
+                    {activeReactionPickerId === message.id && (
+                      <div
+                        className="absolute bottom-full mb-1 left-0 bg-white dark:bg-[#1f2b38] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 p-2 z-50 animate-in fade-in zoom-in-95 duration-100 max-w-[280px] w-max flex flex-wrap gap-1"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {[
+                          '👍', '👎', '❤️', '🔥', '🥰', '👏', '😁', '🤔',
+                          '🤯', '😱', '🤬', '😢', '🎉', '🤩', '🤮', '💩',
+                          '🙏', '👌', '🕊️', '🤡', '🥱', '🥴', '😍', '🐳',
+                          '❤️‍🔥', '🌚', '🌭', '💯', '🤣', '⚡️', '🍌', '🏆',
+                          '💔', '🤨', '😐', '🍓', '🍾', '💋', '🖕', '😈',
+                          '😴', '😭', '🤓', '👻', '👨‍💻', '👀', '🎃', '🙈',
+                        ].map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => {
+                              onToggleReaction(chat.id, message.id, emoji);
+                              setActiveReactionPickerId(null);
+                            }}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg hover:scale-125 hover:bg-black/5 dark:hover:bg-white/10 transition-all text-base cursor-pointer"
+                            title={`React with ${emoji}`}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="w-[1px] h-3 bg-gray-200 dark:bg-gray-700 mx-1" />
@@ -2798,6 +3210,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     title="Reply"
                   >
                     <CornerUpLeft size={14} />
+                  </button>
+
+                  {/* Forward Action */}
+                  <button
+                    onClick={() => {
+                      setForwardingMessage(message);
+                      setIsForwardPickerOpen(true);
+                    }}
+                    className="p-1 text-gray-500 hover:text-teleforge-primary transition-colors cursor-pointer"
+                    title="Forward Message"
+                  >
+                    <Forward size={14} />
                   </button>
 
                   {/* Copy Action */}
@@ -2924,32 +3348,100 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
 
       {/* =========================================================================
-          INPUT TOOLBAR OR PREVIEW/JOIN BAR
+          INPUT TOOLBAR OR PREVIEW/JOIN BAR OR BOT START / CHANNEL MUTE BARS
          ========================================================================= */}
       {chat.isJoined === false && (chat.type === 'channel' || chat.type === 'group') ? (
-        <footer className="p-3 bg-white dark:bg-teleforge-surface border-t border-gray-200 dark:border-gray-800 flex items-center justify-between px-6 z-10 shrink-0">
-          <div className="flex flex-col">
-            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+        <footer className="p-3 bg-white dark:bg-teleforge-surface border-t border-gray-200 dark:border-gray-800 flex items-center justify-between gap-3 px-4 sm:px-6 z-10 shrink-0">
+          <div className="flex flex-col min-w-0">
+            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
               Previewing {chat.name}
             </span>
-            <span className="text-xs text-gray-500 dark:text-gray-400">
+            <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
               {chat.type === 'channel'
-                ? 'Join this public channel to receive new posts and updates'
-                : 'Join this public group to participate in discussions'}
+                ? (chat.memberCount ? `${chat.memberCount.toLocaleString()} subscribers • Tap Join to subscribe` : 'Tap Join to subscribe to channel')
+                : (chat.memberCount ? `${chat.memberCount.toLocaleString()} members • Tap Join to participate` : 'Tap Join to participate in discussion')}
             </span>
           </div>
           <button
             onClick={handleJoinChat}
             disabled={isJoining}
-            className="px-6 py-2.5 rounded-xl bg-teleforge-primary text-teleforge-cream font-semibold text-sm hover:brightness-110 shadow-md shadow-red-950/20 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+            className="px-5 py-2.5 rounded-xl bg-teleforge-primary text-teleforge-cream font-semibold text-sm hover:brightness-110 shadow-md shadow-red-950/20 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 shrink-0"
           >
             {isJoining ? <Loader2 size={16} className="animate-spin" /> : <UserPlus size={16} />}
             <span>{chat.type === 'channel' ? 'Join Channel' : 'Join Group'}</span>
           </button>
         </footer>
+      ) : chat.type === 'bot' && (!chat.messages || chat.messages.length === 0) ? (
+        /* Telegram Default START button when opening a bot with no messages */
+        <footer className="p-3 bg-white dark:bg-teleforge-surface border-t border-gray-200 dark:border-gray-800 flex items-center justify-center px-4 z-10 shrink-0">
+          <button
+            onClick={() => onSendMessage('/start')}
+            className="w-full max-w-sm py-2.5 px-6 rounded-xl bg-teleforge-primary text-teleforge-cream font-semibold text-sm hover:brightness-110 shadow-md shadow-red-950/20 transition-all flex items-center justify-center gap-2 cursor-pointer uppercase tracking-wider"
+          >
+            <Play size={16} className="fill-current" />
+            <span>START</span>
+          </button>
+        </footer>
+      ) : chat.type === 'channel' && !showChannelComposer ? (
+        /* Telegram Default MUTE / UNMUTE button for broadcast channels */
+        <footer className="p-2.5 bg-white dark:bg-teleforge-surface border-t border-gray-200 dark:border-gray-800 flex items-center justify-between px-4 z-10 shrink-0">
+          <div className="flex-1 flex items-center justify-center">
+            <button
+              onClick={handleToggleMute}
+              disabled={isTogglingMute}
+              className="flex items-center justify-center gap-2 py-2 px-8 rounded-xl font-semibold text-xs tracking-wider uppercase transition-colors cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 text-teleforge-primary dark:text-teleforge-cream"
+            >
+              {isMuted ? <BellOff size={16} /> : <Bell size={16} />}
+              <span>{isMuted ? 'UNMUTE' : 'MUTE'}</span>
+            </button>
+          </div>
+          <button
+            onClick={() => setShowChannelComposer(true)}
+            className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors cursor-pointer"
+            title="Write broadcast message"
+          >
+            <Edit3 size={16} />
+          </button>
+        </footer>
       ) : (
-        <footer className="p-2 md:p-3 bg-white dark:bg-teleforge-surface border-t border-gray-200 dark:border-gray-800 flex items-end gap-2 relative z-10 shrink-0">
-        {/* Hidden File Input */}
+        <footer className="bg-white dark:bg-teleforge-surface border-t border-gray-200 dark:border-gray-800 relative z-10 shrink-0 flex flex-col">
+          {/* Bot Alert Message Banner */}
+          {botAlertMessage && (
+            <div className="px-4 py-2 bg-teleforge-primary/10 border-b border-teleforge-primary/20 text-teleforge-primary text-xs font-medium flex items-center justify-between animate-in fade-in duration-150">
+              <span className="truncate">{botAlertMessage.text}</span>
+              <button
+                type="button"
+                onClick={() => setBotAlertMessage(null)}
+                className="p-1 hover:bg-teleforge-primary/20 rounded-md transition-colors ml-2 shrink-0 cursor-pointer"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
+
+          {/* Persistent Bot Reply Keyboard */}
+          {activeReplyKeyboard && showReplyKeyboard && activeReplyKeyboard.rows && activeReplyKeyboard.rows.length > 0 && (
+            <div className="p-2 border-b border-gray-200 dark:border-gray-800 bg-gray-50/80 dark:bg-black/20 flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+              {activeReplyKeyboard.rows.map((row, rIdx) => (
+                <div key={rIdx} className="flex gap-1.5 w-full">
+                  {row.buttons.map((btn, bIdx) => (
+                    <button
+                      key={bIdx}
+                      type="button"
+                      onClick={() => handleReplyKeyboardButtonClick(btn)}
+                      className="flex-1 min-h-[38px] py-1.5 px-3 rounded-xl bg-white dark:bg-[#1f2d3d] hover:bg-gray-100 dark:hover:bg-[#27384c] border border-gray-200 dark:border-gray-700/80 text-gray-800 dark:text-gray-200 text-xs font-semibold shadow-2xs transition-all active:scale-[0.98] truncate cursor-pointer flex items-center justify-center text-center"
+                      title={btn.text}
+                    >
+                      <span className="truncate">{btn.text}</span>
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="p-2 md:p-3 flex items-end gap-2 relative">
+          {/* Hidden File Input */}
         <input
           type="file"
           ref={fileInputRef}
@@ -3176,7 +3668,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                   }`}
                                 >
                                   {pack.thumbUrl && (
-                                    <img src={pack.thumbUrl} alt="" className="w-3.5 h-3.5 object-contain" />
+                                    <img src={resolveApiUrl(pack.thumbUrl)} alt="" className="w-3.5 h-3.5 object-contain" />
                                   )}
                                   <span>{pack.title}</span>
                                 </button>
@@ -3359,11 +3851,52 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {/* Attachment Button */}
         <button
           onClick={() => setShowAttachMenu(!showAttachMenu)}
-          className="p-2.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors cursor-pointer"
+          className="p-2.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors cursor-pointer shrink-0"
           title="Attach"
         >
           <Paperclip size={20} />
         </button>
+
+        {/* Toggle Reply Keyboard button if activeReplyKeyboard exists */}
+        {activeReplyKeyboard && (
+          <button
+            type="button"
+            onClick={() => setShowReplyKeyboard(!showReplyKeyboard)}
+            className={`p-2.5 rounded-full transition-colors cursor-pointer shrink-0 ${
+              showReplyKeyboard
+                ? 'text-teleforge-primary bg-teleforge-primary/10'
+                : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'
+            }`}
+            title={showReplyKeyboard ? 'Hide reply keyboard' : 'Show reply keyboard'}
+          >
+            <LayoutGrid size={20} />
+          </button>
+        )}
+
+        {/* Quick START button for bots */}
+        {chat.type === 'bot' && (
+          <button
+            type="button"
+            onClick={() => onSendMessage('/start')}
+            className="px-2.5 py-1.5 rounded-xl bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-teleforge-primary dark:text-teleforge-cream text-xs font-semibold transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer shadow-2xs"
+            title="Start / Restart bot (/start)"
+          >
+            <Play size={12} className="fill-current" />
+            <span>START</span>
+          </button>
+        )}
+
+        {/* Return to Mute bar button when composer is opened in a broadcast channel */}
+        {chat.type === 'channel' && showChannelComposer && (
+          <button
+            type="button"
+            onClick={() => setShowChannelComposer(false)}
+            className="p-2.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors cursor-pointer shrink-0"
+            title="Return to Mute bar"
+          >
+            <Bell size={18} />
+          </button>
+        )}
 
         {/* Voice recording bar or Text Input */}
         {isRecordingVoice ? (
@@ -3423,7 +3956,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {inputText.trim() ? <Send size={18} className="translate-x-0.5" /> : <Mic size={18} />}
           </button>
         )}
-      </footer>
+          </div>
+        </footer>
       )}
 
       {/* Floating Scroll-to-Bottom Button */}
@@ -3451,13 +3985,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
       />
 
       {/* Reaction Details Modal */}
-      {reactionDetailsData && (
+      {reactionDetailsData && chat && (
         <ReactionDetailsModal
           isOpen={Boolean(reactionDetailsData)}
           onClose={() => setReactionDetailsData(null)}
           reactions={reactionDetailsData.reactions}
           messageText={reactionDetailsData.text}
+          chatId={chat.id}
+          messageId={reactionDetailsData.messageId}
+          chat={chat}
           onSelectReaction={(emoji) => onToggleReaction(chat.id, reactionDetailsData.messageId, emoji)}
+          onOpenDirectChat={(userId, userName, userAvatar, userThumbUrl) => {
+            setReactionDetailsData(null);
+            if (onOpenDirectChat) {
+              onOpenDirectChat(userId, userName, userAvatar, userThumbUrl);
+            } else {
+              onSelectChat?.(userId);
+            }
+          }}
         />
       )}
 
@@ -3485,6 +4030,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
           data={stickerPreviewData}
           onClose={() => setStickerPreviewData(null)}
           onSendMessage={onSendMessage}
+        />
+      )}
+
+      {/* Forward Message Chat Picker Modal */}
+      {isForwardPickerOpen && forwardingMessage && (
+        <ChatPickerModal
+          isOpen={isForwardPickerOpen}
+          title="Forward Message"
+          subtitle="Select destination chat(s)"
+          chats={availableChats}
+          selectedChatIds={[]}
+          onSave={async (selectedIds) => {
+            if (selectedIds.length > 0 && onForwardMessage) {
+              await onForwardMessage(forwardingMessage, selectedIds);
+            }
+            setIsForwardPickerOpen(false);
+            setForwardingMessage(null);
+          }}
+          onClose={() => {
+            setIsForwardPickerOpen(false);
+            setForwardingMessage(null);
+          }}
         />
       )}
     </main>

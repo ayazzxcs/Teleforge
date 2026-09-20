@@ -4,10 +4,10 @@
 
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
-import { strippedPhotoToJpg } from 'telegram/Utils.js';
+import { strippedPhotoToJpg, getInputPeer } from 'telegram/Utils.js';
 import { CustomFile } from 'telegram/client/uploads.js';
 import bigInt from 'big-integer';
-import { TeleForgeDialogFilter } from '../types';
+import { TeleForgeDialogFilter, TelegramReplyMarkup, TelegramKeyboardButton, TelegramButtonType } from '../types';
 import {
   TelegramUser,
   TelegramDialog,
@@ -115,16 +115,97 @@ function extractPeerId(peer: any): string | null {
   return null;
 }
 
-export type DirectMessageListener = (event: {
-  chatId: string;
-  message: TelegramMessage;
-}) => void;
+export type DirectMessageListener = (event:
+  | { chatId: string; message: TelegramMessage }
+  | { type: 'message_reactions'; chatId: string; messageId: string; reactions: any[] }
+) => void;
 
 const messageListeners = new Set<DirectMessageListener>();
 
 export function onDirectNewMessage(listener: DirectMessageListener): () => void {
   messageListeners.add(listener);
   return () => messageListeners.delete(listener);
+}
+
+function extractReplyMarkup(markup: any): TelegramReplyMarkup | undefined {
+  if (!markup) return undefined;
+  const cls = markup.className || markup._ || '';
+  const isInline = cls.includes('ReplyInlineMarkup');
+  const isReply = cls.includes('ReplyKeyboardMarkup');
+  const isHide = cls.includes('ReplyKeyboardHide');
+  const isForceReply = cls.includes('ReplyKeyboardForceReply');
+
+  if (isHide) {
+    return { type: 'hide', rows: [] };
+  }
+  if (isForceReply) {
+    return { type: 'force_reply', rows: [], placeholder: markup.placeholder || undefined };
+  }
+  if (!isInline && !isReply) return undefined;
+
+  const rawRows = markup.rows || [];
+  const rows = rawRows.map((r: any) => {
+    const rawButtons = r.buttons || [];
+    const buttons: TelegramKeyboardButton[] = rawButtons.map((btn: any) => {
+      const btnCls = btn.className || btn._ || '';
+      let type: TelegramButtonType = 'unknown';
+      let url: string | undefined = undefined;
+      let data: string | undefined = undefined;
+      let query: string | undefined = undefined;
+      let samePeer: boolean | undefined = undefined;
+
+      if (btnCls.includes('KeyboardButtonUrlAuth')) {
+        type = 'auth';
+        url = btn.url || undefined;
+      } else if (btnCls.includes('KeyboardButtonUrl')) {
+        type = 'url';
+        url = btn.url || undefined;
+      } else if (btnCls.includes('KeyboardButtonCallback')) {
+        type = 'callback';
+        if (btn.data) {
+          try {
+            data = Buffer.isBuffer(btn.data) || btn.data instanceof Uint8Array
+              ? Buffer.from(btn.data).toString('base64')
+              : String(btn.data);
+          } catch (e) {}
+        }
+      } else if (btnCls.includes('KeyboardButtonSwitchInline')) {
+        type = 'switch_inline';
+        query = btn.query || '';
+        samePeer = Boolean(btn.samePeer);
+      } else if (btnCls.includes('KeyboardButtonWebView') || btnCls.includes('KeyboardButtonSimpleWebView')) {
+        type = 'web_view';
+        url = btn.url || undefined;
+      } else if (btnCls.includes('KeyboardButtonBuy')) {
+        type = 'buy';
+      } else if (btnCls.includes('KeyboardButtonGame')) {
+        type = 'game';
+      } else if (btnCls.includes('KeyboardButton')) {
+        type = 'text';
+      }
+
+      return {
+        text: btn.text || '',
+        type,
+        url,
+        data,
+        query,
+        samePeer,
+        requiresPassword: Boolean(btn.requiresPassword),
+      };
+    });
+    return { buttons };
+  }).filter((row: any) => row.buttons.length > 0);
+
+  return {
+    type: isInline ? 'inline' : 'reply',
+    rows,
+    resize: Boolean(markup.resize),
+    singleUse: Boolean(markup.singleUse),
+    selective: Boolean(markup.selective),
+    persistent: Boolean(markup.persistent),
+    placeholder: markup.placeholder || undefined,
+  };
 }
 
 function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number, any>): TelegramMessage {
@@ -345,7 +426,7 @@ function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number,
     }
   }
 
-  let forwardFrom: { id?: string; name: string; isChannel?: boolean } | undefined = undefined;
+  let forwardFrom: { id?: string; name: string; avatar?: string; thumbUrl?: string; isChannel?: boolean } | undefined = undefined;
   if (m.fwdFrom) {
     const fromPeerId = m.fwdFrom.fromId ? extractPeerId(m.fwdFrom.fromId) : null;
     const fwdEntity = fromPeerId ? peerEntityCache.get(fromPeerId) : null;
@@ -355,6 +436,7 @@ function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number,
     forwardFrom = {
       id: fromPeerId || undefined,
       name: fwdName,
+      avatar: fromPeerId ? `/api/telegram/avatar?id=${encodeURIComponent(fromPeerId)}` : undefined,
       isChannel: Boolean(m.fwdFrom.channelPost),
     };
   }
@@ -437,6 +519,8 @@ function mapGramJsMessage(m: any, chatId: string, batchMessagesMap?: Map<number,
     fileReference,
     actionText,
     forwardFrom,
+    editDate: m.editDate ? m.editDate * 1000 : undefined,
+    replyMarkup: extractReplyMarkup(m.replyMarkup),
   };
 }
 
@@ -446,7 +530,7 @@ function handleSingleUpdate(u: any) {
   let msgObj: any = null;
   let chatId: string | null = null;
 
-  if (u.message && (cls.includes('UpdateNewMessage') || cls.includes('UpdateNewChannelMessage'))) {
+  if (u.message && (cls.includes('UpdateNewMessage') || cls.includes('UpdateNewChannelMessage') || cls.includes('UpdateEditMessage') || cls.includes('UpdateEditChannelMessage'))) {
     msgObj = u.message;
     chatId = msgObj.peerId ? extractPeerId(msgObj.peerId) : null;
   } else if (cls.includes('UpdateShortChatMessage')) {
@@ -475,6 +559,36 @@ function handleSingleUpdate(u: any) {
       messageListeners.forEach((fn) => {
         try {
           fn({ chatId: chatId!, message: mapped });
+        } catch (err) {}
+      });
+    }
+  } else if (cls.includes('UpdateMessageReactions') || cls.includes('UpdateBotMessageReaction')) {
+    const pId = u.peer ? extractPeerId(u.peer) : null;
+    if (pId && u.msgId) {
+      let mappedReactions: any[] = [];
+      if (u.reactions && Array.isArray(u.reactions.results)) {
+        mappedReactions = u.reactions.results.map((r: any) => {
+          let emojiStr = '👍';
+          if (r.reaction && r.reaction.emoticon) {
+            emojiStr = r.reaction.emoticon;
+          } else if (typeof r.reaction === 'string') {
+            emojiStr = r.reaction;
+          }
+          return {
+            emoji: emojiStr,
+            count: r.count || 1,
+            userReacted: Boolean(r.chosenOrder !== undefined && r.chosenOrder !== null),
+          };
+        });
+      }
+      messageListeners.forEach((fn) => {
+        try {
+          fn({
+            type: 'message_reactions',
+            chatId: pId.toString(),
+            messageId: u.msgId.toString(),
+            reactions: mappedReactions,
+          });
         } catch (err) {}
       });
     }
@@ -1017,6 +1131,11 @@ export const telegramDirectClient = {
 
       const cachedHighRes = hasPhoto ? avatarBlobUrlCache.get(peerIdStr) : undefined;
 
+      const isMuted = Boolean(
+        ((d as any).dialog?.notifySettings?.muteUntil && (d as any).dialog.notifySettings.muteUntil > Math.floor(Date.now() / 1000)) ||
+        (d as any).dialog?.notifySettings?.silent
+      );
+
       return {
         id: peerIdStr,
         title,
@@ -1032,6 +1151,7 @@ export const telegramDirectClient = {
         unreadCount: d.unreadCount || 0,
         unreadMentionsCount: d.unreadMentionsCount || 0,
         pinned: Boolean(d.pinned),
+        isMuted,
         participantsCount,
         memberCount: participantsCount,
         date: d.date ? d.date * 1000 : Date.now(),
@@ -1206,15 +1326,135 @@ export const telegramDirectClient = {
     const client = await getDirectClient();
     let targetPeer = peerEntityCache.get(chatId) || chatId;
 
+    const reactionList = emoji
+      ? [new Api.ReactionEmoji({ emoticon: emoji })]
+      : [];
     await client.invoke(
       new Api.messages.SendReaction({
         peer: targetPeer,
         msgId: parseInt(messageId, 10),
-        reaction: [new Api.ReactionEmoji({ emoticon: emoji })],
+        reaction: reactionList,
       })
     );
 
     return { success: true };
+  },
+
+  /**
+   * Get detailed list of users who reacted to a message
+   */
+  async getMessageReactionsList(chatId: string, messageId: string, limit = 50): Promise<{
+    count: number;
+    reactions: Array<{
+      peerId: string | null;
+      user: {
+        id: string;
+        name: string;
+        username?: string;
+        avatar?: string;
+        isSelf?: boolean;
+      };
+      emoji: string;
+      date: number;
+      isSelf: boolean;
+    }>;
+    nextOffset: string | null;
+  }> {
+    const client = await getDirectClient();
+    let targetPeer = peerEntityCache.get(chatId) || chatId;
+    const msgIdNum = parseInt(messageId, 10);
+
+    try {
+      const res: any = await client.invoke(
+        new Api.messages.GetMessageReactionsList({
+          peer: targetPeer,
+          id: msgIdNum,
+          limit: Math.min(limit, 100),
+        })
+      );
+
+      if (res.users && Array.isArray(res.users)) {
+        for (const u of res.users) {
+          if (u && u.id) {
+            const uIdStr = u.id.toString();
+            peerEntityCache.set(uIdStr, u);
+          }
+        }
+      }
+
+      const userMap = new Map();
+      if (Array.isArray(res.users)) {
+        for (const u of res.users) {
+          const idStr = u.id?.toString();
+          const firstName = u.firstName || '';
+          const lastName = u.lastName || '';
+          const name = [firstName, lastName].filter(Boolean).join(' ') || 'Telegram User';
+          userMap.set(idStr, {
+            id: idStr,
+            name,
+            username: u.username || '',
+            avatar: `/api/telegram/avatar?id=${encodeURIComponent(idStr)}`,
+            isSelf: Boolean(u.self),
+          });
+        }
+      }
+
+      const chatMap = new Map();
+      if (Array.isArray(res.chats)) {
+        for (const c of res.chats) {
+          const idStr = c.id?.toString();
+          chatMap.set(idStr, {
+            id: idStr,
+            name: c.title || 'Telegram Group',
+            avatar: `/api/telegram/avatar?id=${encodeURIComponent(idStr)}`,
+          });
+        }
+      }
+
+      const reactions = (res.reactions || []).map((r: any) => {
+        const pId = r.peerId ? extractPeerId(r.peerId) : null;
+        let peerInfo = pId ? (userMap.get(pId) || chatMap.get(pId)) : null;
+        if (!peerInfo && pId) {
+          const cached = peerEntityCache.get(pId);
+          if (cached) {
+            peerInfo = {
+              id: pId,
+              name: cached.title || [cached.firstName, cached.lastName].filter(Boolean).join(' ') || 'Telegram User',
+              username: cached.username || '',
+              avatar: `/api/telegram/avatar?id=${encodeURIComponent(pId)}`,
+            };
+          }
+        }
+
+        let emoji = '👍';
+        if (r.reaction && r.reaction.emoticon) {
+          emoji = r.reaction.emoticon;
+        } else if (typeof r.reaction === 'string') {
+          emoji = r.reaction;
+        }
+
+        return {
+          peerId: pId,
+          user: peerInfo || {
+            id: pId || '',
+            name: 'Telegram User',
+            avatar: pId ? `/api/telegram/avatar?id=${encodeURIComponent(pId)}` : undefined,
+          },
+          emoji,
+          date: r.date ? r.date * 1000 : Date.now(),
+          isSelf: Boolean(r.my),
+        };
+      });
+
+      return {
+        count: res.count || reactions.length,
+        reactions,
+        nextOffset: res.nextOffset || null,
+      };
+    } catch (err: any) {
+      console.warn('[MTProto-Direct] getMessageReactionsList error:', err.message);
+      return { count: 0, reactions: [], nextOffset: null };
+    }
   },
 
   /**
@@ -1252,6 +1492,35 @@ export const telegramDirectClient = {
 
     await client.pinMessage(targetPeer, parseInt(messageId, 10), { notify: !silent });
     return { success: true };
+  },
+
+  /**
+   * Forward messages from one chat to another
+   */
+  async forwardMessages(
+    fromChatId: string,
+    toChatId: string,
+    messageIds: string[] | number[],
+    options: { silent?: boolean; dropAuthor?: boolean } = {}
+  ): Promise<{ success: boolean; count?: number }> {
+    const client = await getDirectClient();
+    const isAuth = await client.isUserAuthorized();
+    if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+    const fromPeer = peerEntityCache.get(fromChatId) || fromChatId;
+    const toPeer = peerEntityCache.get(toChatId) || toChatId;
+
+    const ids = messageIds.map((id) => (typeof id === 'string' ? parseInt(id, 10) : id)).filter((id) => !isNaN(id));
+    if (ids.length === 0) throw new Error('No valid messageIds provided');
+
+    await client.forwardMessages(toPeer, {
+      messages: ids,
+      fromPeer: fromPeer,
+      silent: Boolean(options.silent),
+      dropAuthor: Boolean(options.dropAuthor),
+    });
+
+    return { success: true, count: ids.length };
   },
 
   /**
@@ -1605,28 +1874,7 @@ export const telegramDirectClient = {
     }
   },
 
-  /**
-   * Join a public channel or group
-   */
-  async joinChat(chatId: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      const client = await getDirectClient();
-      let entity = peerEntityCache.get(chatId);
-      if (!entity) {
-        entity = await client.getEntity(chatId);
-      }
 
-      if (entity.className === 'Channel') {
-        await client.invoke(new Api.channels.JoinChannel({ channel: entity }));
-      } else if (entity.className === 'Chat') {
-        await client.invoke(new Api.messages.AddChatUser({ chatId: entity.id, userId: 'me', fwdLimit: 100 }));
-      }
-
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
-  },
 
   /**
    * Get user profile
@@ -3189,6 +3437,577 @@ export const telegramDirectClient = {
       mediaType: 'sticker',
       isSticker: true,
     };
+  },
+
+  /**
+   * Send callback query to Telegram bot when an inline button is clicked
+   */
+  async sendBotCallbackAnswer(
+    chatId: string,
+    messageId: number,
+    data?: string,
+    game = false
+  ): Promise<{ message?: string; alert?: boolean; url?: string }> {
+    const client = await getDirectClient();
+
+    const numMsgId = typeof messageId === 'number' ? messageId : parseInt(String(messageId), 10);
+    if (!numMsgId || isNaN(numMsgId) || numMsgId <= 0) {
+      return { message: 'Invalid message ID' };
+    }
+
+    let targetPeer: any = null;
+    const idStr = String(chatId).trim();
+    const variations = [idStr];
+    if (idStr.startsWith('-100')) {
+      variations.push(idStr.slice(4));
+      variations.push(`-${idStr.slice(4)}`);
+    } else if (idStr.startsWith('-')) {
+      variations.push(idStr.slice(1));
+      variations.push(`-100${idStr.slice(1)}`);
+    } else {
+      variations.push(`-100${idStr}`);
+      variations.push(`-${idStr}`);
+    }
+
+    const isValidInputPeer = (p: any): boolean =>
+      Boolean(p && (p._?.startsWith('input') || p.className?.startsWith('Input')) && !p.className?.includes('Empty'));
+
+    for (const v of variations) {
+      if (peerEntityCache.has(v)) {
+        const ent = peerEntityCache.get(v);
+        try {
+          const ip = getInputPeer(ent);
+          if (isValidInputPeer(ip)) {
+            targetPeer = ip;
+            break;
+          }
+        } catch (e) {}
+      }
+    }
+
+    if (!targetPeer || typeof targetPeer === 'string' || !isValidInputPeer(targetPeer)) {
+      for (const v of variations) {
+        try {
+          const ent = await client.getInputEntity(v);
+          if (ent) {
+            const ip = getInputPeer(ent);
+            if (isValidInputPeer(ip)) {
+              targetPeer = ip;
+              break;
+            }
+          }
+        } catch (e) {}
+        try {
+          const ent = await client.getInputEntity(bigInt(v) as any);
+          if (ent) {
+            const ip = getInputPeer(ent);
+            if (isValidInputPeer(ip)) {
+              targetPeer = ip;
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    if (!targetPeer || typeof targetPeer === 'string' || !isValidInputPeer(targetPeer)) {
+      try {
+        const ent = await (client as any).getEntity(chatId).catch(async () => await (client as any).getEntity(bigInt(chatId) as any)).catch(() => null);
+        if (ent) {
+          const ip = getInputPeer(ent);
+          if (isValidInputPeer(ip)) {
+            targetPeer = ip;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!targetPeer || typeof targetPeer === 'string' || !targetPeer.className?.startsWith('Input')) {
+      try {
+        if (idStr.startsWith('-100')) {
+          targetPeer = new Api.InputPeerChannel({ channelId: bigInt(idStr.slice(4)) as any, accessHash: bigInt.zero as any });
+        } else if (idStr.startsWith('-')) {
+          targetPeer = new Api.InputPeerChat({ chatId: bigInt(idStr.slice(1)) as any });
+        } else {
+          targetPeer = new Api.InputPeerUser({ userId: bigInt(idStr) as any, accessHash: bigInt.zero as any });
+        }
+      } catch (e) {}
+    }
+
+    let rawData: Buffer | undefined = undefined;
+    if (data !== undefined && data !== null && data !== '') {
+      if (Buffer.isBuffer(data)) {
+        rawData = data;
+      } else if (typeof data === 'string') {
+        try {
+          const buf = Buffer.from(data, 'base64');
+          if (buf.length > 0 && buf.toString('base64') === data) {
+            rawData = buf;
+          } else {
+            rawData = Buffer.from(data, 'utf8');
+          }
+        } catch (e) {
+          rawData = Buffer.from(data, 'utf8');
+        }
+      }
+    } else {
+      rawData = Buffer.alloc(0);
+    }
+
+    const req = new Api.messages.GetBotCallbackAnswer({
+      peer: targetPeer,
+      msgId: numMsgId,
+      data: rawData,
+      game,
+    });
+
+    try {
+      const res: any = await client.invoke(req);
+      return {
+        message: res?.message || undefined,
+        alert: Boolean(res?.alert),
+        url: res?.url || undefined,
+      };
+    } catch (err: any) {
+      if (err?.errorMessage === 'BOT_RESPONSE_TIMEOUT') {
+        return { message: 'Bot did not respond in time.' };
+      }
+      if (err?.errorMessage === 'MESSAGE_ID_INVALID') {
+        console.warn('[MTProto-Direct] Message ID is no longer valid or expired:', messageId);
+        return { message: 'This button is no longer active or has expired.' };
+      }
+      console.warn('[MTProto-Direct] sendBotCallbackAnswer error:', err?.message || err);
+      return { message: err?.message || 'Action failed' };
+    }
+  },
+
+  /**
+   * Add a bot to a group or channel, and optionally send a start parameter command
+   */
+  async addBotToChat(chatId: string, botUsernameOrId: string, startParam?: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const client = await getDirectClient();
+      const cleanBot = botUsernameOrId.replace(/^@+/, '').trim();
+      let botEntity = peerEntityCache.get(cleanBot) || peerEntityCache.get(botUsernameOrId);
+      if (!botEntity) {
+        try {
+          botEntity = await client.getEntity(cleanBot);
+        } catch {
+          botEntity = await client.getEntity(botUsernameOrId);
+        }
+      }
+
+      let chatEntity = peerEntityCache.get(chatId) || peerEntityCache.get(`-100${chatId}`) || peerEntityCache.get(`-${chatId}`);
+      if (!chatEntity) {
+        try {
+          chatEntity = await client.getEntity(chatId);
+        } catch {
+          chatEntity = await client.getEntity(bigInt(chatId));
+        }
+      }
+
+      if (chatEntity.className === 'Channel') {
+        try {
+          await client.invoke(
+            new Api.channels.InviteToChannel({
+              channel: chatEntity,
+              users: [botEntity],
+            })
+          );
+        } catch (inviteErr: any) {
+          const errMsg = String(inviteErr?.message || '');
+          if (
+            errMsg.includes('USER_BOT_REQUIRED') ||
+            errMsg.includes('CHAT_ADMIN_REQUIRED') ||
+            errMsg.includes('BOT_METHOD_INVALID') ||
+            (chatEntity as any).broadcast
+          ) {
+            const adminRights = new Api.ChatAdminRights({
+              changeInfo: true,
+              postMessages: true,
+              editMessages: true,
+              deleteMessages: true,
+              banUsers: true,
+              inviteUsers: true,
+              pinMessages: true,
+              addAdmins: false,
+              anonymous: false,
+              manageCall: true,
+              other: true,
+            });
+            await client.invoke(
+              new Api.channels.EditAdmin({
+                channel: chatEntity,
+                userId: botEntity,
+                adminRights,
+                rank: 'bot',
+              })
+            );
+          } else {
+            throw inviteErr;
+          }
+        }
+      } else if (chatEntity.className === 'Chat') {
+        await client.invoke(
+          new Api.messages.AddChatUser({
+            chatId: (chatEntity as any).id,
+            userId: botEntity,
+            fwdLimit: 100,
+          })
+        );
+      } else {
+        throw new Error('Target is not a group or channel');
+      }
+
+      if (startParam) {
+        try {
+          const botUname = (botEntity as any).username ? `@${(botEntity as any).username}` : '';
+          const startCmd = `/start${botUname ? `${botUname} ` : ' '}${startParam}`.trim();
+          await this.sendMessage(chatId, startCmd);
+        } catch (msgErr: any) {
+          console.warn('[addBotToChat] Failed to send /start msg:', msgErr.message);
+        }
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      console.error('[DirectClient] addBotToChat error:', e);
+      return { success: false, error: e.message || 'Failed to add bot to chat' };
+    }
+  },
+
+  /**
+   * Mute or unmute notifications for a given chat or channel
+   */
+  async toggleChatMute(chatId: string, mute = true): Promise<{ success: boolean; isMuted: boolean }> {
+    try {
+      const client = await getDirectClient();
+      let targetPeer: any = null;
+      const idStr = String(chatId).trim();
+      const variations = [idStr];
+      if (idStr.startsWith('-100')) {
+        variations.push(idStr.slice(4));
+        variations.push(`-${idStr.slice(4)}`);
+      } else if (idStr.startsWith('-')) {
+        variations.push(idStr.slice(1));
+        variations.push(`-100${idStr.slice(1)}`);
+      } else {
+        variations.push(`-100${idStr}`);
+        variations.push(`-${idStr}`);
+      }
+
+      for (const v of variations) {
+        if (peerEntityCache.has(v)) {
+          const ent = peerEntityCache.get(v);
+          try {
+            const ip = getInputPeer(ent);
+            if (ip && (ip as any).className?.startsWith('Input')) {
+              targetPeer = ip;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+
+      if (!targetPeer || typeof targetPeer === 'string') {
+        try {
+          const ent = await client.getInputEntity(chatId);
+          targetPeer = getInputPeer(ent);
+        } catch (e) {
+          try {
+            const ent = await client.getInputEntity(bigInt(chatId) as any);
+            targetPeer = getInputPeer(ent);
+          } catch (e2) {}
+        }
+      }
+
+      if (!targetPeer || typeof targetPeer === 'string') {
+        if (idStr.startsWith('-100')) {
+          targetPeer = new Api.InputPeerChannel({ channelId: bigInt(idStr.slice(4)) as any, accessHash: bigInt.zero as any });
+        } else if (idStr.startsWith('-')) {
+          targetPeer = new Api.InputPeerChat({ chatId: bigInt(idStr.slice(1)) as any });
+        } else {
+          targetPeer = new Api.InputPeerUser({ userId: bigInt(idStr) as any, accessHash: bigInt.zero as any });
+        }
+      }
+
+      const req = new Api.account.UpdateNotifySettings({
+        peer: new Api.InputNotifyPeer({ peer: targetPeer }),
+        settings: new Api.InputPeerNotifySettings({
+          muteUntil: mute ? 2147483647 : 0,
+          silent: Boolean(mute),
+        }),
+      });
+
+      await client.invoke(req);
+      return { success: true, isMuted: Boolean(mute) };
+    } catch (err: any) {
+      console.warn('[DirectClient] toggleChatMute error:', err?.message || err);
+      return { success: false, isMuted: Boolean(mute) };
+    }
+  },
+
+  /**
+   * Preview/check a chat invite link without joining.
+   * Returns info about the chat so the user can decide whether to join.
+   */
+  async checkInvite(hashOrUsername: string): Promise<{
+    success: boolean;
+    title?: string;
+    about?: string;
+    participantsCount?: number;
+    photo?: string;
+    isChannel?: boolean;
+    isGroup?: boolean;
+    alreadyJoined?: boolean;
+    chatId?: string;
+    error?: string;
+  }> {
+    try {
+      const client = await getDirectClient();
+      const raw = String(hashOrUsername || '').trim();
+      if (!raw) return { success: false, error: 'Empty hash or username' };
+
+      // Determine if it's an invite hash or a public username
+      let inviteHash = '';
+      if (raw.startsWith('+')) {
+        inviteHash = raw.slice(1);
+      } else if (raw.startsWith('joinchat/')) {
+        inviteHash = raw.slice(9);
+      } else if (raw.includes('t.me/+')) {
+        inviteHash = raw.split('t.me/+')[1]?.split(/[?#/]/)[0] || '';
+      } else if (raw.includes('t.me/joinchat/')) {
+        inviteHash = raw.split('t.me/joinchat/')[1]?.split(/[?#/]/)[0] || '';
+      } else if (!/^-?\d+$/.test(raw) && !raw.startsWith('@') && (raw.includes('-') || raw.includes('_') || raw.length >= 16)) {
+        inviteHash = raw;
+      }
+
+      if (inviteHash) {
+        const cleanHash = inviteHash.replace(/^(\+|joinchat\/)/, '').trim();
+        try {
+          const checkRes: any = await client.invoke(new Api.messages.CheckChatInvite({ hash: cleanHash }));
+          // ChatInviteAlready — user already joined
+          if (checkRes?.chat) {
+            const ch = checkRes.chat;
+            const idStr = ch.id?.toString();
+            let photo = '';
+            if (hasEntityPhoto(ch)) {
+              try {
+                const buf = await withTimeout(client.downloadProfilePhoto(ch, { isBig: false }), 4000);
+                if (buf && buf.length > 0) {
+                  photo = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+                }
+              } catch {}
+            }
+            return {
+              success: true,
+              alreadyJoined: true,
+              chatId: idStr,
+              title: ch.title || '',
+              about: '',
+              participantsCount: ch.participantsCount || 0,
+              photo,
+              isChannel: ch.broadcast === true,
+              isGroup: !ch.broadcast,
+            };
+          }
+          // ChatInvite — user has NOT joined yet
+          if (checkRes?.title) {
+            let photo = '';
+            if (checkRes.photo && checkRes.photo.className !== 'ChatPhotoEmpty') {
+              // The CheckChatInvite result has a .photo but it's a Photo object, not entity photo
+              // We can try to use it directly
+              try {
+                const buf = await withTimeout(client.downloadMedia(checkRes.photo, { }), 4000);
+                if (buf && buf.length > 0) {
+                  photo = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+                }
+              } catch {}
+            }
+            return {
+              success: true,
+              alreadyJoined: false,
+              title: checkRes.title || '',
+              about: checkRes.about || '',
+              participantsCount: checkRes.participantsCount || 0,
+              photo,
+              isChannel: checkRes.broadcast === true || checkRes.channel === true,
+              isGroup: !checkRes.broadcast && !checkRes.channel,
+            };
+          }
+          return { success: false, error: 'Could not parse invite info' };
+        } catch (err: any) {
+          const errMsg = err?.errorMessage || err?.message || '';
+          if (errMsg.includes('INVITE_HASH_EXPIRED')) return { success: false, error: 'This invite link has expired.' };
+          if (errMsg.includes('INVITE_HASH_INVALID')) return { success: false, error: 'This invite link is invalid.' };
+          return { success: false, error: errMsg };
+        }
+      }
+
+      // Public username — resolve entity
+      const clean = raw.replace(/^@+/, '').trim();
+      try {
+        const entity: any = await client.getEntity(clean);
+        if (entity) {
+          const idStr = entity.id?.toString();
+          let photo = '';
+          if (hasEntityPhoto(entity)) {
+            try {
+              const buf = await withTimeout(client.downloadProfilePhoto(entity, { isBig: false }), 4000);
+              if (buf && buf.length > 0) {
+                photo = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+              }
+            } catch {}
+          }
+          // Check if already a participant
+          let alreadyJoined = false;
+          if (entity.className === 'Channel' || entity.className === 'Chat') {
+            // If 'left' is false or if participantsSelf exists, user is joined
+            alreadyJoined = entity.left === false || entity.left === undefined;
+          }
+          // For channels, get full info for about/description
+          let about = '';
+          try {
+            if (entity.className === 'Channel') {
+              const full: any = await client.invoke(new Api.channels.GetFullChannel({ channel: entity }));
+              about = full?.fullChat?.about || '';
+            }
+          } catch {}
+          return {
+            success: true,
+            alreadyJoined,
+            chatId: idStr,
+            title: entity.title || entity.firstName || '',
+            about,
+            participantsCount: entity.participantsCount || 0,
+            photo,
+            isChannel: entity.broadcast === true,
+            isGroup: entity.className === 'Chat' || (entity.className === 'Channel' && !entity.broadcast),
+          };
+        }
+      } catch {}
+
+      return { success: false, error: 'Could not find chat' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to check invite' };
+    }
+  },
+
+  /**
+   * Join a public channel/group or private invite link
+   */
+  async joinChat(peerIdOrHash: string): Promise<{ success: boolean; chat?: any; alreadyJoined?: boolean; requestSent?: boolean; message?: string; error?: string }> {
+    try {
+      const client = await getDirectClient();
+      const rawStr = String(peerIdOrHash || '').trim();
+      if (!rawStr) {
+        return { success: false, error: 'Chat ID or invite link is required' };
+      }
+
+      let inviteHash = '';
+      if (rawStr.startsWith('+')) {
+        inviteHash = rawStr.slice(1);
+      } else if (rawStr.startsWith('joinchat/')) {
+        inviteHash = rawStr.slice(9);
+      } else if (rawStr.includes('t.me/+')) {
+        inviteHash = rawStr.split('t.me/+')[1]?.split(/[?#/]/)[0] || '';
+      } else if (rawStr.includes('t.me/joinchat/')) {
+        inviteHash = rawStr.split('t.me/joinchat/')[1]?.split(/[?#/]/)[0] || '';
+      } else if (!/^-?\d+$/.test(rawStr) && !peerEntityCache.has(rawStr) && (rawStr.includes('-') || rawStr.includes('_') || rawStr.length >= 16)) {
+        inviteHash = rawStr;
+      }
+
+      if (inviteHash) {
+        const cleanHash = inviteHash.replace(/^(\+|joinchat\/)/, '').trim();
+        try {
+          const updates: any = await client.invoke(new Api.messages.ImportChatInvite({ hash: cleanHash }));
+          let joinedChat: any = null;
+          if (updates?.chats && Array.isArray(updates.chats) && updates.chats.length > 0) {
+            joinedChat = updates.chats[0];
+            const idStr = joinedChat.id.toString();
+            peerEntityCache.set(idStr, joinedChat);
+            peerEntityCache.set(`-100${idStr}`, joinedChat);
+            peerEntityCache.set(`-${idStr}`, joinedChat);
+          }
+          return { success: true, chat: joinedChat ? { id: joinedChat.id.toString(), title: joinedChat.title } : undefined };
+        } catch (invErr: any) {
+          const errMsg = invErr?.errorMessage || invErr?.message || '';
+          if (errMsg.includes('USER_ALREADY_PARTICIPANT')) {
+            try {
+              const checkRes: any = await client.invoke(new Api.messages.CheckChatInvite({ hash: cleanHash }));
+              if (checkRes?.chat) {
+                const ch = checkRes.chat;
+                const idStr = ch.id.toString();
+                peerEntityCache.set(idStr, ch);
+                peerEntityCache.set(`-100${idStr}`, ch);
+                return { success: true, alreadyJoined: true, chat: { id: idStr, title: ch.title } };
+              }
+            } catch (cErr) {}
+            return { success: true, alreadyJoined: true };
+          }
+          if (errMsg.includes('INVITE_REQUEST_SENT')) {
+            return { success: true, requestSent: true, message: 'Join request sent to group admins.' };
+          }
+          if (errMsg.includes('INVITE_HASH_EXPIRED')) {
+            return { success: false, error: 'This invite link has expired.' };
+          }
+          if (!errMsg.includes('INVITE_HASH_INVALID')) {
+            return { success: false, error: errMsg };
+          }
+        }
+      }
+
+      let entity = peerEntityCache.get(rawStr) || peerEntityCache.get(`-100${rawStr}`) || peerEntityCache.get(`-${rawStr}`);
+      if (!entity) {
+        const clean = rawStr.replace(/^@+/, '').trim();
+        try {
+          entity = await client.getEntity(clean);
+        } catch {
+          try {
+            entity = await client.getEntity(bigInt(clean) as any);
+          } catch {
+            try {
+              const updates: any = await client.invoke(new Api.messages.ImportChatInvite({ hash: clean }));
+              if (updates?.chats?.length > 0) {
+                const ch = updates.chats[0];
+                peerEntityCache.set(ch.id.toString(), ch);
+                return { success: true, chat: { id: ch.id.toString(), title: ch.title } };
+              }
+            } catch (invFinalErr: any) {
+              const m = invFinalErr?.errorMessage || invFinalErr?.message || '';
+              if (m.includes('USER_ALREADY_PARTICIPANT')) return { success: true, alreadyJoined: true };
+              if (m.includes('INVITE_REQUEST_SENT')) return { success: true, requestSent: true, message: 'Join request sent to group admins.' };
+            }
+            return { success: false, error: `Could not resolve chat for "${peerIdOrHash}"` };
+          }
+        }
+      }
+
+      if (entity) {
+        const idStr = entity.id?.toString();
+        if (idStr) {
+          peerEntityCache.set(idStr, entity);
+          peerEntityCache.set(`-100${idStr}`, entity);
+        }
+        if (entity.className === 'Channel') {
+          await client.invoke(new Api.channels.JoinChannel({ channel: entity }));
+          return { success: true, chat: { id: idStr, title: entity.title } };
+        } else if (entity.className === 'Chat') {
+          await client.invoke(new Api.messages.AddChatUser({ chatId: entity.id, userId: 'me' as any, fwdLimit: 100 }));
+          return { success: true, chat: { id: idStr, title: entity.title } };
+        } else {
+          return { success: true };
+        }
+      }
+
+      return { success: false, error: 'Could not find chat' };
+    } catch (err: any) {
+      const errMsg = err?.errorMessage || err?.message || 'Failed to join chat';
+      if (errMsg.includes('USER_ALREADY_PARTICIPANT')) {
+        return { success: true, alreadyJoined: true };
+      }
+      return { success: false, error: errMsg };
+    }
   },
 
   onNewMessage: onDirectNewMessage,

@@ -87,7 +87,7 @@ function notifyProgressSubscribers(key: string, pct: number, dl: number, tot: nu
 // Download queue for message media
 const downloadQueue: Array<() => Promise<void>> = [];
 let activeWorkers = 0;
-const MAX_CONCURRENT_DOWNLOADS = 4;
+const MAX_CONCURRENT_DOWNLOADS = 8;
 
 function withMediaTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: any;
@@ -294,30 +294,27 @@ export const mediaService = {
         enqueueDownload(async () => {
           try {
             let dataUrl = '';
-            // 1. Try direct client first
-            try {
-              const res = await withMediaTimeout(
-                telegramDirectClient.downloadMessageMedia(chatId, messageId, options),
-                15000
-              ).catch(() => null);
-              if (res && res.dataUrl && res.dataUrl.length > 5) {
-                dataUrl = res.dataUrl;
-              }
-            } catch (e) {}
-
-            // 2. Fallback to backend media endpoint on localhost/web (never on standalone Android)
-            if (!isAndroidApp() && (!dataUrl || dataUrl.length < 2000) && typeof fetch !== 'undefined') {
+            if (isAndroidApp()) {
+              // 1. Standalone Android: use direct MTProto client
+              try {
+                const res = await withMediaTimeout(
+                  telegramDirectClient.downloadMessageMedia(chatId, messageId, options),
+                  15000
+                ).catch(() => null);
+                if (res && res.dataUrl && res.dataUrl.length > 5) {
+                  dataUrl = res.dataUrl;
+                }
+              } catch (e) {}
+            } else if (typeof fetch !== 'undefined') {
+              // 2. Web / Desktop: fetch from backend MTProto endpoint immediately (0ms wait, no 15s timeout!)
               try {
                 const thumbParam = options?.fullRes || options?.fullVideo ? '' : '&thumb=1';
-                const res = await fetch(resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}${thumbParam}`));
+                const mediaUrl = resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}${thumbParam}`);
+                const res = await fetch(mediaUrl);
                 if (res.ok) {
                   const blob = await res.blob();
-                  if (blob.size > 200) {
-                    dataUrl = await new Promise<string>((resBlob) => {
-                      const reader = new FileReader();
-                      reader.onloadend = () => resBlob(reader.result as string);
-                      reader.readAsDataURL(blob);
-                    });
+                  if (blob.size > 100) {
+                    dataUrl = URL.createObjectURL(blob);
                   }
                 }
               } catch (e) {}

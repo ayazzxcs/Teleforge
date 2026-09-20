@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { Chat, Attachment, Message } from '../types';
 import { Avatar } from './Avatar';
-import { telegramApi } from '../services/telegramApi';
+import { telegramApi, isAndroidApp, resolveApiUrl } from '../services/telegramApi';
 import { mediaService } from '../services/mediaService';
 import { downloadFileToDevice } from '../utils/fileDownloader';
 import { showToast } from './Toast';
@@ -37,15 +37,16 @@ const SharedPhotoItem: React.FC<{
   attachment: any;
   onClick: () => void;
 }> = ({ chatId, messageId, attachment, onClick }) => {
+  const thumbApiUrl = !isAndroidApp()
+    ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(chatId)}&messageId=${messageId}&thumb=1`)
+    : '';
   const [src, setSrc] = useState<string>(() => {
-    if (attachment.url && !attachment.url.includes('/api/telegram/media')) {
-      return attachment.url;
-    }
-    return mediaService.get(chatId, messageId) || attachment.thumbUrl || '';
+    return mediaService.get(chatId, messageId) || attachment.url || thumbApiUrl || attachment.thumbUrl || '';
   });
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
+    if (src && !isAndroidApp()) return;
     let mounted = true;
     const unsub = mediaService.subscribe(chatId, messageId, (url) => {
       if (url && mounted) {

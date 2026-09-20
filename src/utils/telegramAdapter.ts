@@ -82,6 +82,7 @@ export function mapDialogToChat(dialog: TelegramDialog): Chat {
     phone: dialog.phone,
     isPinned: dialog.pinned,
     isJoined: dialog.isJoined !== undefined ? dialog.isJoined : true,
+    isMuted: Boolean(dialog.isMuted),
     unreadCount: dialog.unreadCount,
     memberCount,
     lastMessage: dialog.lastMessage
@@ -190,6 +191,7 @@ export function mapTelegramMessage(
     reactions: m.reactions,
     isService: Boolean(m.actionText),
     forwardFrom: m.forwardFrom,
+    replyMarkup: m.replyMarkup,
     replyTo: m.replyToMsgId
       ? {
           id: String(m.replyToMsgId),

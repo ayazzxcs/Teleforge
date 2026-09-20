@@ -42,10 +42,13 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
     setDownloadProgress(null);
 
     if (attachment?.type === 'image') {
+      const fullResApi = !isAndroidApp() && attachment.chatId && attachment.messageId
+        ? resolveApiUrl(`/api/telegram/media?chatId=${encodeURIComponent(attachment.chatId)}&messageId=${attachment.messageId}`)
+        : '';
       const cached = (attachment.chatId && attachment.messageId)
         ? mediaService.get(attachment.chatId, attachment.messageId, { fullRes: true }) || mediaService.get(attachment.chatId, attachment.messageId)
         : '';
-      const directUrl = attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '';
+      const directUrl = attachment.url || fullResApi;
       const initialImg = cached || directUrl || attachment.thumbUrl || '';
       setImageUrl(initialImg);
 
@@ -233,7 +236,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
             {/* Download */}
             <button
               onClick={async () => {
-                const targetUrl = videoUrl || imageUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '') || attachment.thumbUrl;
+                const targetUrl = videoUrl || imageUrl || attachment.url || attachment.thumbUrl;
                 if (!targetUrl) {
                   showToast('Media is not ready for download', 'error');
                   return;
@@ -280,7 +283,7 @@ export const MediaModal: React.FC<MediaModalProps> = ({ attachment, onClose }) =
         >
           {attachment.type === 'image' && (
             <img
-              src={imageUrl || (attachment.url && !attachment.url.includes('/api/telegram/media') ? attachment.url : '') || attachment.thumbUrl}
+              src={imageUrl || attachment.url || attachment.thumbUrl}
               alt={attachment.name || 'Preview'}
               style={{ transform: `scale(${zoom})`, transition: 'transform 0.15s ease-out' }}
               className="max-h-[82vh] max-w-[95%] w-auto object-contain rounded-xl shadow-2xl transition-transform"
