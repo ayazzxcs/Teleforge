@@ -664,14 +664,14 @@ async function resolveInputPeer(client: TelegramClient, id: string): Promise<any
 
   try {
     if (str.startsWith('-100')) {
-      const channelId = BigInt(str.slice(4)) as any;
-      return new Api.InputPeerChannel({ channelId, accessHash: BigInt(0) as any });
+      const channelId = bigInt(str.slice(4)) as any;
+      return new Api.InputPeerChannel({ channelId, accessHash: bigInt(0) as any });
     } else if (str.startsWith('-')) {
-      const chatId = BigInt(str.slice(1)) as any;
+      const chatId = bigInt(str.slice(1)) as any;
       return new Api.InputPeerChat({ chatId });
     } else {
-      const userId = BigInt(str) as any;
-      return new Api.InputPeerUser({ userId, accessHash: BigInt(0) as any });
+      const userId = bigInt(str) as any;
+      return new Api.InputPeerUser({ userId, accessHash: bigInt(0) as any });
     }
   } catch (e) {
     return null;
@@ -1262,7 +1262,7 @@ export const telegramDirectClient = {
     const isAuth = await client.isUserAuthorized();
     if (!isAuth) return [];
 
-    const result: any = await client.invoke(new Api.contacts.GetContacts({ hash: BigInt(0) as any }));
+    const result: any = await client.invoke(new Api.contacts.GetContacts({ hash: bigInt(0) as any }));
     if (!result || !result.users) return [];
 
     return result.users.map((u: any) => serializeUser(u)).filter(Boolean) as TelegramUser[];
@@ -1816,7 +1816,7 @@ export const telegramDirectClient = {
           let photo = targetPeer?.photo;
           if (!photo) {
             try {
-              let realEntity = await client.getEntity(targetPeer || cleanId);
+              let realEntity: any = await client.getEntity(targetPeer || cleanId);
               photo = realEntity?.photo;
             } catch (e) {
               const inputPeer = await resolveInputPeer(client, cleanId);
@@ -2732,8 +2732,8 @@ export const telegramDirectClient = {
         : (typeof doc.fileReference === 'string' ? Buffer.from(doc.fileReference, 'hex') : Buffer.alloc(0));
 
       const inputLoc = new Api.InputDocumentFileLocation({
-        id: BigInt(doc.id.toString()) as any,
-        accessHash: BigInt(doc.accessHash.toString()) as any,
+        id: bigInt(doc.id.toString()) as any,
+        accessHash: bigInt(doc.accessHash.toString()) as any,
         fileReference: fileRefBuf,
         thumbSize: best.type || 'm',
       });
@@ -2741,7 +2741,8 @@ export const telegramDirectClient = {
       const buffer: any = await withTimeout(
         client.downloadFile(inputLoc, {
           dcId: doc.dcId,
-          fileSize: best.size ? BigInt(best.size) as any : undefined,
+          partSizeKb: 64,
+          fileSize: best.size ? bigInt(best.size) as any : undefined,
         }),
         8000,
         'Thumb download timeout'
@@ -2754,7 +2755,8 @@ export const telegramDirectClient = {
         return dataUrl;
       }
       return null;
-    } catch (e) {
+    } catch (e: any) {
+      console.warn('[MTProto] downloadMediaThumb error:', e?.message || e);
       return null;
     }
   },
@@ -2817,8 +2819,8 @@ export const telegramDirectClient = {
         : (typeof fileReference === 'string' ? Buffer.from(fileReference, 'hex') : Buffer.alloc(0));
 
       const inputLoc = new Api.InputDocumentFileLocation({
-        id: BigInt(id.toString()) as any,
-        accessHash: BigInt(accessHash.toString()) as any,
+        id: bigInt(id.toString()) as any,
+        accessHash: bigInt(accessHash.toString()) as any,
         fileReference: fileRefBuf,
         thumbSize: thumbType,
       });
@@ -2826,7 +2828,8 @@ export const telegramDirectClient = {
       const buffer: any = await withTimeout(
         client.downloadFile(inputLoc, {
           dcId: doc.dcId,
-          fileSize: normalThumbs[0]?.size ? BigInt(normalThumbs[0].size) as any : undefined,
+          partSizeKb: 64,
+          fileSize: normalThumbs[0]?.size ? bigInt(normalThumbs[0].size) as any : undefined,
         }),
         8000,
         'Sticker thumb download timeout'
@@ -2862,8 +2865,8 @@ export const telegramDirectClient = {
         : (typeof doc.fileReference === 'string' ? Buffer.from(doc.fileReference, 'hex') : Buffer.alloc(0));
 
       const inputLoc = new Api.InputDocumentFileLocation({
-        id: BigInt(doc.id.toString()) as any,
-        accessHash: BigInt(doc.accessHash.toString()) as any,
+        id: bigInt(doc.id.toString()) as any,
+        accessHash: bigInt(doc.accessHash.toString()) as any,
         fileReference: fileRefBuf,
         thumbSize: '',
       });
@@ -2871,7 +2874,8 @@ export const telegramDirectClient = {
       const buffer: any = await withTimeout(
         client.downloadFile(inputLoc, {
           dcId: doc.dcId,
-          fileSize: doc.size ? BigInt(doc.size) as any : undefined,
+          partSizeKb: 128,
+          fileSize: doc.size ? bigInt(doc.size) as any : undefined,
         }),
         15000,
         'GIF video download timeout'
@@ -2937,7 +2941,7 @@ export const telegramDirectClient = {
       const isAuth = await client.isUserAuthorized();
       if (!isAuth) return [];
 
-      const res: any = await client.invoke(new Api.messages.GetAllStickers({ hash: BigInt(0) as any }));
+      const res: any = await client.invoke(new Api.messages.GetAllStickers({ hash: bigInt(0) as any }));
       const sets = res?.sets || [];
       const result: TelegramStickerSet[] = [];
 
@@ -2988,8 +2992,8 @@ export const telegramDirectClient = {
       let inputSet: any;
       if (stickerset.id && stickerset.accessHash) {
         inputSet = new Api.InputStickerSetID({
-          id: BigInt(stickerset.id) as any,
-          accessHash: BigInt(stickerset.accessHash) as any,
+          id: bigInt(stickerset.id) as any,
+          accessHash: bigInt(stickerset.accessHash) as any,
         });
       } else if (stickerset.shortName) {
         inputSet = new Api.InputStickerSetShortName({
@@ -3103,8 +3107,8 @@ export const telegramDirectClient = {
       let inputSet: any;
       if (stickerset.id && stickerset.accessHash) {
         inputSet = new Api.InputStickerSetID({
-          id: BigInt(stickerset.id) as any,
-          accessHash: BigInt(stickerset.accessHash) as any,
+          id: bigInt(stickerset.id) as any,
+          accessHash: bigInt(stickerset.accessHash) as any,
         });
       } else if (stickerset.shortName) {
         inputSet = new Api.InputStickerSetShortName({
@@ -3134,8 +3138,8 @@ export const telegramDirectClient = {
     const client = await getDirectClient();
     try {
       const inputDoc = new Api.InputDocument({
-        id: BigInt(documentId) as any,
-        accessHash: BigInt(accessHash) as any,
+        id: bigInt(documentId) as any,
+        accessHash: bigInt(accessHash) as any,
         fileReference: fileReference ? Buffer.from(fileReference, 'hex') : Buffer.alloc(0),
       });
 
@@ -3165,8 +3169,8 @@ export const telegramDirectClient = {
     let fileToSend = docOrInput;
     if (docOrInput && typeof docOrInput === 'object' && docOrInput.documentId && docOrInput.accessHash) {
       fileToSend = new Api.InputDocument({
-        id: BigInt(docOrInput.documentId) as any,
-        accessHash: BigInt(docOrInput.accessHash) as any,
+        id: bigInt(docOrInput.documentId) as any,
+        accessHash: bigInt(docOrInput.accessHash) as any,
         fileReference: docOrInput.fileReference ? Buffer.from(docOrInput.fileReference, 'hex') : Buffer.alloc(0),
       });
     }
