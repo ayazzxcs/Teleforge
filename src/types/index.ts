@@ -139,6 +139,12 @@ export interface Chat {
   isPinned?: boolean;
   isJoined?: boolean;
   isSelf?: boolean;
+  isForum?: boolean;
+  isOwner?: boolean;
+  isAdmin?: boolean;
+  isCreator?: boolean;
+  topics?: ForumTopicItem[];
+  activeTopicId?: number;
   unreadCount: number;
   lastMessage?: {
     text: string;
@@ -150,6 +156,24 @@ export interface Chat {
   messages: Message[];
 }
 
+export interface ForumTopicItem {
+  id: number;
+  title: string;
+  iconColor?: number;
+  iconEmojiId?: string;
+  unreadCount?: number;
+  topMessage?: number;
+  closed?: boolean;
+  pinned?: boolean;
+  hidden?: boolean;
+  date?: number;
+  lastMessage?: {
+    text: string;
+    timestamp: string;
+    senderName?: string;
+  };
+}
+
 export interface UserProfile {
   id?: string;
   name: string;
@@ -158,3 +182,91 @@ export interface UserProfile {
   bio: string;
   avatar: string;
 }
+
+export interface TelegramAdminFullInfo {
+  id: string;
+  title: string;
+  about: string;
+  username: string;
+  participantsCount: number;
+  adminsCount: number;
+  bannedCount: number;
+  kickedCount: number;
+  slowmodeSeconds: number;
+  hiddenPrehistory: boolean;
+  canViewParticipants: boolean;
+  canSetUsername: boolean;
+  canDeleteChannel: boolean;
+  exportedInvite: string;
+  isOwner: boolean;
+  isAdmin: boolean;
+  myAdminRights: any;
+  permissions: {
+    sendMessages: boolean;
+    sendMedia: boolean;
+    sendStickers: boolean;
+    embedLinks: boolean;
+    sendPolls: boolean;
+    inviteUsers: boolean;
+    pinMessages: boolean;
+    changeInfo: boolean;
+  };
+}
+
+export interface TelegramAdminParticipant {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  isOwner: boolean;
+  isSelf: boolean;
+  rank: string;
+  adminRights: any;
+  promotedBy: string;
+  date: number;
+}
+
+export interface TelegramMemberParticipant {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  isOwner: boolean;
+  isAdmin: boolean;
+  isSelf: boolean;
+  rank: string;
+  date: number;
+}
+
+export interface TelegramBannedParticipant {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  type: 'kicked' | 'restricted';
+  kickedBy: string;
+  date: number;
+  bannedRights: any;
+}
+
+export interface TelegramInviteLinkItem {
+  link: string;
+  title: string;
+  date: number;
+  expireDate: number | null;
+  usageLimit: number;
+  usage: number;
+  permanent: boolean;
+  revoked: boolean;
+  requestNeeded: boolean;
+}
+
+export interface TelegramAdminLogItem {
+  id: string;
+  date: number;
+  userId: string;
+  adminName: string;
+  action: string;
+  details: string;
+}
+

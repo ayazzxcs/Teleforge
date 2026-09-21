@@ -4,10 +4,10 @@
 
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
-import { strippedPhotoToJpg, getInputPeer } from 'telegram/Utils.js';
+import { strippedPhotoToJpg, getInputPeer, getInputChannel } from 'telegram/Utils.js';
 import { CustomFile } from 'telegram/client/uploads.js';
 import bigInt from 'big-integer';
-import { TeleForgeDialogFilter, TelegramReplyMarkup, TelegramKeyboardButton, TelegramButtonType } from '../types';
+import { TeleForgeDialogFilter, TelegramReplyMarkup, TelegramKeyboardButton, TelegramButtonType, ForumTopicItem } from '../types';
 import {
   TelegramUser,
   TelegramDialog,
@@ -1058,14 +1058,14 @@ export const telegramDirectClient = {
   /**
    * Get user's Telegram dialogs (chats, channels, groups)
    */
-  async getDialogs(limit = 50): Promise<TelegramDialog[]> {
+  async getDialogs(limit = 400): Promise<TelegramDialog[]> {
     const client = await getDirectClient();
     const isAuth = await client.isUserAuthorized();
     if (!isAuth) {
       throw new Error('Not authorized with Telegram MTProto');
     }
 
-    const dialogs = await client.getDialogs({ limit: Math.min(limit, 100) });
+    const dialogs = await client.getDialogs({ limit: Math.min(limit, 500) });
 
     return dialogs.map((d: any) => {
       const entity = d.entity;
@@ -1104,6 +1104,9 @@ export const telegramDirectClient = {
       const isUser = Boolean(d.isUser);
       const isGroup = Boolean(d.isGroup || (entity && (entity.megagroup || entity.gigagroup || entity.className === 'Chat')));
       const isChannel = Boolean(d.isChannel && !isGroup);
+      const isOwner = Boolean((entity as any)?.creator);
+      const isAdmin = Boolean((entity as any)?.creator || (entity as any)?.adminRights || (entity as any)?.admin);
+      const isCreator = isOwner;
 
       let title = d.title || d.name || 'Telegram User';
       let username = entity?.username || '';
@@ -1144,6 +1147,10 @@ export const telegramDirectClient = {
         isUser,
         isGroup,
         isChannel,
+        isForum: Boolean((entity as any)?.forum),
+        isOwner,
+        isAdmin,
+        isCreator,
         isVerified,
         hasAvatar: hasPhoto,
         avatar: cachedHighRes && cachedHighRes.length >= 8000 ? cachedHighRes : undefined,
@@ -1173,7 +1180,7 @@ export const telegramDirectClient = {
     chatId: string,
     limit = 50,
     offsetId?: number,
-    options: { search?: string; addOffset?: number; ids?: number[] } = {}
+    options: { search?: string; addOffset?: number; ids?: number[]; replyTo?: number | string } = {}
   ): Promise<TelegramMessage[]> {
     const client = await getDirectClient();
     const isAuth = await client.isUserAuthorized();
@@ -1203,6 +1210,9 @@ export const telegramDirectClient = {
     }
     if (options.ids && Array.isArray(options.ids)) {
       fetchOptions.ids = options.ids;
+    }
+    if (options.replyTo !== undefined && options.replyTo !== null && parseInt(String(options.replyTo), 10) > 0) {
+      fetchOptions.replyTo = parseInt(String(options.replyTo), 10);
     }
 
     try {
@@ -1521,6 +1531,289 @@ export const telegramDirectClient = {
     });
 
     return { success: true, count: ids.length };
+  },
+
+  /**
+   * Leave a group or channel
+   */
+  async leaveChat(chatId: string): Promise<{ success: boolean }> {
+    const client = await getDirectClient();
+    const isAuth = await client.isUserAuthorized();
+    if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+    let targetPeer = peerEntityCache.get(chatId);
+    if (!targetPeer) {
+      try {
+        targetPeer = await client.getInputEntity(chatId);
+        if (targetPeer) peerEntityCache.set(chatId, targetPeer);
+      } catch (e) {
+        targetPeer = chatId;
+      }
+    }
+
+    const idStr = chatId?.toString() || '';
+    const entity = peerEntityCache.get(idStr);
+    const isChannelOrSupergroup = Boolean(
+      idStr.startsWith('-100') ||
+      (entity && (entity.className === 'Channel' || entity.megagroup || entity.broadcast))
+    );
+
+    try {
+      if (isChannelOrSupergroup) {
+        let inputChannel;
+        try {
+          inputChannel = getInputChannel(targetPeer);
+        } catch (e) {
+          inputChannel = getInputChannel(await client.getInputEntity(chatId));
+        }
+        await client.invoke(new Api.channels.LeaveChannel({ channel: inputChannel }));
+      } else {
+        const cleanId = idStr.replace(/^-/, '');
+        const numId = parseInt(cleanId, 10);
+        if (!isNaN(numId)) {
+          await client.invoke(new Api.messages.DeleteChatUser({ chatId: bigInt(numId) as any, userId: 'me' as any }));
+        }
+      }
+      return { success: true };
+    } catch (err: any) {
+      console.error('[MTProto-Direct] leaveChat error:', err.message);
+      throw err;
+    }
+  },
+
+  /**
+   * Clear chat history: locally (revoke=false) or cloud-wise/for everyone (revoke=true)
+   */
+  async clearChatHistory(chatId: string, revoke = false): Promise<{ success: boolean }> {
+    const client = await getDirectClient();
+    const isAuth = await client.isUserAuthorized();
+    if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+    let targetPeer = peerEntityCache.get(chatId);
+    if (!targetPeer) {
+      try {
+        targetPeer = await client.getInputEntity(chatId);
+        if (targetPeer) peerEntityCache.set(chatId, targetPeer);
+      } catch (e) {
+        targetPeer = chatId;
+      }
+    }
+
+    const idStr = chatId?.toString() || '';
+    const entity = peerEntityCache.get(idStr);
+    const isChannelOrSupergroup = Boolean(
+      idStr.startsWith('-100') ||
+      (entity && (entity.className === 'Channel' || entity.megagroup || entity.broadcast))
+    );
+
+    try {
+      if (isChannelOrSupergroup) {
+        let inputChannel;
+        try {
+          inputChannel = getInputChannel(targetPeer);
+        } catch (e) {
+          inputChannel = getInputChannel(await client.getInputEntity(chatId));
+        }
+        await client.invoke(
+          new Api.channels.DeleteHistory({
+            channel: inputChannel,
+            maxId: 2147483647,
+            forEveryone: Boolean(revoke),
+          })
+        );
+      } else {
+        let inputPeer;
+        try {
+          inputPeer = getInputPeer(targetPeer);
+        } catch (e) {
+          inputPeer = getInputPeer(await client.getInputEntity(chatId));
+        }
+        await client.invoke(
+          new Api.messages.DeleteHistory({
+            peer: inputPeer,
+            maxId: 2147483647,
+            justClear: true,
+            revoke: Boolean(revoke),
+          })
+        );
+      }
+      return { success: true };
+    } catch (err: any) {
+      console.error('[MTProto-Direct] clearChatHistory error:', err.message);
+      throw err;
+    }
+  },
+
+  /**
+   * Delete a channel, supergroup, or basic group (Owner action)
+   */
+  async deleteChannelOrGroup(chatId: string): Promise<boolean> {
+    const client = await getDirectClient();
+    let targetPeer: any;
+    try {
+      targetPeer = await client.getInputEntity(chatId);
+    } catch (e) {
+      try {
+        targetPeer = await client.getInputEntity(parseInt(chatId, 10));
+      } catch (err2) {
+        targetPeer = chatId;
+      }
+    }
+
+    const entity = peerEntityCache.get(chatId?.toString());
+    const isChannelOrSupergroup = Boolean(
+      (typeof chatId === 'string' && chatId.startsWith('-100')) ||
+      targetPeer?.className === 'InputPeerChannel' ||
+      targetPeer?.className === 'InputChannel' ||
+      (entity && (entity.className === 'Channel' || entity.megagroup || entity.broadcast))
+    );
+
+    try {
+      if (isChannelOrSupergroup) {
+        const inputChannel = getInputChannel(targetPeer);
+        await client.invoke(new Api.channels.DeleteChannel({ channel: inputChannel }));
+      } else {
+        const rawId = String(chatId).replace(/^-/, '');
+        const numId = parseInt(rawId, 10);
+        await client.invoke(new Api.messages.DeleteChat({ chatId: bigInt(numId) as any }));
+      }
+      return true;
+    } catch (err: any) {
+      console.error('[MTProto-Direct] deleteChannelOrGroup error:', err.message);
+      throw err;
+    }
+  },
+
+  /**
+   * Edit chat title and/or description (Admin & Owner action)
+   */
+  async editChatDetails(chatId: string, details: { title?: string; about?: string }): Promise<boolean> {
+    const client = await getDirectClient();
+    let targetPeer: any;
+    try {
+      targetPeer = await client.getInputEntity(chatId);
+    } catch (e) {
+      try {
+        targetPeer = await client.getInputEntity(parseInt(chatId, 10));
+      } catch (err2) {
+        targetPeer = chatId;
+      }
+    }
+
+    const entity = peerEntityCache.get(chatId?.toString());
+    const isChannelOrSupergroup = Boolean(
+      (typeof chatId === 'string' && chatId.startsWith('-100')) ||
+      targetPeer?.className === 'InputPeerChannel' ||
+      targetPeer?.className === 'InputChannel' ||
+      (entity && (entity.className === 'Channel' || entity.megagroup || entity.broadcast))
+    );
+
+    try {
+      if (typeof details.title === 'string' && details.title.trim()) {
+        if (isChannelOrSupergroup) {
+          const inputChannel = getInputChannel(targetPeer);
+          await client.invoke(new Api.channels.EditTitle({ channel: inputChannel, title: details.title.trim() }));
+        } else {
+          const rawId = String(chatId).replace(/^-/, '');
+          const numId = parseInt(rawId, 10);
+          await client.invoke(new Api.messages.EditChatTitle({ chatId: bigInt(numId) as any, title: details.title.trim() }));
+        }
+      }
+
+      if (typeof details.about === 'string') {
+        const inputPeer = getInputPeer(targetPeer);
+        await client.invoke(new Api.messages.EditChatAbout({ peer: inputPeer, about: details.about.trim() }));
+      }
+
+      return true;
+    } catch (err: any) {
+      console.error('[MTProto-Direct] editChatDetails error:', err.message);
+      throw err;
+    }
+  },
+
+  /**
+   * Get forum topics for supergroups with topics enabled
+   */
+  async getForumTopics(channelId: string, limit = 50): Promise<{ count: number; topics: ForumTopicItem[] }> {
+    const client = await getDirectClient();
+    const isAuth = await client.isUserAuthorized();
+    if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+    let targetPeer = peerEntityCache.get(channelId);
+    if (!targetPeer) {
+      try {
+        targetPeer = await client.getInputEntity(channelId);
+        if (targetPeer) peerEntityCache.set(channelId, targetPeer);
+      } catch (e) {
+        targetPeer = channelId;
+      }
+    }
+
+    let inputChannel;
+    try {
+      inputChannel = getInputChannel(targetPeer);
+    } catch (e) {
+      try {
+        inputChannel = getInputChannel(await client.getInputEntity(channelId));
+      } catch (e2) {
+        inputChannel = targetPeer;
+      }
+    }
+
+    try {
+      const res: any = await client.invoke(
+        new Api.channels.GetForumTopics({
+          channel: inputChannel,
+          offsetDate: 0,
+          offsetId: 0,
+          offsetTopic: 0,
+          limit: Math.min(limit, 100),
+        })
+      );
+
+      const messageMap = new Map<number, any>();
+      if (Array.isArray(res.messages)) {
+        for (const m of res.messages) {
+          if (m && m.id) messageMap.set(m.id, m);
+        }
+      }
+
+      const topics: ForumTopicItem[] = (res.topics || []).map((t: any) => {
+        let lastMsg = undefined;
+        const topM = t.topMessage ? messageMap.get(t.topMessage) : null;
+        if (topM) {
+          lastMsg = {
+            text: topM.message || (topM.media ? '[Media]' : ''),
+            timestamp: topM.date ? new Date(topM.date * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+          };
+        }
+
+        return {
+          id: t.id,
+          title: t.title || `Topic #${t.id}`,
+          iconColor: t.iconColor,
+          iconEmojiId: t.iconEmojiId ? t.iconEmojiId.toString() : undefined,
+          unreadCount: t.unreadCount || 0,
+          topMessage: t.topMessage,
+          closed: Boolean(t.closed),
+          pinned: Boolean(t.pinned),
+          hidden: Boolean(t.hidden),
+          date: t.date ? t.date * 1000 : Date.now(),
+          lastMessage: lastMsg,
+        };
+      });
+
+      return {
+        count: res.count || topics.length,
+        topics,
+      };
+    } catch (err: any) {
+      if (!err.message?.includes('CHANNEL_FORUM_MISSING') && !err.message?.includes('CHAT_NOT_MODIFIED')) {
+        console.warn('[MTProto-Direct] getForumTopics error:', err.message);
+      }
+      return { count: 0, topics: [] };
+    }
   },
 
   /**

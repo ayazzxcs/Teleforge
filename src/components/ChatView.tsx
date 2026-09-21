@@ -11,6 +11,8 @@ import {
   Check,
   CheckCheck,
   ShieldCheck,
+  Shield,
+  Crown,
   CornerUpLeft,
   X,
   FileText,
@@ -48,6 +50,7 @@ import {
   Terminal,
   Edit3,
   Forward,
+  LogOut,
 } from 'lucide-react';
 import { Chat, Message, Reaction, Attachment, TelegramKeyboardButton, TelegramReplyMarkup } from '../types';
 import { AudioPlayer } from './AudioPlayer';
@@ -55,6 +58,10 @@ import { Avatar } from './Avatar';
 import { TeleForgeVideoPlayer } from './TeleForgeVideoPlayer';
 import { UserProfileModal, UserProfileDetails } from './UserProfileModal';
 import { ChatPickerModal } from './ChatPickerModal';
+import { ClearHistoryModal } from './ClearHistoryModal';
+import { LeaveChatModal } from './LeaveChatModal';
+import { ManageChatModal } from './ManageChatModal';
+import { ForumTopicsBar } from './ForumTopicsBar';
 import { mediaService } from '../services/mediaService';
 import { downloadFileToDevice } from '../utils/fileDownloader';
 import { getAvatarColor } from '../utils/telegramAdapter';
@@ -1579,6 +1586,13 @@ interface ChatViewProps {
   onOpenTelegramLink?: (url: string) => void;
   availableChats?: Chat[];
   onForwardMessage?: (message: Message, targetChatIds: string[]) => Promise<void>;
+  onClearHistory?: (chatId: string, revoke: boolean) => Promise<void>;
+  onLeaveChat?: (chatId: string) => Promise<void>;
+  onSelectTopic?: (topicId?: number) => void;
+  onRefreshTopics?: () => void;
+  isLoadingTopics?: boolean;
+  onUpdateChatInfo?: (chatId: string, details: { title?: string; about?: string }) => Promise<void>;
+  onDeleteChatPermanently?: (chatId: string) => Promise<void>;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -1606,11 +1620,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onOpenTelegramLink,
   availableChats = [],
   onForwardMessage,
+  onClearHistory,
+  onLeaveChat,
+  onSelectTopic,
+  onRefreshTopics,
+  isLoadingTopics = false,
+  onUpdateChatInfo,
+  onDeleteChatPermanently,
 }) => {
   const [inputText, setInputText] = useState('');
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [isForwardPickerOpen, setIsForwardPickerOpen] = useState(false);
+  const [isClearHistoryModalOpen, setIsClearHistoryModalOpen] = useState(false);
+  const [isLeaveChatModalOpen, setIsLeaveChatModalOpen] = useState(false);
+  const [isManageChatModalOpen, setIsManageChatModalOpen] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiPickerTab, setEmojiPickerTab] = useState<'emoji' | 'stickers' | 'gifs'>('emoji');
@@ -2437,8 +2461,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   className="shrink-0"
                 />
               )}
+              {chat.isOwner ? (
+                <span
+                  className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/50 flex items-center gap-0.5 shrink-0"
+                  title="You are the Owner of this group/channel"
+                >
+                  <span>👑</span>
+                  <span>Owner</span>
+                </span>
+              ) : chat.isAdmin ? (
+                <span
+                  className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-purple-100 dark:bg-purple-950/70 text-purple-800 dark:text-purple-300 border border-purple-300/80 dark:border-purple-700/50 flex items-center gap-0.5 shrink-0"
+                  title="You are an Administrator of this group/channel"
+                >
+                  <Shield size={9} />
+                  <span>Admin</span>
+                </span>
+              ) : null}
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+              {chat.activeTopicId && chat.topics?.find((t) => t.id === chat.activeTopicId) && (
+                <span className="font-semibold text-teleforge-primary mr-1">
+                  #{chat.topics.find((t) => t.id === chat.activeTopicId)?.title} •
+                </span>
+              )}
               {chat.type === 'channel'
                 ? typeof chat.memberCount === 'number'
                   ? `${chat.memberCount.toLocaleString()} ${chat.memberCount === 1 ? 'subscriber' : 'subscribers'}`
@@ -2546,26 +2592,82 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <span>Search in Chat</span>
                   </button>
 
+                  {(chat.isOwner || chat.isAdmin) && (
+                    <button
+                      onClick={() => {
+                        setIsHeaderMenuOpen(false);
+                        setIsManageChatModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800/80 transition-colors font-medium cursor-pointer"
+                    >
+                      {chat.isOwner ? (
+                        <Crown size={16} className="text-amber-500" />
+                      ) : (
+                        <Shield size={16} className="text-purple-500" />
+                      )}
+                      <span>
+                        {chat.type === 'channel'
+                          ? chat.isOwner ? 'Manage Channel (Owner)' : 'Manage Channel (Admin)'
+                          : chat.isOwner ? 'Manage Group (Owner)' : 'Manage Group (Admin)'}
+                      </span>
+                    </button>
+                  )}
+
                   <div className="my-1 border-t border-gray-100 dark:border-gray-800/60" />
 
                   <button
                     onClick={() => {
                       setIsHeaderMenuOpen(false);
-                      if (window.confirm(`Clear chat history for "${chat.name}"?`)) {
-                        showToast('Chat history cleared locally', 'info');
-                      }
+                      setIsClearHistoryModalOpen(true);
                     }}
-                    className="w-full flex items-center gap-3 px-4 py-2.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors font-medium"
+                    className="w-full flex items-center gap-3 px-4 py-2.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors font-medium cursor-pointer"
                   >
                     <Trash2 size={16} />
                     <span>Clear Chat History</span>
                   </button>
+
+                  {(chat.type === 'group' || chat.type === 'channel') && (
+                    <button
+                      onClick={() => {
+                        setIsHeaderMenuOpen(false);
+                        setIsLeaveChatModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors font-medium cursor-pointer"
+                    >
+                      <LogOut size={16} />
+                      <span>Leave {chat.type === 'channel' ? 'Channel' : 'Group'}</span>
+                    </button>
+                  )}
+
+                  {chat.isOwner && (
+                    <button
+                      onClick={() => {
+                        setIsHeaderMenuOpen(false);
+                        setIsManageChatModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors font-medium cursor-pointer"
+                    >
+                      <Trash2 size={16} />
+                      <span>Delete {chat.type === 'channel' ? 'Channel' : 'Group'} (Owner)</span>
+                    </button>
+                  )}
                 </div>
               </>
             )}
           </div>
         </div>
       </header>
+
+      {/* Forum Topics Bar for Supergroups / Forums */}
+      {(chat.isForum || (chat.topics && chat.topics.length > 0)) && (
+        <ForumTopicsBar
+          topics={chat.topics || []}
+          activeTopicId={chat.activeTopicId}
+          onSelectTopic={onSelectTopic || (() => {})}
+          isLoading={isLoadingTopics}
+          onRefreshTopics={onRefreshTopics}
+        />
+      )}
 
       {/* =========================================================================
           IN-CHAT SEARCH TOOLBAR WITH CATEGORY FILTER PILLS (PHASE 7)
@@ -3930,6 +4032,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
               placeholder={
                 editingMessage
                   ? 'Edit your message...'
+                  : chat.isForum && chat.activeTopicId
+                  ? `Message #${chat.topics?.find((t) => t.id === chat.activeTopicId)?.title || 'topic'}...`
                   : chat.type === 'channel'
                   ? 'Broadcast a message...'
                   : 'Write a message...'
@@ -4051,6 +4155,47 @@ export const ChatView: React.FC<ChatViewProps> = ({
           onClose={() => {
             setIsForwardPickerOpen(false);
             setForwardingMessage(null);
+          }}
+        />
+      )}
+
+      {/* Clear Chat History Modal (Local vs Cloud-Wise) */}
+      <ClearHistoryModal
+        isOpen={isClearHistoryModalOpen}
+        onClose={() => setIsClearHistoryModalOpen(false)}
+        chatName={chat.name}
+        chatType={chat.type}
+        onClear={async (revoke) => {
+          if (onClearHistory) {
+            await onClearHistory(chat.id, revoke);
+          }
+        }}
+      />
+
+      {/* Leave Group / Channel Modal */}
+      <LeaveChatModal
+        isOpen={isLeaveChatModalOpen}
+        onClose={() => setIsLeaveChatModalOpen(false)}
+        chatName={chat.name}
+        chatType={chat.type}
+        onLeave={async () => {
+          if (onLeaveChat) {
+            await onLeaveChat(chat.id);
+          }
+        }}
+      />
+
+      {/* Manage Group / Channel Modal */}
+      {chat && isManageChatModalOpen && (
+        <ManageChatModal
+          isOpen={isManageChatModalOpen}
+          chat={chat}
+          onClose={() => setIsManageChatModalOpen(false)}
+          onUpdateChatInfo={onUpdateChatInfo || (async () => {})}
+          onDeleteChat={async (chatId) => {
+            if (onDeleteChatPermanently) {
+              await onDeleteChatPermanently(chatId);
+            }
           }}
         />
       )}

@@ -4,7 +4,7 @@ import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
-import { strippedPhotoToJpg, getInputPeer } from 'telegram/Utils.js';
+import { strippedPhotoToJpg, getInputPeer, getInputChannel } from 'telegram/Utils.js';
 import { CustomFile } from 'telegram/client/uploads.js';
 import bigInt from 'big-integer';
 
@@ -596,7 +596,7 @@ export async function checkAuthStatus() {
   }
 }
 
-export async function getDialogsList(limit = 40, forceRefresh = false) {
+export async function getDialogsList(limit = 400, forceRefresh = false) {
   const client = await getClient();
   const isAuth = await client.isUserAuthorized();
   if (!isAuth) {
@@ -609,7 +609,7 @@ export async function getDialogsList(limit = 40, forceRefresh = false) {
     return cachedDialogsResult;
   }
 
-  const dialogs = await client.getDialogs({ limit: Math.min(limit, 100) });
+  const dialogs = await client.getDialogs({ limit: Math.min(limit, 500) });
   
   const mapped = dialogs.map((d) => {
     const entity = d.entity;
@@ -669,6 +669,9 @@ export async function getDialogsList(limit = 40, forceRefresh = false) {
     const isUser = Boolean(d.isUser);
     const isGroup = Boolean(d.isGroup || (entity && (entity.megagroup || entity.gigagroup || entity.className === 'Chat')));
     const isChannel = Boolean(d.isChannel && !isGroup);
+    const isOwner = Boolean(entity?.creator);
+    const isAdmin = Boolean(entity?.creator || entity?.adminRights || entity?.admin);
+    const isCreator = isOwner;
 
     let title = d.title || d.name || 'Telegram User';
     let username = entity?.username || '';
@@ -723,6 +726,10 @@ export async function getDialogsList(limit = 40, forceRefresh = false) {
       isUser,
       isGroup,
       isChannel,
+      isForum: Boolean(entity?.forum),
+      isOwner,
+      isAdmin,
+      isCreator,
       isVerified,
       hasAvatar: hasPhoto,
       thumbUrl,
@@ -1321,6 +1328,9 @@ export async function getMessagesForPeer(peerId, limit = 50, offsetId = 0, optio
   if (options.ids && Array.isArray(options.ids)) {
     fetchOptions.ids = options.ids;
   }
+  if (options.replyTo !== undefined && options.replyTo !== null && parseInt(options.replyTo, 10) > 0) {
+    fetchOptions.replyTo = parseInt(options.replyTo, 10);
+  }
 
   let messages = [];
   try {
@@ -1800,6 +1810,279 @@ export async function deletePeerMessages(peerId, messageIds, revoke = true) {
 
   await client.deleteMessages(targetPeer, ids, { revoke: Boolean(revoke) });
   return { success: true, count: ids.length };
+}
+
+export async function leavePeerChat(chatId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  const idStr = chatId?.toString() || '';
+  let inputEntity = peerEntityCache.get(idStr);
+  if (!inputEntity) {
+    try {
+      inputEntity = await client.getInputEntity(chatId);
+    } catch (e) {
+      try {
+        inputEntity = await client.getInputEntity(BigInt(chatId));
+      } catch (e2) {}
+    }
+  }
+
+  const isChannelOrSupergroup = Boolean(
+    idStr.startsWith('-100') ||
+    (inputEntity && (inputEntity.className === 'Channel' || inputEntity.className === 'InputPeerChannel' || inputEntity.className === 'InputChannel' || inputEntity.megagroup || inputEntity.broadcast))
+  );
+
+  try {
+    if (isChannelOrSupergroup) {
+      let inputChannel;
+      try {
+        inputChannel = getInputChannel(inputEntity);
+      } catch (err) {
+        inputChannel = getInputChannel(await client.getInputEntity(chatId));
+      }
+      await client.invoke(new Api.channels.LeaveChannel({ channel: inputChannel }));
+    } else {
+      const cleanId = idStr.replace(/^-/, '');
+      const numId = parseInt(cleanId, 10);
+      if (!isNaN(numId)) {
+        await client.invoke(new Api.messages.DeleteChatUser({ chatId: numId, userId: 'me' }));
+      }
+    }
+    return { success: true };
+  } catch (err) {
+    console.error('[MTProto Backend] leavePeerChat error:', err.message);
+    throw err;
+  }
+}
+
+export async function clearChatHistory(chatId, revoke = false) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  const idStr = chatId?.toString() || '';
+  let inputEntity = peerEntityCache.get(idStr);
+  if (!inputEntity) {
+    try {
+      inputEntity = await client.getInputEntity(chatId);
+    } catch (e) {
+      try {
+        inputEntity = await client.getInputEntity(BigInt(chatId));
+      } catch (e2) {}
+    }
+  }
+
+  const isChannelOrSupergroup = Boolean(
+    idStr.startsWith('-100') ||
+    (inputEntity && (inputEntity.className === 'Channel' || inputEntity.className === 'InputPeerChannel' || inputEntity.className === 'InputChannel' || inputEntity.megagroup || inputEntity.broadcast))
+  );
+
+  try {
+    if (isChannelOrSupergroup) {
+      let inputChannel;
+      try {
+        inputChannel = getInputChannel(inputEntity);
+      } catch (err) {
+        inputChannel = getInputChannel(await client.getInputEntity(chatId));
+      }
+      await client.invoke(
+        new Api.channels.DeleteHistory({
+          channel: inputChannel,
+          maxId: 2147483647,
+          forEveryone: Boolean(revoke),
+        })
+      );
+    } else {
+      let inputPeer;
+      try {
+        inputPeer = getInputPeer(inputEntity);
+      } catch (e) {
+        inputPeer = getInputPeer(await client.getInputEntity(chatId));
+      }
+      await client.invoke(
+        new Api.messages.DeleteHistory({
+          peer: inputPeer,
+          maxId: 2147483647,
+          justClear: true,
+          revoke: Boolean(revoke),
+        })
+      );
+    }
+    return { success: true };
+  } catch (err) {
+    console.error('[MTProto Backend] clearChatHistory error:', err.message);
+    throw err;
+  }
+}
+
+export async function deleteGroupOrChannel(chatId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  let inputEntity = peerEntityCache.get(chatId?.toString());
+  if (!inputEntity) {
+    try {
+      inputEntity = await client.getInputEntity(chatId);
+    } catch (e) {
+      inputEntity = await client.getInputEntity(parseInt(chatId, 10));
+    }
+  }
+
+  const isChannelOrSupergroup =
+    inputEntity?.className === 'InputPeerChannel' ||
+    inputEntity?.className === 'Channel' ||
+    (typeof chatId === 'string' && chatId.startsWith('-100'));
+
+  if (isChannelOrSupergroup) {
+    const inputChannel = getInputChannel(inputEntity);
+    await client.invoke(new Api.channels.DeleteChannel({ channel: inputChannel }));
+  } else {
+    const rawId = String(chatId).replace(/^-/, '');
+    const numId = parseInt(rawId, 10);
+    await client.invoke(new Api.messages.DeleteChat({ chatId: numId }));
+  }
+
+  return { success: true };
+}
+
+export async function editChatDetails(chatId, { title, about }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  let inputEntity = peerEntityCache.get(chatId?.toString());
+  if (!inputEntity) {
+    try {
+      inputEntity = await client.getInputEntity(chatId);
+    } catch (e) {
+      inputEntity = await client.getInputEntity(parseInt(chatId, 10));
+    }
+  }
+
+  const isChannelOrSupergroup =
+    inputEntity?.className === 'InputPeerChannel' ||
+    inputEntity?.className === 'Channel' ||
+    (typeof chatId === 'string' && chatId.startsWith('-100'));
+
+  if (typeof title === 'string' && title.trim()) {
+    if (isChannelOrSupergroup) {
+      const inputChannel = getInputChannel(inputEntity);
+      await client.invoke(new Api.channels.EditTitle({ channel: inputChannel, title: title.trim() }));
+    } else {
+      const rawId = String(chatId).replace(/^-/, '');
+      const numId = parseInt(rawId, 10);
+      await client.invoke(new Api.messages.EditChatTitle({ chatId: numId, title: title.trim() }));
+    }
+  }
+
+  if (typeof about === 'string') {
+    let inputPeer;
+    try {
+      inputPeer = getInputPeer(inputEntity);
+    } catch (e) {
+      inputPeer = getInputPeer(await client.getInputEntity(chatId));
+    }
+    await client.invoke(new Api.messages.EditChatAbout({ peer: inputPeer, about: about.trim() }));
+  }
+
+  return { success: true };
+}
+
+export async function getForumTopicsList(channelId, limit = 50) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) {
+    throw new Error('Not authorized with Telegram MTProto');
+  }
+
+  let inputEntity = peerEntityCache.get(channelId?.toString());
+  if (!inputEntity) {
+    try {
+      inputEntity = await client.getInputEntity(channelId);
+    } catch (e) {
+      try {
+        inputEntity = await client.getInputEntity(BigInt(channelId));
+      } catch (e2) {
+        inputEntity = channelId;
+      }
+    }
+  }
+
+  let inputChannel;
+  try {
+    inputChannel = getInputChannel(inputEntity);
+  } catch (err) {
+    try {
+      inputChannel = getInputChannel(await client.getInputEntity(channelId));
+    } catch (e) {
+      inputChannel = inputEntity;
+    }
+  }
+
+  try {
+    const res = await client.invoke(
+      new Api.channels.GetForumTopics({
+        channel: inputChannel,
+        offsetDate: 0,
+        offsetId: 0,
+        offsetTopic: 0,
+        limit: Math.min(limit, 100),
+      })
+    );
+
+    const messageMap = new Map();
+    if (Array.isArray(res.messages)) {
+      for (const m of res.messages) {
+        if (m && m.id) messageMap.set(m.id, m);
+      }
+    }
+
+    const topics = (res.topics || []).map((t) => {
+      let lastMsg = undefined;
+      const topM = t.topMessage ? messageMap.get(t.topMessage) : null;
+      if (topM) {
+        lastMsg = {
+          text: topM.message || (topM.media ? '[Media]' : ''),
+          timestamp: topM.date ? new Date(topM.date * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+        };
+      }
+
+      return {
+        id: t.id,
+        title: t.title || `Topic #${t.id}`,
+        iconColor: t.iconColor,
+        iconEmojiId: t.iconEmojiId ? t.iconEmojiId.toString() : undefined,
+        unreadCount: t.unreadCount || 0,
+        topMessage: t.topMessage,
+        closed: Boolean(t.closed),
+        pinned: Boolean(t.pinned),
+        hidden: Boolean(t.hidden),
+        date: t.date ? t.date * 1000 : Date.now(),
+        lastMessage: lastMsg,
+      };
+    });
+
+    return {
+      count: res.count || topics.length,
+      topics,
+    };
+  } catch (err) {
+    if (!err.message?.includes('CHANNEL_FORUM_MISSING') && !err.message?.includes('CHAT_NOT_MODIFIED')) {
+      console.warn('[MTProto Backend] getForumTopicsList error:', err.message);
+    }
+    return { count: 0, topics: [] };
+  }
 }
 
 export async function pinPeerMessage(peerId, messageId, silent = false) {
@@ -4985,3 +5268,873 @@ export async function getMediaAudioTracks(chatId, messageId) {
   mediaTracksCache.set(cacheKey, result);
   return result;
 }
+
+// -------------------------------------------------------------
+// TELEGRAM ADMIN & OWNER COMPREHENSIVE MANAGEMENT SUITE
+// -------------------------------------------------------------
+
+async function resolveInputChannelHelper(client, chatId) {
+  let inputEntity = peerEntityCache.get(chatId?.toString());
+  if (!inputEntity) {
+    try {
+      inputEntity = await client.getInputEntity(chatId);
+    } catch (e) {
+      try {
+        inputEntity = await client.getInputEntity(BigInt(chatId));
+      } catch (e2) {
+        inputEntity = await client.getInputEntity(parseInt(chatId, 10));
+      }
+    }
+  }
+  return getInputChannel(inputEntity);
+}
+
+export async function getChatAdminFull(chatId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const idStr = String(chatId);
+  const isChannelOrSupergroup = idStr.startsWith('-100') || !idStr.startsWith('-');
+
+  if (isChannelOrSupergroup) {
+    const inputChannel = await resolveInputChannelHelper(client, chatId);
+    const full = await client.invoke(new Api.channels.GetFullChannel({ channel: inputChannel }));
+    const chat = full.chats?.[0] || {};
+    const fullChat = full.fullChat || {};
+
+    const defaultBanned = chat.defaultBannedRights || {};
+    const myAdminRights = chat.adminRights || null;
+
+    return {
+      id: chatId,
+      title: chat.title || '',
+      about: fullChat.about || '',
+      username: chat.username || '',
+      participantsCount: fullChat.participantsCount || 0,
+      adminsCount: fullChat.adminsCount || 0,
+      bannedCount: fullChat.bannedCount || 0,
+      kickedCount: fullChat.kickedCount || 0,
+      slowmodeSeconds: fullChat.slowmodeSeconds || 0,
+      hiddenPrehistory: Boolean(fullChat.hiddenPrehistory),
+      canViewParticipants: Boolean(fullChat.canViewParticipants),
+      canSetUsername: Boolean(fullChat.canSetUsername),
+      canDeleteChannel: Boolean(fullChat.canDeleteChannel),
+      exportedInvite: fullChat.exportedInvite?.link || '',
+      isOwner: Boolean(chat.creator),
+      isAdmin: Boolean(chat.creator || chat.adminRights),
+      myAdminRights: myAdminRights ? {
+        changeInfo: Boolean(myAdminRights.changeInfo),
+        postMessages: Boolean(myAdminRights.postMessages),
+        editMessages: Boolean(myAdminRights.editMessages),
+        deleteMessages: Boolean(myAdminRights.deleteMessages),
+        banUsers: Boolean(myAdminRights.banUsers),
+        inviteUsers: Boolean(myAdminRights.inviteUsers),
+        pinMessages: Boolean(myAdminRights.pinMessages),
+        addAdmins: Boolean(myAdminRights.addAdmins),
+        anonymous: Boolean(myAdminRights.anonymous),
+        manageCall: Boolean(myAdminRights.manageCall),
+        manageTopics: Boolean(myAdminRights.manageTopics),
+      } : null,
+      permissions: {
+        sendMessages: !defaultBanned.sendMessages,
+        sendMedia: !defaultBanned.sendMedia,
+        sendStickers: !defaultBanned.sendStickers,
+        embedLinks: !defaultBanned.embedLinks,
+        sendPolls: !defaultBanned.sendPolls,
+        inviteUsers: !defaultBanned.inviteUsers,
+        pinMessages: !defaultBanned.pinMessages,
+        changeInfo: !defaultBanned.changeInfo,
+      }
+    };
+  } else {
+    const rawId = idStr.replace(/^-/, '');
+    const numId = parseInt(rawId, 10);
+    const full = await client.invoke(new Api.messages.GetFullChat({ chatId: numId }));
+    const chat = full.chats?.[0] || {};
+    const fullChat = full.fullChat || {};
+
+    const defaultBanned = chat.defaultBannedRights || {};
+
+    return {
+      id: chatId,
+      title: chat.title || '',
+      about: fullChat.about || '',
+      username: '',
+      participantsCount: chat.participantsCount || 0,
+      adminsCount: fullChat.participants?.participants?.filter(p => p.className?.includes('Admin') || p.className?.includes('Creator'))?.length || 0,
+      bannedCount: 0,
+      kickedCount: 0,
+      slowmodeSeconds: 0,
+      hiddenPrehistory: false,
+      canViewParticipants: true,
+      canSetUsername: false,
+      canDeleteChannel: Boolean(chat.creator),
+      exportedInvite: fullChat.exportedInvite?.link || '',
+      isOwner: Boolean(chat.creator),
+      isAdmin: Boolean(chat.creator || chat.adminRights),
+      myAdminRights: null,
+      permissions: {
+        sendMessages: !defaultBanned.sendMessages,
+        sendMedia: !defaultBanned.sendMedia,
+        sendStickers: !defaultBanned.sendStickers,
+        embedLinks: !defaultBanned.embedLinks,
+        sendPolls: !defaultBanned.sendPolls,
+        inviteUsers: !defaultBanned.inviteUsers,
+        pinMessages: !defaultBanned.pinMessages,
+        changeInfo: !defaultBanned.changeInfo,
+      }
+    };
+  }
+}
+
+export async function updateChatGeneralSettings(chatId, { title, about, username, hiddenPrehistory }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const idStr = String(chatId);
+  const isChannelOrSupergroup = idStr.startsWith('-100') || !idStr.startsWith('-');
+
+  // 1. Update Title (safely ignore CHAT_NOT_MODIFIED)
+  if (typeof title === 'string' && title.trim()) {
+    try {
+      if (isChannelOrSupergroup) {
+        const inputChannel = await resolveInputChannelHelper(client, chatId);
+        await client.invoke(new Api.channels.EditTitle({ channel: inputChannel, title: title.trim() }));
+      } else {
+        const rawId = idStr.replace(/^-/, '');
+        await client.invoke(new Api.messages.EditChatTitle({ chatId: parseInt(rawId, 10), title: title.trim() }));
+      }
+    } catch (err) {
+      const msg = err.message || '';
+      if (!msg.includes('CHAT_NOT_MODIFIED') && !msg.includes('CHAT_TITLE_NOT_MODIFIED')) {
+        throw new Error(`Failed to update title: ${msg}`);
+      }
+    }
+  }
+
+  // 2. Update About / Description (safely ignore CHAT_NOT_MODIFIED)
+  if (typeof about === 'string') {
+    try {
+      let inputPeer = await resolveInputPeer(chatId);
+      if (!inputPeer) inputPeer = await client.getInputEntity(chatId);
+      await client.invoke(new Api.messages.EditChatAbout({ peer: inputPeer, about: about.trim() }));
+    } catch (err) {
+      const msg = err.message || '';
+      if (!msg.includes('CHAT_NOT_MODIFIED') && !msg.includes('CHAT_ABOUT_NOT_MODIFIED')) {
+        throw new Error(`Failed to update description: ${msg}`);
+      }
+    }
+  }
+
+  // 3. Update Public Username (safely ignore CHAT_NOT_MODIFIED and report real errors)
+  if (isChannelOrSupergroup && typeof username === 'string') {
+    const cleanUsername = username.trim().replace(/^@/, '');
+    try {
+      const inputChannel = await resolveInputChannelHelper(client, chatId);
+      await client.invoke(new Api.channels.UpdateUsername({ channel: inputChannel, username: cleanUsername }));
+    } catch (err) {
+      const msg = err.message || '';
+      if (!msg.includes('CHAT_NOT_MODIFIED') && !msg.includes('USERNAME_NOT_MODIFIED')) {
+        if (msg.includes('USERNAME_OCCUPIED')) {
+          throw new Error(`The username @${cleanUsername} is already taken.`);
+        } else if (msg.includes('USERNAME_INVALID')) {
+          throw new Error(`The username @${cleanUsername} is invalid.`);
+        } else if (msg.includes('CHANNELS_ADMIN_PUBLIC_TOO_MUCH')) {
+          throw new Error('You have reached the maximum number of public channels or groups.');
+        } else if (msg.includes('CHAT_ADMIN_REQUIRED')) {
+          throw new Error('Only the chat owner can change the public username.');
+        } else {
+          throw new Error(`Failed to update username: ${msg}`);
+        }
+      }
+    }
+  }
+
+  // 4. Update Chat History Visibility (Pre-history Hidden)
+  if (isChannelOrSupergroup && typeof hiddenPrehistory === 'boolean') {
+    try {
+      const inputChannel = await resolveInputChannelHelper(client, chatId);
+      await client.invoke(new Api.channels.TogglePreHistoryHidden({ channel: inputChannel, enabled: hiddenPrehistory }));
+    } catch (err) {
+      const msg = err.message || '';
+      if (!msg.includes('CHAT_NOT_MODIFIED') && !msg.includes('PREHISTORY_NOT_MODIFIED')) {
+        console.warn('[Backend] togglePrehistory warn:', msg);
+      }
+    }
+  }
+
+  return { success: true };
+}
+
+export async function updateChatPermissions(chatId, { permissions, slowmodeSeconds }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const idStr = String(chatId);
+  const isChannelOrSupergroup = idStr.startsWith('-100') || !idStr.startsWith('-');
+
+  if (permissions && typeof permissions === 'object') {
+    const bannedRights = new Api.ChatBannedRights({
+      untilDate: 0,
+      viewMessages: false,
+      sendMessages: permissions.sendMessages === false,
+      sendMedia: permissions.sendMedia === false,
+      sendStickers: permissions.sendStickers === false,
+      sendGifs: permissions.sendStickers === false,
+      sendGames: permissions.sendStickers === false,
+      sendInline: permissions.sendStickers === false,
+      embedLinks: permissions.embedLinks === false,
+      sendPolls: permissions.sendPolls === false,
+      changeInfo: permissions.changeInfo === false,
+      inviteUsers: permissions.inviteUsers === false,
+      pinMessages: permissions.pinMessages === false,
+    });
+
+    let inputPeer = await resolveInputPeer(chatId);
+    if (!inputPeer) inputPeer = await client.getInputEntity(chatId);
+
+    await client.invoke(new Api.messages.EditChatDefaultBannedRights({
+      peer: inputPeer,
+      bannedRights
+    }));
+  }
+
+  if (isChannelOrSupergroup && slowmodeSeconds !== undefined) {
+    const inputChannel = await resolveInputChannelHelper(client, chatId);
+    await client.invoke(new Api.channels.ToggleSlowMode({
+      channel: inputChannel,
+      seconds: parseInt(slowmodeSeconds, 10) || 0
+    }));
+  }
+
+  return { success: true };
+}
+
+export async function getChatAdministrators(chatId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+  const res = await client.invoke(new Api.channels.GetParticipants({
+    channel: inputChannel,
+    filter: new Api.ChannelParticipantsAdmins(),
+    offset: 0,
+    limit: 100,
+    hash: 0
+  }));
+
+  const userMap = new Map();
+  if (Array.isArray(res.users)) {
+    for (const u of res.users) {
+      if (u && u.id) userMap.set(u.id.toString(), u);
+    }
+  }
+
+  const admins = (res.participants || []).map((p) => {
+    const u = userMap.get(p.userId?.toString()) || {};
+    const isOwner = p.className === 'ChannelParticipantCreator';
+    return {
+      userId: p.userId ? p.userId.toString() : (u.id ? u.id.toString() : ''),
+      firstName: u.firstName || '',
+      lastName: u.lastName || '',
+      username: u.username || '',
+      isOwner,
+      isSelf: Boolean(u.isSelf),
+      rank: p.rank || (isOwner ? 'Owner' : 'Admin'),
+      adminRights: p.adminRights ? {
+        changeInfo: Boolean(p.adminRights.changeInfo),
+        postMessages: Boolean(p.adminRights.postMessages),
+        editMessages: Boolean(p.adminRights.editMessages),
+        deleteMessages: Boolean(p.adminRights.deleteMessages),
+        banUsers: Boolean(p.adminRights.banUsers),
+        inviteUsers: Boolean(p.adminRights.inviteUsers),
+        pinMessages: Boolean(p.adminRights.pinMessages),
+        addAdmins: Boolean(p.adminRights.addAdmins),
+        anonymous: Boolean(p.adminRights.anonymous),
+        manageCall: Boolean(p.adminRights.manageCall),
+        manageTopics: Boolean(p.adminRights.manageTopics),
+      } : null,
+      promotedBy: p.promotedBy ? p.promotedBy.toString() : '',
+      date: p.date ? p.date * 1000 : Date.now(),
+    };
+  });
+
+  return { admins };
+}
+
+export async function editChatAdministrator(chatId, { userId, adminRights, rank = '' }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+  let inputUser;
+  try {
+    inputUser = await client.getInputEntity(userId);
+  } catch (e) {
+    inputUser = await client.getInputEntity(parseInt(userId, 10));
+  }
+
+  let rightsObj;
+  if (!adminRights) {
+    // Demote admin
+    rightsObj = new Api.ChatAdminRights({
+      changeInfo: false,
+      postMessages: false,
+      editMessages: false,
+      deleteMessages: false,
+      banUsers: false,
+      inviteUsers: false,
+      pinMessages: false,
+      addAdmins: false,
+      anonymous: false,
+      manageCall: false,
+      manageTopics: false
+    });
+  } else {
+    rightsObj = new Api.ChatAdminRights({
+      changeInfo: Boolean(adminRights.changeInfo),
+      postMessages: Boolean(adminRights.postMessages),
+      editMessages: Boolean(adminRights.editMessages),
+      deleteMessages: Boolean(adminRights.deleteMessages !== false), // default true
+      banUsers: Boolean(adminRights.banUsers !== false),
+      inviteUsers: Boolean(adminRights.inviteUsers !== false),
+      pinMessages: Boolean(adminRights.pinMessages !== false),
+      addAdmins: Boolean(adminRights.addAdmins),
+      anonymous: Boolean(adminRights.anonymous),
+      manageCall: Boolean(adminRights.manageCall),
+      manageTopics: Boolean(adminRights.manageTopics),
+    });
+  }
+
+  await client.invoke(new Api.channels.EditAdmin({
+    channel: inputChannel,
+    userId: inputUser,
+    adminRights: rightsObj,
+    rank: String(rank || '').trim()
+  }));
+
+  return { success: true };
+}
+
+export async function transferChatOwnership(chatId, { userId, password = '' }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+  let inputUser = await client.getInputEntity(userId);
+
+  let checkPwd = new Api.InputCheckPasswordEmpty();
+  if (password) {
+    const pwdRes = await client.invoke(new Api.account.GetPassword());
+    checkPwd = await client.computePasswordCheck(pwdRes, password);
+  }
+
+  await client.invoke(new Api.channels.EditCreator({
+    channel: inputChannel,
+    userId: inputUser,
+    password: checkPwd
+  }));
+
+  return { success: true };
+}
+
+export async function getChatMembers(chatId, { query = '', offset = 0, limit = 50 }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+  const filter = query && query.trim()
+    ? new Api.ChannelParticipantsSearch({ q: query.trim() })
+    : new Api.ChannelParticipantsRecent();
+
+  const res = await client.invoke(new Api.channels.GetParticipants({
+    channel: inputChannel,
+    filter,
+    offset: parseInt(offset, 10) || 0,
+    limit: Math.min(parseInt(limit, 10) || 50, 100),
+    hash: 0
+  }));
+
+  const userMap = new Map();
+  if (Array.isArray(res.users)) {
+    for (const u of res.users) {
+      if (u && u.id) userMap.set(u.id.toString(), u);
+    }
+  }
+
+  const members = (res.participants || []).map((p) => {
+    const u = userMap.get(p.userId?.toString()) || {};
+    const isOwner = p.className === 'ChannelParticipantCreator';
+    const isAdmin = isOwner || p.className === 'ChannelParticipantAdmin';
+    return {
+      userId: p.userId ? p.userId.toString() : (u.id ? u.id.toString() : ''),
+      firstName: u.firstName || '',
+      lastName: u.lastName || '',
+      username: u.username || '',
+      isOwner,
+      isAdmin,
+      isSelf: Boolean(u.isSelf),
+      rank: p.rank || '',
+      date: p.date ? p.date * 1000 : Date.now(),
+    };
+  });
+
+  return { members, count: res.count || members.length };
+}
+
+export async function inviteMemberToChat(chatId, usernameOrId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+  const inputUser = await client.getInputEntity(usernameOrId);
+
+  await client.invoke(new Api.channels.InviteToChannel({
+    channel: inputChannel,
+    users: [inputUser]
+  }));
+
+  return { success: true };
+}
+
+export async function restrictChatMember(chatId, { userId, bannedRights, untilDate = 0 }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+  let inputUser = await client.getInputEntity(userId);
+
+  const rights = new Api.ChatBannedRights({
+    untilDate: parseInt(untilDate, 10) || 0,
+    viewMessages: Boolean(bannedRights?.viewMessages),
+    sendMessages: Boolean(bannedRights?.sendMessages),
+    sendMedia: Boolean(bannedRights?.sendMedia),
+    sendStickers: Boolean(bannedRights?.sendStickers),
+    sendGifs: Boolean(bannedRights?.sendStickers),
+    sendGames: Boolean(bannedRights?.sendStickers),
+    sendInline: Boolean(bannedRights?.sendStickers),
+    embedLinks: Boolean(bannedRights?.embedLinks),
+    sendPolls: Boolean(bannedRights?.sendPolls),
+    changeInfo: Boolean(bannedRights?.changeInfo),
+    inviteUsers: Boolean(bannedRights?.inviteUsers),
+    pinMessages: Boolean(bannedRights?.pinMessages),
+    manageTopics: Boolean(bannedRights?.manageTopics),
+  });
+
+  await client.invoke(new Api.channels.EditBanned({
+    channel: inputChannel,
+    participant: inputUser,
+    bannedRights: rights
+  }));
+
+  return { success: true };
+}
+
+export async function kickChatMember(chatId, userId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+  let inputUser = await client.getInputEntity(userId);
+
+  // Kicking in Telegram: banned from viewing messages with untilDate = 0
+  const kickRights = new Api.ChatBannedRights({
+    viewMessages: true,
+    untilDate: 0
+  });
+
+  await client.invoke(new Api.channels.EditBanned({
+    channel: inputChannel,
+    participant: inputUser,
+    bannedRights: kickRights
+  }));
+
+  return { success: true };
+}
+
+export async function getBannedMembers(chatId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+
+  let kickedRes = { participants: [], users: [] };
+  let bannedRes = { participants: [], users: [] };
+
+  try {
+    kickedRes = await client.invoke(new Api.channels.GetParticipants({
+      channel: inputChannel,
+      filter: new Api.ChannelParticipantsKicked({ q: '' }),
+      offset: 0,
+      limit: 100,
+      hash: 0
+    }));
+  } catch (e) {}
+
+  try {
+    bannedRes = await client.invoke(new Api.channels.GetParticipants({
+      channel: inputChannel,
+      filter: new Api.ChannelParticipantsBanned({ q: '' }),
+      offset: 0,
+      limit: 100,
+      hash: 0
+    }));
+  } catch (e) {}
+
+  const userMap = new Map();
+  for (const u of [...(kickedRes.users || []), ...(bannedRes.users || [])]) {
+    if (u && u.id) userMap.set(u.id.toString(), u);
+  }
+
+  const allBanned = [];
+
+  for (const p of (kickedRes.participants || [])) {
+    const u = userMap.get(p.userId?.toString()) || {};
+    allBanned.push({
+      userId: p.userId ? p.userId.toString() : (u.id ? u.id.toString() : ''),
+      firstName: u.firstName || '',
+      lastName: u.lastName || '',
+      username: u.username || '',
+      type: 'kicked', // completely banned / removed
+      kickedBy: p.kickedBy ? p.kickedBy.toString() : '',
+      date: p.date ? p.date * 1000 : Date.now(),
+      bannedRights: p.bannedRights || null
+    });
+  }
+
+  for (const p of (bannedRes.participants || [])) {
+    const u = userMap.get(p.userId?.toString()) || {};
+    allBanned.push({
+      userId: p.userId ? p.userId.toString() : (u.id ? u.id.toString() : ''),
+      firstName: u.firstName || '',
+      lastName: u.lastName || '',
+      username: u.username || '',
+      type: 'restricted',
+      kickedBy: p.kickedBy ? p.kickedBy.toString() : '',
+      date: p.date ? p.date * 1000 : Date.now(),
+      bannedRights: p.bannedRights || null
+    });
+  }
+
+  return { banned: allBanned };
+}
+
+export async function unbanChatMember(chatId, userId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+  let inputUser = await client.getInputEntity(userId);
+
+  const unbanRights = new Api.ChatBannedRights({
+    untilDate: 0,
+    viewMessages: false,
+    sendMessages: false,
+    sendMedia: false,
+    sendStickers: false,
+    sendGifs: false,
+    sendGames: false,
+    sendInline: false,
+    embedLinks: false,
+    sendPolls: false,
+    changeInfo: false,
+    inviteUsers: false,
+    pinMessages: false,
+    manageTopics: false
+  });
+
+  await client.invoke(new Api.channels.EditBanned({
+    channel: inputChannel,
+    participant: inputUser,
+    bannedRights: unbanRights
+  }));
+
+  return { success: true };
+}
+
+export async function getChatInviteLinks(chatId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  let inputPeer = await resolveInputPeer(chatId);
+  if (!inputPeer) inputPeer = await client.getInputEntity(chatId);
+
+  try {
+    const res = await client.invoke(new Api.messages.GetExportedChatInvites({
+      peer: inputPeer,
+      adminId: new Api.InputUserSelf(),
+      revoked: false,
+      limit: 50
+    }));
+
+    const invites = (res.invites || []).map(inv => ({
+      link: inv.link || '',
+      title: inv.title || '',
+      date: inv.date ? inv.date * 1000 : Date.now(),
+      expireDate: inv.expireDate ? inv.expireDate * 1000 : null,
+      usageLimit: inv.usageLimit || 0,
+      usage: inv.usage || 0,
+      permanent: Boolean(inv.permanent),
+      revoked: Boolean(inv.revoked),
+      requestNeeded: Boolean(inv.requestNeeded),
+    }));
+
+    return { invites };
+  } catch (err) {
+    console.warn('[Backend] getChatInviteLinks warn:', err.message);
+    return { invites: [] };
+  }
+}
+
+export async function createChatInviteLink(chatId, { title, expireDate, usageLimit, requestNeeded }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  let inputPeer = await resolveInputPeer(chatId);
+  if (!inputPeer) inputPeer = await client.getInputEntity(chatId);
+
+  const res = await client.invoke(new Api.messages.ExportChatInvite({
+    peer: inputPeer,
+    title: title ? String(title).trim() : undefined,
+    expireDate: expireDate ? Math.floor(new Date(expireDate).getTime() / 1000) : undefined,
+    usageLimit: usageLimit ? parseInt(usageLimit, 10) : undefined,
+    requestNeeded: Boolean(requestNeeded)
+  }));
+
+  return {
+    link: res.link || '',
+    title: res.title || '',
+    expireDate: res.expireDate ? res.expireDate * 1000 : null,
+    usageLimit: res.usageLimit || 0,
+    usage: res.usage || 0,
+  };
+}
+
+export async function revokeChatInviteLink(chatId, link) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  let inputPeer = await resolveInputPeer(chatId);
+  if (!inputPeer) inputPeer = await client.getInputEntity(chatId);
+
+  await client.invoke(new Api.messages.EditExportedChatInvite({
+    peer: inputPeer,
+    link: String(link).trim(),
+    revoked: true
+  }));
+
+  return { success: true };
+}
+
+export async function getChatAdminLog(chatId, { limit = 50, query = '' }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const inputChannel = await resolveInputChannelHelper(client, chatId);
+
+  try {
+    const res = await client.invoke(new Api.channels.GetAdminLog({
+      channel: inputChannel,
+      q: query || '',
+      limit: Math.min(parseInt(limit, 10) || 50, 100)
+    }));
+
+    const userMap = new Map();
+    if (Array.isArray(res.users)) {
+      for (const u of res.users) {
+        if (u && u.id) userMap.set(u.id.toString(), u);
+      }
+    }
+
+    const events = (res.events || []).map(e => {
+      const u = userMap.get(e.userId?.toString()) || {};
+      const actionName = e.action?.className || 'UnknownAction';
+      return {
+        id: e.id ? e.id.toString() : '',
+        date: e.date ? e.date * 1000 : Date.now(),
+        userId: e.userId ? e.userId.toString() : '',
+        adminName: `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.username || 'Admin',
+        action: actionName,
+        details: e.action ? JSON.stringify(e.action) : ''
+      };
+    });
+
+    return { events };
+  } catch (err) {
+    if (!err.message?.includes('CHAT_ADMIN_REQUIRED')) {
+      console.warn('[Backend] getChatAdminLog warn:', err.message);
+    }
+    return { events: [] };
+  }
+}
+
+export async function checkChatUsernameAvailability(chatId, username) {
+  const client = await getClient();
+  const cleanUsername = String(username || '').replace(/^@/, '').trim();
+  if (!cleanUsername) {
+    return { available: false, error: 'Username cannot be empty' };
+  }
+  if (cleanUsername.length < 5) {
+    return { available: false, error: 'Username must be at least 5 characters' };
+  }
+  if (cleanUsername.length > 32) {
+    return { available: false, error: 'Username cannot exceed 32 characters' };
+  }
+  if (!/^[a-zA-Z0-9_]+$/.test(cleanUsername)) {
+    return { available: false, error: 'Username can only contain a-z, 0-9, and underscores' };
+  }
+
+  try {
+    let inputChannel = null;
+    try {
+      inputChannel = await resolveInputChannelHelper(client, chatId);
+    } catch (e) {}
+
+    let res;
+    if (inputChannel) {
+      res = await client.invoke(new Api.channels.CheckUsername({
+        channel: inputChannel,
+        username: cleanUsername,
+      }));
+    } else {
+      res = await client.invoke(new Api.account.CheckUsername({
+        username: cleanUsername,
+      }));
+    }
+
+    if (res === true) {
+      return { available: true, username: cleanUsername };
+    } else {
+      return { available: false, username: cleanUsername, error: 'This username is already taken' };
+    }
+  } catch (err) {
+    const msg = err.message || '';
+    if (msg.includes('USERNAME_OCCUPIED')) {
+      return { available: false, username: cleanUsername, error: 'This username is already taken' };
+    }
+    if (msg.includes('USERNAME_INVALID')) {
+      return { available: false, username: cleanUsername, error: 'This username is invalid or reserved' };
+    }
+    if (msg.includes('USERNAME_PURCHASE_AVAILABLE')) {
+      return { available: false, username: cleanUsername, error: 'This username is available for purchase on Fragment' };
+    }
+    if (msg.includes('CHANNELS_ADMIN_PUBLIC_TOO_MUCH')) {
+      return { available: false, username: cleanUsername, error: 'You have created too many public channels or groups' };
+    }
+    return { available: false, username: cleanUsername, error: err.message || 'Username check failed' };
+  }
+}
+
+export async function uploadChatPhoto(chatId, { fileBase64, filename, url }) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  let buffer;
+  let name = filename || 'chat_photo.jpg';
+
+  if (url) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TeleForge/1.0',
+        },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const arrayBuf = await response.arrayBuffer();
+      buffer = Buffer.from(arrayBuf);
+      if (!buffer || buffer.length < 100) {
+        throw new Error('Downloaded file is empty or invalid image');
+      }
+      try {
+        const urlPath = new URL(url).pathname;
+        const base = path.basename(urlPath);
+        if (base && /\.(jpe?g|png|webp|gif)$/i.test(base)) {
+          name = base;
+        }
+      } catch (e) {}
+    } catch (err) {
+      throw new Error(`Could not fetch image from URL: ${err.message}`);
+    }
+  } else if (fileBase64) {
+    const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, '').trim();
+    buffer = Buffer.from(cleanBase64, 'base64');
+    if (!buffer || buffer.length < 100) {
+      throw new Error('Uploaded file is empty or invalid image');
+    }
+  } else {
+    throw new Error('Either fileBase64 or url must be provided');
+  }
+
+  if (!name.toLowerCase().endsWith('.jpg') && !name.toLowerCase().endsWith('.jpeg') && !name.toLowerCase().endsWith('.png')) {
+    name = `${path.parse(name).name || 'chat_photo'}.jpg`;
+  }
+
+  const customFile = new CustomFile(name, buffer.length, '', buffer);
+  const uploadedFile = await client.uploadFile({
+    file: customFile,
+    workers: 1,
+  });
+
+  const idStr = String(chatId);
+  const isChannelOrSupergroup = idStr.startsWith('-100') || !idStr.startsWith('-');
+
+  if (isChannelOrSupergroup) {
+    const inputChannel = await resolveInputChannelHelper(client, chatId);
+    await client.invoke(new Api.channels.EditPhoto({
+      channel: inputChannel,
+      photo: new Api.InputChatUploadedPhoto({ file: uploadedFile })
+    }));
+  } else {
+    const rawId = idStr.replace(/^-/, '');
+    await client.invoke(new Api.messages.EditChatPhoto({
+      chatId: parseInt(rawId, 10),
+      photo: new Api.InputChatUploadedPhoto({ file: uploadedFile })
+    }));
+  }
+
+  return { success: true };
+}
+
+export async function removeChatPhoto(chatId) {
+  const client = await getClient();
+  const isAuth = await client.isUserAuthorized();
+  if (!isAuth) throw new Error('Not authorized with Telegram MTProto');
+
+  const idStr = String(chatId);
+  const isChannelOrSupergroup = idStr.startsWith('-100') || !idStr.startsWith('-');
+
+  if (isChannelOrSupergroup) {
+    const inputChannel = await resolveInputChannelHelper(client, chatId);
+    await client.invoke(new Api.channels.EditPhoto({
+      channel: inputChannel,
+      photo: new Api.InputChatPhotoEmpty()
+    }));
+  } else {
+    const rawId = idStr.replace(/^-/, '');
+    await client.invoke(new Api.messages.EditChatPhoto({
+      chatId: parseInt(rawId, 10),
+      photo: new Api.InputChatPhotoEmpty()
+    }));
+  }
+
+  return { success: true };
+}
+
+

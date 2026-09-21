@@ -14,6 +14,11 @@ import {
   sendBotCallbackAnswer,
   sendPeerReaction,
   getMessageReactionsList,
+  leavePeerChat,
+  clearChatHistory,
+  deleteGroupOrChannel,
+  editChatDetails,
+  getForumTopicsList,
   toggleChatMute,
   editPeerMessage,
   deletePeerMessages,
@@ -57,6 +62,25 @@ import {
   searchMessagesInPeer,
   getMessagesAroundMessage,
   addBotToChat,
+  getChatAdminFull,
+  updateChatGeneralSettings,
+  updateChatPermissions,
+  getChatAdministrators,
+  editChatAdministrator,
+  transferChatOwnership,
+  getChatMembers,
+  inviteMemberToChat,
+  restrictChatMember,
+  kickChatMember,
+  getBannedMembers,
+  unbanChatMember,
+  getChatInviteLinks,
+  createChatInviteLink,
+  revokeChatInviteLink,
+  getChatAdminLog,
+  checkChatUsernameAvailability,
+  uploadChatPhoto,
+  removeChatPhoto,
 } from './telegramBackend.js';
 
 // Helper to read JSON request body
@@ -171,7 +195,7 @@ export function telegramMiddleware() {
 
       // 8. GET /api/telegram/dialogs
       if (req.method === 'GET' && pathname === '/api/telegram/dialogs') {
-        const limit = parsedUrl.query.limit ? parseInt(parsedUrl.query.limit, 10) : 40;
+        const limit = parsedUrl.query.limit ? parseInt(parsedUrl.query.limit, 10) : 400;
         const dialogs = await getDialogsList(limit);
         return sendJson(res, 200, { dialogs });
       }
@@ -248,7 +272,11 @@ export function telegramMiddleware() {
         }
         const limit = parsedUrl.query.limit ? parseInt(parsedUrl.query.limit, 10) : 50;
         const offsetId = parsedUrl.query.offsetId ? parseInt(parsedUrl.query.offsetId, 10) : 0;
-        const messages = await getMessagesForPeer(chatId, limit, offsetId);
+        const options = {};
+        if (parsedUrl.query.replyTo) {
+          options.replyTo = parseInt(parsedUrl.query.replyTo, 10);
+        }
+        const messages = await getMessagesForPeer(chatId, limit, offsetId, options);
         return sendJson(res, 200, { messages });
       }
 
@@ -327,6 +355,77 @@ export function telegramMiddleware() {
         }
       }
 
+      // POST /api/telegram/chats/leave
+      if (req.method === 'POST' && pathname === '/api/telegram/chats/leave') {
+        const body = await readJsonBody(req);
+        if (!body.chatId) {
+          return sendError(res, 400, 'chatId is required');
+        }
+        try {
+          const result = await leavePeerChat(body.chatId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to leave chat');
+        }
+      }
+
+      // POST /api/telegram/chats/clear-history
+      if (req.method === 'POST' && pathname === '/api/telegram/chats/clear-history') {
+        const body = await readJsonBody(req);
+        if (!body.chatId) {
+          return sendError(res, 400, 'chatId is required');
+        }
+        try {
+          const result = await clearChatHistory(body.chatId, Boolean(body.revoke));
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to clear chat history');
+        }
+      }
+
+      // POST /api/telegram/chats/delete (Owner action)
+      if (req.method === 'POST' && pathname === '/api/telegram/chats/delete') {
+        const body = await readJsonBody(req);
+        if (!body.chatId) {
+          return sendError(res, 400, 'chatId is required');
+        }
+        try {
+          const result = await deleteGroupOrChannel(body.chatId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to delete chat');
+        }
+      }
+
+      // POST /api/telegram/chats/edit-info (Admin & Owner action)
+      if (req.method === 'POST' && pathname === '/api/telegram/chats/edit-info') {
+        const body = await readJsonBody(req);
+        if (!body.chatId) {
+          return sendError(res, 400, 'chatId is required');
+        }
+        try {
+          const result = await editChatDetails(body.chatId, { title: body.title, about: body.about });
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to edit chat details');
+        }
+      }
+
+      // GET /api/telegram/forum/topics
+      if (req.method === 'GET' && pathname === '/api/telegram/forum/topics') {
+        const chatId = parsedUrl.query.chatId;
+        const limit = parsedUrl.query.limit ? parseInt(parsedUrl.query.limit, 10) : 50;
+        if (!chatId) {
+          return sendError(res, 400, 'chatId is required');
+        }
+        try {
+          const result = await getForumTopicsList(chatId, limit);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch forum topics');
+        }
+      }
+
       // 10b. POST /api/telegram/messages/react
       if (req.method === 'POST' && pathname === '/api/telegram/messages/react') {
         const body = await readJsonBody(req);
@@ -343,9 +442,9 @@ export function telegramMiddleware() {
 
       // 10b-2. GET /api/telegram/messages/reactions-list
       if (req.method === 'GET' && pathname === '/api/telegram/messages/reactions-list') {
-        const chatId = query.chatId;
-        const messageId = query.messageId;
-        const limit = query.limit ? parseInt(query.limit, 10) : 50;
+        const chatId = parsedUrl.query.chatId;
+        const messageId = parsedUrl.query.messageId;
+        const limit = parsedUrl.query.limit ? parseInt(parsedUrl.query.limit, 10) : 50;
         if (!chatId || !messageId) {
           return sendError(res, 400, 'chatId and messageId are required');
         }
@@ -710,6 +809,241 @@ export function telegramMiddleware() {
           return sendJson(res, 200, { messages });
         } catch (err) {
           return sendError(res, 500, err.message || 'Failed to fetch shared media');
+        }
+      }
+
+      // ==========================================
+      // TELEGRAM ADMIN & OWNER MANAGEMENT ENDPOINTS
+      // ==========================================
+
+      // GET /api/telegram/chat/admin-full
+      if (req.method === 'GET' && pathname === '/api/telegram/chat/admin-full') {
+        try {
+          const chatId = parsedUrl.query.chatId;
+          if (!chatId) return sendError(res, 400, 'chatId is required');
+          const data = await getChatAdminFull(chatId);
+          return sendJson(res, 200, data);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch full admin chat details');
+        }
+      }
+
+      // POST /api/telegram/chat/update-settings
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/update-settings') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId) return sendError(res, 400, 'chatId is required');
+          const result = await updateChatGeneralSettings(body.chatId, body);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to update chat settings');
+        }
+      }
+
+      // POST /api/telegram/chat/update-permissions
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/update-permissions') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId) return sendError(res, 400, 'chatId is required');
+          const result = await updateChatPermissions(body.chatId, body);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to update chat permissions');
+        }
+      }
+
+      // GET /api/telegram/chat/administrators
+      if (req.method === 'GET' && pathname === '/api/telegram/chat/administrators') {
+        try {
+          const chatId = parsedUrl.query.chatId;
+          if (!chatId) return sendError(res, 400, 'chatId is required');
+          const result = await getChatAdministrators(chatId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch administrators');
+        }
+      }
+
+      // POST /api/telegram/chat/edit-admin
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/edit-admin') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId || !body.userId) return sendError(res, 400, 'chatId and userId are required');
+          const result = await editChatAdministrator(body.chatId, body);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to edit administrator');
+        }
+      }
+
+      // POST /api/telegram/chat/transfer-ownership
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/transfer-ownership') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId || !body.userId) return sendError(res, 400, 'chatId and userId are required');
+          const result = await transferChatOwnership(body.chatId, body);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to transfer chat ownership');
+        }
+      }
+
+      // GET /api/telegram/chat/members
+      if (req.method === 'GET' && pathname === '/api/telegram/chat/members') {
+        try {
+          const { chatId, query = '', offset = 0, limit = 50 } = parsedUrl.query;
+          if (!chatId) return sendError(res, 400, 'chatId is required');
+          const result = await getChatMembers(chatId, { query, offset, limit });
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch members');
+        }
+      }
+
+      // POST /api/telegram/chat/invite-member
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/invite-member') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId || !body.user) return sendError(res, 400, 'chatId and user are required');
+          const result = await inviteMemberToChat(body.chatId, body.user);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to invite member');
+        }
+      }
+
+      // POST /api/telegram/chat/restrict-member
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/restrict-member') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId || !body.userId) return sendError(res, 400, 'chatId and userId are required');
+          const result = await restrictChatMember(body.chatId, body);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to restrict member');
+        }
+      }
+
+      // POST /api/telegram/chat/kick-member
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/kick-member') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId || !body.userId) return sendError(res, 400, 'chatId and userId are required');
+          const result = await kickChatMember(body.chatId, body.userId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to kick member');
+        }
+      }
+
+      // GET /api/telegram/chat/banned-members
+      if (req.method === 'GET' && pathname === '/api/telegram/chat/banned-members') {
+        try {
+          const chatId = parsedUrl.query.chatId;
+          if (!chatId) return sendError(res, 400, 'chatId is required');
+          const result = await getBannedMembers(chatId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch banned members');
+        }
+      }
+
+      // POST /api/telegram/chat/unban-member
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/unban-member') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId || !body.userId) return sendError(res, 400, 'chatId and userId are required');
+          const result = await unbanChatMember(body.chatId, body.userId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to unban member');
+        }
+      }
+
+      // GET /api/telegram/chat/invite-links
+      if (req.method === 'GET' && pathname === '/api/telegram/chat/invite-links') {
+        try {
+          const chatId = parsedUrl.query.chatId;
+          if (!chatId) return sendError(res, 400, 'chatId is required');
+          const result = await getChatInviteLinks(chatId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch invite links');
+        }
+      }
+
+      // POST /api/telegram/chat/create-invite-link
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/create-invite-link') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId) return sendError(res, 400, 'chatId is required');
+          const result = await createChatInviteLink(body.chatId, body);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to create invite link');
+        }
+      }
+
+      // POST /api/telegram/chat/revoke-invite-link
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/revoke-invite-link') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId || !body.link) return sendError(res, 400, 'chatId and link are required');
+          const result = await revokeChatInviteLink(body.chatId, body.link);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to revoke invite link');
+        }
+      }
+
+      // GET /api/telegram/chat/admin-log
+      if (req.method === 'GET' && pathname === '/api/telegram/chat/admin-log') {
+        try {
+          const { chatId, limit = 50, query = '' } = parsedUrl.query;
+          if (!chatId) return sendError(res, 400, 'chatId is required');
+          const result = await getChatAdminLog(chatId, { limit, query });
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to fetch admin log');
+        }
+      }
+
+      // GET /api/telegram/chat/check-username
+      if (req.method === 'GET' && pathname === '/api/telegram/chat/check-username') {
+        try {
+          const { chatId, username } = parsedUrl.query;
+          if (!username) return sendError(res, 400, 'username is required');
+          const result = await checkChatUsernameAvailability(chatId, username);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to check username');
+        }
+      }
+
+      // POST /api/telegram/chat/photo
+      if (req.method === 'POST' && pathname === '/api/telegram/chat/photo') {
+        try {
+          const body = await readJsonBody(req);
+          if (!body.chatId) return sendError(res, 400, 'chatId is required');
+          if (!body.fileBase64 && !body.url) {
+            return sendError(res, 400, 'Either fileBase64 or url must be provided');
+          }
+          const result = await uploadChatPhoto(body.chatId, body);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to upload chat photo');
+        }
+      }
+
+      // DELETE /api/telegram/chat/photo
+      if (req.method === 'DELETE' && pathname === '/api/telegram/chat/photo') {
+        try {
+          const chatId = parsedUrl.query.chatId;
+          if (!chatId) return sendError(res, 400, 'chatId is required');
+          const result = await removeChatPhoto(chatId);
+          return sendJson(res, 200, result);
+        } catch (err) {
+          return sendError(res, 500, err.message || 'Failed to remove chat photo');
         }
       }
 

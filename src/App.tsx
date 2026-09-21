@@ -10,6 +10,7 @@ import { AddBotToChatModal } from './components/AddBotToChatModal';
 import { JoinPreviewModal } from './components/JoinPreviewModal';
 import { parseTelegramUrl } from './utils/telegramLinks';
 import { MediaModal } from './components/MediaModal';
+import { ManageChatModal } from './components/ManageChatModal';
 import { FolderManagerModal } from './components/FolderManagerModal';
 import { ThemeStudioModal } from './components/ThemeStudioModal';
 import { PowerToolsModal } from './components/PowerToolsModal';
@@ -102,12 +103,16 @@ export const App: React.FC = () => {
   const [mobileShowChat, setMobileShowChat] = useState(false);
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState<Record<string, boolean>>({});
+  const [manageModalChat, setManageModalChat] = useState<Chat | null>(null);
   const directChatsRef = useRef<Map<string, Chat>>(new Map());
   const activeChatIdRef = useRef<string | null>(activeChatId);
+  const activeTopicIdRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
-  }, [activeChatId]);
+    const currentChat = chats.find((c) => c.id === activeChatId);
+    activeTopicIdRef.current = currentChat?.activeTopicId;
+  }, [activeChatId, chats]);
 
   const chatsRef = useRef<Chat[]>(chats);
   useEffect(() => {
@@ -218,7 +223,7 @@ export const App: React.FC = () => {
   const loadTelegramDialogs = useCallback(async () => {
     setIsSyncingDialogs(true);
     try {
-      const realDialogs = await telegramApi.getDialogs(50);
+      const realDialogs = await telegramApi.getDialogs(400);
       avatarService.preloadAvatars(realDialogs.filter((d) => d.hasAvatar).map((d) => d.id));
       const mapped = realDialogs.map(mapDialogToChat);
 
@@ -234,12 +239,18 @@ export const App: React.FC = () => {
         );
         const updatedFinalChats = finalChats.map((newChat) => {
           const existing = prev.find((c) => c.id === newChat.id);
-          if (existing && existing.messages.length > 0) {
+          if (existing) {
             return {
               ...newChat,
-              messages: existing.messages,
+              messages: existing.messages.length > 0 ? existing.messages : newChat.messages,
               memberCount: existing.memberCount ?? newChat.memberCount,
               description: existing.description || newChat.description,
+              topics: existing.topics && existing.topics.length > 0 ? existing.topics : newChat.topics,
+              activeTopicId: existing.activeTopicId,
+              isForum: Boolean(newChat.isForum || existing.isForum),
+              isOwner: Boolean(newChat.isOwner ?? existing.isOwner),
+              isAdmin: Boolean(newChat.isAdmin ?? existing.isAdmin),
+              isCreator: Boolean(newChat.isCreator ?? existing.isCreator),
               // Preserve unreadCount: 0 if user already read this chat client-side
               unreadCount: existing.unreadCount === 0 ? 0 : newChat.unreadCount,
             };
@@ -390,14 +401,60 @@ export const App: React.FC = () => {
     await loadTelegramFolders();
   };
 
+  const [isLoadingTopics, setIsLoadingTopics] = useState(false);
+
+  // Load forum topics for supergroups
+  const loadForumTopicsForChat = useCallback(async (chatId: string) => {
+    if (!chatId || chatId === 'saved-messages') return;
+    setIsLoadingTopics(true);
+    try {
+      const res = await telegramApi.getForumTopics(chatId);
+      const fetchedTopics = res && Array.isArray(res.topics) ? res.topics : [];
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === chatId
+            ? {
+                ...c,
+                isForum: fetchedTopics.length > 0 ? true : c.isForum,
+                topics: fetchedTopics,
+              }
+            : c
+        )
+      );
+    } catch (err: any) {
+      console.warn('[Forum] Failed to load topics for chat:', chatId, err.message);
+      setChats((prev) =>
+        prev.map((c) => (c.id === chatId ? { ...c, topics: [] } : c))
+      );
+    } finally {
+      setIsLoadingTopics(false);
+    }
+  }, []);
+
+  // Auto-fetch forum topics when an active chat is selected and topics haven't been loaded yet
+  useEffect(() => {
+    if (!authStatus.authorized || !activeChatId || activeChatId === 'saved-messages') return;
+    const currChat = chats.find((c) => c.id === activeChatId);
+    if (currChat && (currChat.isForum || currChat.type === 'group' || currChat.type === 'channel')) {
+      if (currChat.topics === undefined) {
+        loadForumTopicsForChat(activeChatId);
+      }
+    }
+  }, [activeChatId, authStatus.authorized, chats, loadForumTopicsForChat]);
+
   // Load real messages when a chat is selected
-  const loadMessagesForChat = async (chatId: string) => {
+  const loadMessagesForChat = async (chatId: string, topicId?: number) => {
     if (!authStatus.authorized || chatId === 'saved-messages') {
       return;
     }
 
     try {
-      const realMsgs = await telegramApi.getMessages(chatId, 50);
+      const realMsgs = await telegramApi.getMessages(
+        chatId,
+        50,
+        undefined,
+        topicId ? { replyTo: topicId } : undefined
+      );
 
       const incomingSenders = realMsgs.filter((m) => !m.out && m.senderId).map((m) => m.senderId!);
       if (incomingSenders.length > 0 && !isAndroidApp()) {
@@ -413,7 +470,7 @@ export const App: React.FC = () => {
         const targetChat = prev.find((c) => c.id === chatId);
         const mapped = realMsgs.map((m) => mapTelegramMessage(m, chatId, targetChat?.name || 'Telegram'));
         const sorted = mapped.sort((a, b) => (a.rawDate || 0) - (b.rawDate || 0));
-        return prev.map((c) => (c.id === chatId ? { ...c, messages: sorted } : c));
+        return prev.map((c) => (c.id === chatId ? { ...c, messages: sorted, activeTopicId: topicId } : c));
       });
 
       // Update hasMore state for this chat
@@ -535,7 +592,12 @@ export const App: React.FC = () => {
     const interval = setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       try {
-        const latestMsgs = await telegramApi.getMessages(activeChatId, 15);
+        const latestMsgs = await telegramApi.getMessages(
+          activeChatId,
+          15,
+          undefined,
+          activeTopicIdRef.current ? { replyTo: activeTopicIdRef.current } : undefined
+        );
         if (isCancelled || !latestMsgs || latestMsgs.length === 0) return;
 
         setChats((prevChats) => {
@@ -618,7 +680,12 @@ export const App: React.FC = () => {
 
     setIsLoadingOlderMessages(true);
     try {
-      const olderMsgs = await telegramApi.getMessages(chatId, 50, oldestId);
+      const olderMsgs = await telegramApi.getMessages(
+        chatId,
+        50,
+        oldestId,
+        chat.activeTopicId ? { replyTo: chat.activeTopicId } : undefined
+      );
 
       if (!olderMsgs || olderMsgs.length === 0) {
         setHasMoreOlderMessages((prev) => ({ ...prev, [chatId]: false }));
@@ -720,8 +787,15 @@ export const App: React.FC = () => {
       telegramApi.markAsRead(chatId);
     }
 
+    const targetChat = chats.find((c) => c.id === chatId);
+    activeTopicIdRef.current = targetChat?.activeTopicId;
+
     // Fetch messages from Telegram MTProto
-    loadMessagesForChat(chatId);
+    loadMessagesForChat(chatId, targetChat?.activeTopicId);
+
+    if (targetChat?.isForum || targetChat?.type === 'group' || targetChat?.type === 'channel') {
+      loadForumTopicsForChat(chatId);
+    }
   };
 
   const handleSelectGlobalChat = (dialog: TelegramDialog) => {
@@ -1004,6 +1078,101 @@ export const App: React.FC = () => {
     handleSelectChat(fullId);
   };
 
+  const handleSelectTopic = (topicId?: number) => {
+    if (!activeChatId) return;
+    activeTopicIdRef.current = topicId;
+    setChats((prev) =>
+      prev.map((c) =>
+        c.id === activeChatId ? { ...c, activeTopicId: topicId } : c
+      )
+    );
+    loadMessagesForChat(activeChatId, topicId);
+  };
+
+  const handleLeaveChat = async (chatId: string) => {
+    const targetChat = chats.find((c) => c.id === chatId);
+    const chatName = targetChat?.name || 'Chat';
+    try {
+      await telegramApi.leaveChat(chatId);
+      setChats((prev) => prev.filter((c) => c.id !== chatId));
+      if (activeChatId === chatId) {
+        setActiveChatId(null);
+        setMobileShowChat(false);
+      }
+      setIsInfoDrawerOpen(false);
+      showToast(`Left "${chatName}" successfully`, 'info');
+      await loadTelegramDialogs();
+    } catch (err: any) {
+      console.error('[MTProto] Error leaving chat:', err);
+      showToast(err.message || 'Failed to leave chat', 'error');
+    }
+  };
+
+  const handleClearChatHistory = async (chatId: string, revoke: boolean) => {
+    const targetChat = chats.find((c) => c.id === chatId);
+    const chatName = targetChat?.name || 'Chat';
+    try {
+      await telegramApi.clearChatHistory(chatId, revoke);
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === chatId ? { ...c, messages: [], lastMessage: undefined } : c
+        )
+      );
+      showToast(
+        revoke
+          ? `Chat history for "${chatName}" deleted for everyone from Telegram cloud`
+          : `Chat history for "${chatName}" cleared locally`,
+        'info'
+      );
+    } catch (err: any) {
+      console.error('[MTProto] Error clearing chat history:', err);
+      showToast(err.message || 'Failed to clear chat history', 'error');
+    }
+  };
+
+  const handleDeleteChatPermanently = async (chatId: string) => {
+    const targetChat = chats.find((c) => c.id === chatId);
+    const chatName = targetChat?.name || 'Chat';
+    try {
+      await telegramApi.deleteChannelOrGroup(chatId);
+      setChats((prev) => prev.filter((c) => c.id !== chatId));
+      if (activeChatId === chatId) {
+        setActiveChatId(null);
+        setMobileShowChat(false);
+      }
+      setIsInfoDrawerOpen(false);
+      setManageModalChat(null);
+      showToast(`"${chatName}" permanently deleted.`, 'info');
+      await loadTelegramDialogs();
+    } catch (err: any) {
+      console.error('[MTProto] Error deleting chat:', err);
+      showToast(err.message || 'Failed to delete chat', 'error');
+      throw err;
+    }
+  };
+
+  const handleUpdateChatInfo = async (chatId: string, details: { title?: string; about?: string }) => {
+    try {
+      await telegramApi.editChatDetails(chatId, details);
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === chatId
+            ? {
+                ...c,
+                name: details.title ? details.title : c.name,
+                description: details.about !== undefined ? details.about : c.description,
+              }
+            : c
+        )
+      );
+      showToast('Chat details updated successfully!', 'success');
+    } catch (err: any) {
+      console.error('[MTProto] Error updating chat details:', err);
+      showToast(err.message || 'Failed to update chat details', 'error');
+      throw err;
+    }
+  };
+
   const handleSendMessage = async (text: string, replyTo?: Message, attachment?: Attachment, targetChatId?: string) => {
     const destChatId = targetChatId || activeChatIdRef.current || activeChatId;
     if (!destChatId) return;
@@ -1053,7 +1222,10 @@ export const App: React.FC = () => {
     // REAL TELEGRAM MTPROTO SEND
     if (authStatus.authorized) {
       try {
-        const replyToId = replyTo ? parseInt(replyTo.id, 10) : undefined;
+        const targetChat = chats.find((c) => c.id === destChatId);
+        const replyToId = replyTo
+          ? parseInt(replyTo.id, 10)
+          : (targetChat?.activeTopicId ? targetChat.activeTopicId : undefined);
         let sentTelegramId: number | undefined;
 
         if (attachment?.type === 'gif' && attachment.inlineResult) {
@@ -1480,6 +1652,13 @@ export const App: React.FC = () => {
           onOpenTelegramLink={handleOpenTelegramLink}
           availableChats={chats}
           onForwardMessage={handleForwardMessage}
+          onClearHistory={handleClearChatHistory}
+          onLeaveChat={handleLeaveChat}
+          onSelectTopic={handleSelectTopic}
+          onRefreshTopics={() => activeChatId && loadForumTopicsForChat(activeChatId)}
+          isLoadingTopics={isLoadingTopics}
+          onUpdateChatInfo={handleUpdateChatInfo}
+          onDeleteChatPermanently={handleDeleteChatPermanently}
         />
       </div>
 
@@ -1494,6 +1673,9 @@ export const App: React.FC = () => {
               onClose={() => setIsInfoDrawerOpen(false)}
               onToggleMute={handleToggleMute}
               onOpenMediaModal={(att) => setMediaModalAttachment(att)}
+              onClearHistory={handleClearChatHistory}
+              onLeaveChat={handleLeaveChat}
+              onOpenManageChat={() => setManageModalChat(activeChat)}
             />
           </div>
 
@@ -1510,6 +1692,9 @@ export const App: React.FC = () => {
                 onClose={() => setIsInfoDrawerOpen(false)}
                 onToggleMute={handleToggleMute}
                 onOpenMediaModal={(att) => setMediaModalAttachment(att)}
+                onClearHistory={handleClearChatHistory}
+                onLeaveChat={handleLeaveChat}
+                onOpenManageChat={() => setManageModalChat(activeChat)}
               />
             </div>
           </div>
@@ -1517,6 +1702,16 @@ export const App: React.FC = () => {
       )}
 
       {/* Modals */}
+      {manageModalChat && (
+        <ManageChatModal
+          isOpen={Boolean(manageModalChat)}
+          chat={manageModalChat}
+          onClose={() => setManageModalChat(null)}
+          onUpdateChatInfo={handleUpdateChatInfo}
+          onDeleteChat={handleDeleteChatPermanently}
+        />
+      )}
+
       <CommandCenterModal
         isOpen={isCommandCenterOpen}
         onClose={() => setIsCommandCenterOpen(false)}

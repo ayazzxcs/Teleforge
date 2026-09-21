@@ -8,11 +8,15 @@ import {
   FileText,
   Music,
   ShieldCheck,
+  Shield,
+  Crown,
   Copy,
   Check,
   Download,
   Loader2,
   Play,
+  Trash2,
+  LogOut,
 } from 'lucide-react';
 import { Chat, Attachment, Message } from '../types';
 import { Avatar } from './Avatar';
@@ -21,6 +25,8 @@ import { mediaService } from '../services/mediaService';
 import { downloadFileToDevice } from '../utils/fileDownloader';
 import { showToast } from './Toast';
 import { mapTelegramMessage } from '../utils/telegramAdapter';
+import { ClearHistoryModal } from './ClearHistoryModal';
+import { LeaveChatModal } from './LeaveChatModal';
 
 interface ChatInfoDrawerProps {
   chat: Chat | null;
@@ -28,6 +34,9 @@ interface ChatInfoDrawerProps {
   onClose: () => void;
   onToggleMute: (chatId: string) => void;
   onOpenMediaModal?: (attachment: Attachment) => void;
+  onClearHistory?: (chatId: string, revoke: boolean) => Promise<void>;
+  onLeaveChat?: (chatId: string) => Promise<void>;
+  onOpenManageChat?: () => void;
 }
 
 // Subcomponent for individual shared photo with instant 0ms preview and progressive loading
@@ -267,9 +276,14 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
   onClose,
   onToggleMute,
   onOpenMediaModal,
+  onClearHistory,
+  onLeaveChat,
+  onOpenManageChat,
 }) => {
   const [activeMediaTab, setActiveMediaTab] = useState<'photos' | 'videos' | 'files' | 'audio'>('photos');
   const [copiedLink, setCopiedLink] = useState(false);
+  const [isClearHistoryOpen, setIsClearHistoryOpen] = useState(false);
+  const [isLeaveChatOpen, setIsLeaveChatOpen] = useState(false);
   const [sharedMedia, setSharedMedia] = useState<{
     photos: Message[];
     videos: Message[];
@@ -434,10 +448,35 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               ? 'online'
               : chat.lastSeen || 'last seen recently'}
           </p>
+          {chat.isOwner ? (
+            <div className="mt-2.5 px-3 py-1 rounded-full bg-amber-100 dark:bg-amber-950/70 border border-amber-300/80 dark:border-amber-700/50 text-amber-800 dark:text-amber-200 text-xs font-bold flex items-center gap-1.5 shadow-2xs">
+              <Crown size={13} className="text-amber-600 dark:text-amber-400" />
+              <span>You are the Group Owner</span>
+            </div>
+          ) : chat.isAdmin ? (
+            <div className="mt-2.5 px-3 py-1 rounded-full bg-purple-100 dark:bg-purple-950/70 border border-purple-300/80 dark:border-purple-700/50 text-purple-800 dark:text-purple-200 text-xs font-bold flex items-center gap-1.5 shadow-2xs">
+              <Shield size={13} className="text-purple-600 dark:text-purple-400" />
+              <span>You are an Administrator</span>
+            </div>
+          ) : null}
         </div>
 
         {/* Details & Actions */}
         <div className="p-4 space-y-4 border-b border-gray-100 dark:border-gray-800">
+          {(chat.isOwner || chat.isAdmin) && onOpenManageChat && (
+            <button
+              type="button"
+              onClick={onOpenManageChat}
+              className="w-full py-2.5 px-4 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-750 text-gray-800 dark:text-gray-200 text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            >
+              {chat.isOwner ? <Crown size={15} className="text-amber-500" /> : <Shield size={15} className="text-purple-500" />}
+              <span>
+                {chat.type === 'channel'
+                  ? chat.isOwner ? 'Manage Channel (Owner)' : 'Manage Channel (Admin)'
+                  : chat.isOwner ? 'Manage Group (Owner)' : 'Manage Group (Admin)'}
+              </span>
+            </button>
+          )}
           {chat.description && (
             <div>
               <div className="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase">About</div>
@@ -632,8 +671,73 @@ export const ChatInfoDrawer: React.FC<ChatInfoDrawerProps> = ({
               ) : null}
             </div>
           )}
+
+          {chat && (
+            <div className="pt-4 mt-6 border-t border-gray-100 dark:border-gray-800/80 space-y-2">
+              <button
+                type="button"
+                onClick={() => setIsClearHistoryOpen(true)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50/60 dark:bg-red-950/20 hover:bg-red-100/70 dark:hover:bg-red-900/30 transition-colors cursor-pointer"
+              >
+                <Trash2 size={15} />
+                <span>Clear Chat History</span>
+              </button>
+
+              {(chat.type === 'group' || chat.type === 'channel') && (
+                <button
+                  type="button"
+                  onClick={() => setIsLeaveChatOpen(true)}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+                >
+                  <LogOut size={15} />
+                  <span>Leave {chat.type === 'channel' ? 'Channel' : 'Group'}</span>
+                </button>
+              )}
+
+              {chat.isOwner && onOpenManageChat && (
+                <button
+                  type="button"
+                  onClick={onOpenManageChat}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50/80 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-900/60 transition-colors cursor-pointer"
+                >
+                  <Trash2 size={15} />
+                  <span>Delete {chat.type === 'channel' ? 'Channel' : 'Group'} (Owner)</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Clear History Modal */}
+      {chat && isClearHistoryOpen && (
+        <ClearHistoryModal
+          isOpen={isClearHistoryOpen}
+          onClose={() => setIsClearHistoryOpen(false)}
+          chatName={chat.name}
+          chatType={chat.type}
+          onClear={async (revoke) => {
+            if (onClearHistory) {
+              await onClearHistory(chat.id, revoke);
+            }
+          }}
+        />
+      )}
+
+      {/* Leave Chat Modal */}
+      {chat && isLeaveChatOpen && (
+        <LeaveChatModal
+          isOpen={isLeaveChatOpen}
+          onClose={() => setIsLeaveChatOpen(false)}
+          chatName={chat.name}
+          chatType={chat.type}
+          onLeave={async () => {
+            if (onLeaveChat) {
+              await onLeaveChat(chat.id);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

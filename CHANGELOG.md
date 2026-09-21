@@ -3,6 +3,28 @@
 All notable changes to the **TeleForge** client are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.4] - 2026-09-21
+
+### 🚀 TeleForge 1.0.4 (Chat Management, Admin/Owner Suite, Forum Topics & Live Username Availability)
+
+#### Full Admin & Owner Suite
+- **Complete Chat Management Modal (`ManageChatModal`)**: Built Telegram-grade administration suite with 7 dedicated tabs: General, Permissions, Administrators, Members, Removed Users, Invite Links, and Recent Actions (Admin Log).
+- **Owner & Admin Privilege Detection**: Automatic detection of creator/owner status and specific granular admin rights (`changeInfo`, `postMessages`, `editMessages`, `deleteMessages`, `banUsers`, `inviteUsers`, `pinMessages`, `addAdmins`, `manageTopics`).
+- **Member Permissions & Slow Mode**: Live configuration of default banned rights (Send Messages, Media, Stickers, Links, Polls, Pin, Add Users) and slow mode delays (0s to 1 hour).
+- **Dual-Method Chat Avatar Customizer**: Added support to update group and channel photos via local storage file upload (PNG, JPG, WebP) or direct image URL, with live preview and photo deletion.
+- **Live MTProto Username Check**: Real-time debounced MTProto availability verification with visual indicators (`available`, `occupied`, `invalid`, `current`).
+- **Owner-Exclusive Protections**: Clear indicators and read-only protection for non-owner administrators attempting to change public links, adhering to Telegram's security policies.
+- **Graceful MTProto Error Handling**: Safe handling of `CHAT_NOT_MODIFIED` and user-friendly error feedback for title, bio, and username updates.
+
+#### Forum Topics Bar & Navigation
+- **Dynamic Topic Filtering**: Implemented `ForumTopicsBar` to fetch and display channel/supergroup forum topics via `channels.GetForumTopics`.
+- **Direct Topic Switching**: Allows users to filter and switch between active forum topics or view all discussions seamlessly.
+
+#### Direct Chat Discovery & Unified Tabs
+- **Unified All Chats Feed**: Enhanced sidebar and folder filters so group channels, supergroups, and DMs appear reliably in the "All" chats view and respective category filters.
+
+---
+
 ## [1.0.3] - 2026-09-20
 
 ### 🚀 TeleForge 1.0.3 (Reactions & Message Forwarding)

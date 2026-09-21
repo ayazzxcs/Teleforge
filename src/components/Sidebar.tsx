@@ -10,6 +10,7 @@ import {
   Megaphone,
   Bot,
   Plus,
+  Shield,
   ShieldCheck,
   Check,
   CheckCheck,
@@ -192,14 +193,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onSelectFolder?.(id);
   };
 
-  // Compile list of folders, guaranteeing 'All' is at the top
+  // Compile list of folders, guaranteeing 'All' is at the top, followed by user custom folders, then smart categories
   const effectiveFolders: TeleForgeDialogFilter[] = React.useMemo(() => {
-    const hasAll = folders.some((f) => f.id === 'all' || f.isDefault);
-    if (!hasAll) {
-      return [{ id: 'all', title: 'All', emoticon: '', isDefault: true }, ...folders];
+    const list: TeleForgeDialogFilter[] = [];
+
+    // 1. All Chats
+    const serverAll = folders.find((f) => f.id === 'all' || f.isDefault);
+    list.push(serverAll || { id: 'all', title: 'All', emoticon: '', isDefault: true });
+
+    // 2. Custom Telegram server folders
+    const customServerFolders = folders.filter((f) => f.id !== 'all' && !f.isDefault);
+    list.push(...customServerFolders);
+
+    // 3. Smart Category Folders
+    const hasDMs = chats.some((c) => c.type === 'direct');
+    if (hasDMs && !list.some((f) => f.id === 'dms' || f.id === 'personal')) {
+      list.push({ id: 'dms', title: 'DMs', emoticon: '💬' });
     }
-    return folders;
-  }, [folders]);
+
+    const hasGroups = chats.some((c) => c.type === 'group');
+    if (hasGroups && !list.some((f) => f.id === 'groups')) {
+      list.push({ id: 'groups', title: 'Groups', emoticon: '👥' });
+    }
+
+    const hasChannels = chats.some((c) => c.type === 'channel');
+    if (hasChannels && !list.some((f) => f.id === 'channels')) {
+      list.push({ id: 'channels', title: 'Channels', emoticon: '📢' });
+    }
+
+    const hasAdmin = chats.some((c) => c.isAdmin || c.isOwner);
+    if (hasAdmin && !list.some((f) => f.id === 'admin')) {
+      list.push({ id: 'admin', title: 'Admin', emoticon: '🛡️' });
+    }
+
+    const hasOwner = chats.some((c) => c.isOwner);
+    if (hasOwner && !list.some((f) => f.id === 'owner')) {
+      list.push({ id: 'owner', title: 'Owner', emoticon: '👑' });
+    }
+
+    const hasBots = chats.some((c) => c.type === 'bot');
+    if (hasBots && !list.some((f) => f.id === 'bots')) {
+      list.push({ id: 'bots', title: 'Bots', emoticon: '🤖' });
+    }
+
+    return list;
+  }, [folders, chats]);
 
   const activeFilter =
     effectiveFolders.find((f) => f.id === currentFolderId) || effectiveFolders[0];
@@ -580,6 +618,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       {chat.verified && (
                         <ShieldCheck size={14} className="text-teleforge-cream fill-teleforge-primary shrink-0" />
                       )}
+                      {chat.isOwner ? (
+                        <span
+                          className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full shrink-0 flex items-center gap-0.5 ${
+                            isActive
+                              ? 'bg-amber-400 text-amber-950 shadow-xs'
+                              : 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/50'
+                          }`}
+                          title="You are the Owner of this group/channel"
+                        >
+                          <span className="text-[10px]">👑</span>
+                          <span>Owner</span>
+                        </span>
+                      ) : chat.isAdmin ? (
+                        <span
+                          className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full shrink-0 flex items-center gap-0.5 ${
+                            isActive
+                              ? 'bg-purple-300 text-purple-950 shadow-xs'
+                              : 'bg-purple-100 text-purple-800 dark:bg-purple-950/70 dark:text-purple-300 border border-purple-300/80 dark:border-purple-700/50'
+                          }`}
+                          title="You are an Administrator of this group/channel"
+                        >
+                          <Shield size={9} />
+                          <span>Admin</span>
+                        </span>
+                      ) : null}
                     </div>
                     {lastMsg && (
                       <span

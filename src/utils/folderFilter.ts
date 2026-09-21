@@ -18,6 +18,26 @@ export function chatMatchesFolder(
     return true;
   }
 
+  // 1b. Smart category filters: DMs, Groups, Channels, Admin, Owner, Bots
+  if (filter.id === 'dms' || filter.id === 'personal') {
+    return chat.type === 'direct';
+  }
+  if (filter.id === 'groups') {
+    return chat.type === 'group';
+  }
+  if (filter.id === 'channels') {
+    return chat.type === 'channel';
+  }
+  if (filter.id === 'admin') {
+    return Boolean(chat.isAdmin || chat.isOwner || chat.isCreator);
+  }
+  if (filter.id === 'owner') {
+    return Boolean(chat.isOwner || chat.isCreator);
+  }
+  if (filter.id === 'bots') {
+    return chat.type === 'bot';
+  }
+
   // 2. Explicitly excluded chats are never included
   if (filter.excludeChatIds && filter.excludeChatIds.includes(chat.id)) {
     return false;

@@ -2,10 +2,33 @@
 // In Android APK and mobile environments, routes directly to telegramDirectClient (GramJS WSS).
 // In web dev mode, routes to /api/telegram local backend with seamless telegramDirectClient fallback.
 
-import { TeleForgeDialogFilter, TelegramReplyMarkup, TelegramKeyboardButton, TelegramButtonType } from '../types';
+import {
+  TeleForgeDialogFilter,
+  TelegramReplyMarkup,
+  TelegramKeyboardButton,
+  TelegramButtonType,
+  ForumTopicItem,
+  TelegramAdminFullInfo,
+  TelegramAdminParticipant,
+  TelegramMemberParticipant,
+  TelegramBannedParticipant,
+  TelegramInviteLinkItem,
+  TelegramAdminLogItem,
+} from '../types';
 import { telegramDirectClient } from './telegramDirectClient';
 
-export type { TelegramReplyMarkup, TelegramKeyboardButton, TelegramButtonType };
+export type {
+  TelegramReplyMarkup,
+  TelegramKeyboardButton,
+  TelegramButtonType,
+  ForumTopicItem,
+  TelegramAdminFullInfo,
+  TelegramAdminParticipant,
+  TelegramMemberParticipant,
+  TelegramBannedParticipant,
+  TelegramInviteLinkItem,
+  TelegramAdminLogItem,
+};
 
 export interface TelegramUser {
   id: string;
@@ -31,6 +54,11 @@ export interface TelegramDialog {
   isUser: boolean;
   isGroup: boolean;
   isChannel: boolean;
+  isForum?: boolean;
+  isOwner?: boolean;
+  isAdmin?: boolean;
+  isCreator?: boolean;
+  topics?: ForumTopicItem[];
   isVerified: boolean;
   hasAvatar?: boolean;
   avatar?: string;
@@ -458,14 +486,22 @@ export const telegramApi = {
     return telegramDirectClient.getDialogs(limit);
   },
 
-  async getMessages(chatId: string, limit = 50, offsetId?: number): Promise<TelegramMessage[]> {
+  async getMessages(
+    chatId: string,
+    limit = 50,
+    offsetId?: number,
+    options?: { replyTo?: number | string; search?: string; addOffset?: number; ids?: number[] }
+  ): Promise<TelegramMessage[]> {
     if (isAndroidApp()) {
-      return telegramDirectClient.getMessages(chatId, limit, offsetId);
+      return telegramDirectClient.getMessages(chatId, limit, offsetId, options);
     }
     try {
       let url = `${getApiBase()}/messages?chatId=${encodeURIComponent(chatId)}&limit=${limit}`;
       if (offsetId && offsetId > 0) {
         url += `&offsetId=${offsetId}`;
+      }
+      if (options?.replyTo !== undefined && options?.replyTo !== null && parseInt(String(options.replyTo), 10) > 0) {
+        url += `&replyTo=${encodeURIComponent(String(options.replyTo))}`;
       }
       const res = await fetchWithTimeout(url, {}, 5000);
       if (res.ok) {
@@ -473,7 +509,7 @@ export const telegramApi = {
         return data.messages || [];
       }
     } catch (e) {}
-    return telegramDirectClient.getMessages(chatId, limit, offsetId);
+    return telegramDirectClient.getMessages(chatId, limit, offsetId, options);
   },
 
   async searchMessages(chatId: string, query: string, limit = 30): Promise<TelegramMessage[]> {
@@ -1264,4 +1300,338 @@ export const telegramApi = {
     }
     return telegramDirectClient.toggleChatMute(chatId, mute);
   },
+
+  async leaveChat(chatId: string): Promise<{ success: boolean }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/chats/leave`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId }),
+          },
+          8000
+        );
+        if (res.ok) {
+          return await res.json();
+        }
+      } catch (e: any) {}
+    }
+    return telegramDirectClient.leaveChat(chatId);
+  },
+
+  async clearChatHistory(chatId: string, revoke = false): Promise<{ success: boolean }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/chats/clear-history`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId, revoke }),
+          },
+          10000
+        );
+        if (res.ok) {
+          return await res.json();
+        }
+      } catch (e: any) {}
+    }
+    return telegramDirectClient.clearChatHistory(chatId, revoke);
+  },
+
+  async getForumTopics(chatId: string, limit = 50): Promise<{ count: number; topics: ForumTopicItem[] }> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/forum/topics?chatId=${encodeURIComponent(chatId)}&limit=${limit}`,
+          {},
+          8000
+        );
+        if (res.ok) {
+          return await res.json();
+        }
+      } catch (e: any) {}
+    }
+    return telegramDirectClient.getForumTopics(chatId, limit);
+  },
+
+  async deleteChannelOrGroup(chatId: string): Promise<boolean> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/chats/delete`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId }),
+          },
+          10000
+        );
+        if (res.ok) {
+          const data = await res.json();
+          return Boolean(data.success);
+        }
+      } catch (e: any) {}
+    }
+    return telegramDirectClient.deleteChannelOrGroup(chatId);
+  },
+
+  async editChatDetails(chatId: string, details: { title?: string; about?: string }): Promise<boolean> {
+    if (!isAndroidApp()) {
+      try {
+        const res = await fetchWithTimeout(
+          `${getApiBase()}/chats/edit-info`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId, title: details.title, about: details.about }),
+          },
+          10000
+        );
+        if (res.ok) {
+          const data = await res.json();
+          return Boolean(data.success);
+        }
+      } catch (e: any) {}
+    }
+    return telegramDirectClient.editChatDetails(chatId, details);
+  },
+
+  async getChatAdminFull(chatId: string): Promise<TelegramAdminFullInfo> {
+    const res = await fetchWithTimeout(`${getApiBase()}/chat/admin-full?chatId=${encodeURIComponent(chatId)}`, {}, 10000);
+    if (!res.ok) {
+      throw new Error(`Failed to load admin chat details: ${res.statusText}`);
+    }
+    return await res.json();
+  },
+
+  async updateChatGeneralSettings(chatId: string, settings: { title?: string; about?: string; username?: string; hiddenPrehistory?: boolean }): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/update-settings`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, ...settings }),
+      },
+      12000
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to update chat settings');
+    }
+    return true;
+  },
+
+  async updateChatPermissions(chatId: string, payload: { permissions?: any; slowmodeSeconds?: number }): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/update-permissions`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, ...payload }),
+      },
+      12000
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to update chat permissions');
+    }
+    return true;
+  },
+
+  async getChatAdministrators(chatId: string): Promise<TelegramAdminParticipant[]> {
+    const res = await fetchWithTimeout(`${getApiBase()}/chat/administrators?chatId=${encodeURIComponent(chatId)}`, {}, 10000);
+    if (!res.ok) throw new Error('Failed to load administrators');
+    const data = await res.json();
+    return data.admins || [];
+  },
+
+  async editChatAdministrator(chatId: string, payload: { userId: string; adminRights?: any; rank?: string }): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/edit-admin`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, ...payload }),
+      },
+      12000
+    );
+    if (!res.ok) throw new Error('Failed to edit administrator');
+    return true;
+  },
+
+  async transferChatOwnership(chatId: string, payload: { userId: string; password?: string }): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/transfer-ownership`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, ...payload }),
+      },
+      15000
+    );
+    if (!res.ok) throw new Error('Failed to transfer chat ownership');
+    return true;
+  },
+
+  async getChatMembers(chatId: string, query = '', offset = 0, limit = 50): Promise<{ members: TelegramMemberParticipant[]; count: number }> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/members?chatId=${encodeURIComponent(chatId)}&query=${encodeURIComponent(query)}&offset=${offset}&limit=${limit}`,
+      {},
+      10000
+    );
+    if (!res.ok) throw new Error('Failed to load members');
+    return await res.json();
+  },
+
+  async inviteMemberToChat(chatId: string, user: string): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/invite-member`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, user }),
+      },
+      12000
+    );
+    if (!res.ok) throw new Error('Failed to invite member');
+    return true;
+  },
+
+  async restrictChatMember(chatId: string, payload: { userId: string; bannedRights?: any; untilDate?: number }): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/restrict-member`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, ...payload }),
+      },
+      12000
+    );
+    if (!res.ok) throw new Error('Failed to restrict member');
+    return true;
+  },
+
+  async kickChatMember(chatId: string, userId: string): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/kick-member`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, userId }),
+      },
+      12000
+    );
+    if (!res.ok) throw new Error('Failed to kick member');
+    return true;
+  },
+
+  async getBannedMembers(chatId: string): Promise<TelegramBannedParticipant[]> {
+    const res = await fetchWithTimeout(`${getApiBase()}/chat/banned-members?chatId=${encodeURIComponent(chatId)}`, {}, 10000);
+    if (!res.ok) throw new Error('Failed to load banned members');
+    const data = await res.json();
+    return data.banned || [];
+  },
+
+  async unbanChatMember(chatId: string, userId: string): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/unban-member`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, userId }),
+      },
+      12000
+    );
+    if (!res.ok) throw new Error('Failed to unban member');
+    return true;
+  },
+
+  async getChatInviteLinks(chatId: string): Promise<TelegramInviteLinkItem[]> {
+    const res = await fetchWithTimeout(`${getApiBase()}/chat/invite-links?chatId=${encodeURIComponent(chatId)}`, {}, 10000);
+    if (!res.ok) throw new Error('Failed to load invite links');
+    const data = await res.json();
+    return data.invites || [];
+  },
+
+  async createChatInviteLink(chatId: string, payload: { title?: string; expireDate?: string; usageLimit?: number; requestNeeded?: boolean }): Promise<TelegramInviteLinkItem> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/create-invite-link`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, ...payload }),
+      },
+      12000
+    );
+    if (!res.ok) throw new Error('Failed to create invite link');
+    return await res.json();
+  },
+
+  async revokeChatInviteLink(chatId: string, link: string): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/revoke-invite-link`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, link }),
+      },
+      12000
+    );
+    if (!res.ok) throw new Error('Failed to revoke invite link');
+    return true;
+  },
+
+  async getChatAdminLog(chatId: string, query = '', limit = 50): Promise<TelegramAdminLogItem[]> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/admin-log?chatId=${encodeURIComponent(chatId)}&query=${encodeURIComponent(query)}&limit=${limit}`,
+      {},
+      10000
+    );
+    if (!res.ok) throw new Error('Failed to load admin log');
+    const data = await res.json();
+    return data.events || [];
+  },
+
+  async checkChatUsernameAvailability(chatId: string, username: string): Promise<{ available: boolean; username: string; error?: string }> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/check-username?chatId=${encodeURIComponent(chatId)}&username=${encodeURIComponent(username)}`,
+      {},
+      8000
+    );
+    if (!res.ok) throw new Error('Failed to check username availability');
+    return await res.json();
+  },
+
+  async uploadChatPhoto(chatId: string, data: { fileBase64?: string; filename?: string; url?: string }): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/photo`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, ...data }),
+      },
+      25000
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to upload chat photo');
+    }
+    return true;
+  },
+
+  async removeChatPhoto(chatId: string): Promise<boolean> {
+    const res = await fetchWithTimeout(
+      `${getApiBase()}/chat/photo?chatId=${encodeURIComponent(chatId)}`,
+      {
+        method: 'DELETE',
+      },
+      12000
+    );
+    if (!res.ok) throw new Error('Failed to remove chat photo');
+    return true;
+  },
 };
+

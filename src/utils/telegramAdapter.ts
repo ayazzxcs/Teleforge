@@ -83,6 +83,11 @@ export function mapDialogToChat(dialog: TelegramDialog): Chat {
     isPinned: dialog.pinned,
     isJoined: dialog.isJoined !== undefined ? dialog.isJoined : true,
     isMuted: Boolean(dialog.isMuted),
+    isForum: Boolean(dialog.isForum),
+    isOwner: Boolean(dialog.isOwner || (dialog as any).isCreator),
+    isAdmin: Boolean(dialog.isAdmin || dialog.isOwner || (dialog as any).isCreator),
+    isCreator: Boolean(dialog.isCreator || dialog.isOwner),
+    topics: dialog.topics,
     unreadCount: dialog.unreadCount,
     memberCount,
     lastMessage: dialog.lastMessage
